@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
@@ -319,6 +320,219 @@ class PillButton : Control
     }
 }
 
+// ======================================================================
+//  Extensions Chrome
+// ======================================================================
+
+class ExtInfo
+{
+    public string StoreId, RuntimeId, Name, Folder, Popup, Error;
+    public bool Enabled = true;
+    public Image Icon;
+}
+
+static class Extensions
+{
+    /// Extensions installées d'office au premier lancement.
+    public static readonly (string Name, string StoreId)[] Defaults =
+    {
+        ("NordPass", "eiaeiblijfjekdanodkjadfinkhbfgcd"),
+        ("TrendTrack", "cncdmciajmaojninbopinpijdodjgfpd"),
+    };
+
+    /// Récupère l'identifiant d'extension (32 lettres a-p) dans un lien du Chrome Web Store.
+    public static string ParseStoreId(string text)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(text ?? "", "(?<![a-p])[a-p]{32}(?![a-p])");
+        return m.Success ? m.Value : null;
+    }
+
+    /// Télécharge l'extension depuis le Chrome Web Store et la décompresse dans <folder>.
+    public static async Task DownloadAsync(string storeId, string folder)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        var url = "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0" +
+                  "&acceptformat=crx2,crx3&x=id%3D" + storeId + "%26uc";
+        var crx = await http.GetByteArrayAsync(url);
+        if (crx.Length < 16 || crx[0] != 'C' || crx[1] != 'r' || crx[2] != '2' || crx[3] != '4')
+            throw new InvalidDataException("Extension introuvable sur le Chrome Web Store.");
+
+        int version = BitConverter.ToInt32(crx, 4);
+        int zipStart = version == 3
+            ? 12 + BitConverter.ToInt32(crx, 8)
+            : 16 + BitConverter.ToInt32(crx, 8) + BitConverter.ToInt32(crx, 12);
+
+        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        Directory.CreateDirectory(folder);
+        using (var zip = new ZipArchive(new MemoryStream(crx, zipStart, crx.Length - zipStart)))
+            zip.ExtractToDirectory(folder, true);
+
+        // Les dossiers commençant par "_metadata" empêchent le chargement d'une extension décompressée
+        var meta = Path.Combine(folder, "_metadata");
+        if (Directory.Exists(meta)) Directory.Delete(meta, true);
+    }
+
+    static readonly JsonDocumentOptions JsonOpts = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+
+    /// Traduit "__MSG_cle__" via _locales/<langue>/messages.json (français d'abord).
+    static string ResolveMessage(string folder, string value, string defaultLocale)
+    {
+        if (value == null || !value.StartsWith("__MSG_") || !value.EndsWith("__")) return value;
+        var key = value[6..^2];
+        foreach (var loc in new[] { "fr", defaultLocale, "en" }.Where(x => x != null).Distinct())
+        {
+            var f = Path.Combine(folder, "_locales", loc, "messages.json");
+            if (!File.Exists(f)) continue;
+            try
+            {
+                using var d = JsonDocument.Parse(File.ReadAllText(f), JsonOpts);
+                foreach (var p in d.RootElement.EnumerateObject())
+                    if (p.Name.Equals(key, StringComparison.OrdinalIgnoreCase) && p.Value.TryGetProperty("message", out var msg))
+                        return msg.GetString();
+            }
+            catch { }
+        }
+        return value;
+    }
+
+    /// Lit la page popup et l'icône déclarées dans manifest.json.
+    public static void ReadManifest(ExtInfo e)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(e.Folder, "manifest.json")), JsonOpts);
+            var root = doc.RootElement;
+
+            if (e.Name == null || e.Name.StartsWith("__MSG_"))
+            {
+                var raw = root.TryGetProperty("name", out var n) ? n.GetString() : null;
+                var loc = root.TryGetProperty("default_locale", out var dl) ? dl.GetString() : null;
+                var resolved = ResolveMessage(e.Folder, raw, loc);
+                if (!string.IsNullOrWhiteSpace(resolved) && !resolved.StartsWith("__MSG_")) e.Name = resolved;
+            }
+            foreach (var key in new[] { "action", "browser_action", "page_action" })
+                if (root.TryGetProperty(key, out var a) && a.ValueKind == JsonValueKind.Object &&
+                    a.TryGetProperty("default_popup", out var p) && p.ValueKind == JsonValueKind.String)
+                { e.Popup = p.GetString().TrimStart('/'); break; }
+
+            if (root.TryGetProperty("icons", out var icons) && icons.ValueKind == JsonValueKind.Object)
+            {
+                var best = icons.EnumerateObject()
+                    .Select(x => (Size: int.TryParse(x.Name, out var s) ? s : 0, Path: x.Value.GetString()))
+                    .OrderBy(x => Math.Abs(x.Size - 32)).FirstOrDefault();
+                if (best.Path != null)
+                {
+                    var file = Path.Combine(e.Folder, best.Path.TrimStart('/'));
+                    if (File.Exists(file))
+                    {
+                        using var img = Image.FromFile(file);
+                        e.Icon = new Bitmap(img, 20, 20);
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+}
+
+/// Petite fenêtre qui affiche le popup d'une extension (comme quand on clique son icône dans Chrome).
+class ExtensionPopup : Form
+{
+    readonly WebView2 view;
+    readonly Action<string> openInTab;
+
+    public ExtensionPopup(CoreWebView2Environment env, string url, Rectangle anchor, Theme theme, Action<string> openInTab)
+    {
+        this.openInTab = openInTab;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        KeyPreview = true;
+        BackColor = theme.FieldBorder;
+        Padding = new Padding(1);
+        Size = new Size(LogicalToDeviceUnits(380), LogicalToDeviceUnits(560));
+        Place(anchor);
+
+        view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = theme.Bar };
+        Controls.Add(view);
+        Deactivate += (_, _) => Close();
+
+        Shown += async (_, _) =>
+        {
+            try { await view.EnsureCoreWebView2Async(env); } catch { Close(); return; }
+            var c = view.CoreWebView2;
+            c.Settings.IsStatusBarEnabled = false;
+            c.NewWindowRequested += (_, e) => { e.Handled = true; this.openInTab(e.Uri); Close(); };
+            c.WindowCloseRequested += (_, _) => Close();
+            c.NavigationCompleted += async (_, _) => { await FitToContent(anchor); await Task.Delay(500); await FitToContent(anchor); };
+            c.Navigate(url);
+            view.Focus();
+        };
+    }
+
+    void Place(Rectangle anchor)
+    {
+        var wa = Screen.FromRectangle(anchor).WorkingArea;
+        int x = Math.Max(wa.Left, Math.Min(anchor.Right - Width, wa.Right - Width));
+        int y = Math.Max(wa.Top, Math.Min(anchor.Bottom + LogicalToDeviceUnits(4), wa.Bottom - Height));
+        Location = new Point(x, y);
+    }
+
+    /// Ajuste la fenêtre à la taille du contenu du popup (bornée comme dans Chrome).
+    async Task FitToContent(Rectangle anchor)
+    {
+        if (IsDisposed || view.CoreWebView2 == null) return;
+        try
+        {
+            var raw = await view.CoreWebView2.ExecuteScriptAsync(
+                "JSON.stringify([document.documentElement.scrollWidth, document.documentElement.scrollHeight])");
+            var size = JsonSerializer.Deserialize<int[]>(JsonSerializer.Deserialize<string>(raw));
+            float k = DeviceDpi / 96f;
+            int w = (int)(Math.Clamp(size[0], 260, 800) * k) + 2;
+            int h = (int)(Math.Clamp(size[1], 120, 600) * k) + 2;
+            if (IsDisposed) return;
+            Size = new Size(w, h);
+            Place(anchor);
+        }
+        catch { }
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ClassStyle |= 0x20000; return cp; } // ombre portée
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys k)
+    {
+        if (k == Keys.Escape) { Close(); return true; }
+        return base.ProcessCmdKey(ref msg, k);
+    }
+}
+
+/// Mini boîte de saisie.
+static class Prompt
+{
+    public static string Show(IWin32Window owner, string title, string text, Theme t)
+    {
+        using var f = new Form
+        {
+            Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false, BackColor = t.Bar, ForeColor = t.Text,
+            Font = new Font("Segoe UI", 9.5f), AutoScaleMode = AutoScaleMode.Dpi, ClientSize = new Size(460, 150)
+        };
+        var lbl = new Label { Text = text, Left = 16, Top = 14, Width = 428, Height = 40 };
+        var box = new TextBox { Left = 16, Top = 60, Width = 428, BackColor = t.Field, ForeColor = t.Text };
+        var ok = new Button { Text = "Ajouter", DialogResult = DialogResult.OK, Left = 268, Top = 104, Width = 84, Height = 30, FlatStyle = FlatStyle.System };
+        var cancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, Left = 360, Top = 104, Width = 84, Height = 30, FlatStyle = FlatStyle.System };
+        f.Controls.AddRange(new Control[] { lbl, box, ok, cancel });
+        f.AcceptButton = ok;
+        f.CancelButton = cancel;
+        return f.ShowDialog(owner) == DialogResult.OK ? box.Text : null;
+    }
+}
+
 class BrowserTab
 {
     public WebView2 View;
@@ -631,8 +845,13 @@ class BrowserForm : Form
     readonly Panel toolbar = new() { Dock = DockStyle.Top };
     readonly Panel content = new() { Dock = DockStyle.Fill };
     readonly AddressBox addr;
-    readonly IconButton backBtn, fwdBtn, reloadBtn, homeBtn, menuBtn;
+    readonly IconButton backBtn, fwdBtn, reloadBtn, homeBtn, menuBtn, extBtn;
     readonly PillButton updatePill;
+    readonly List<ExtInfo> extensions = new();
+    readonly string extDir, extListPath;
+    CoreWebView2Profile profile;
+    bool extStarted, extBusy;
+    ExtensionPopup extPopup;
     bool updateReady, updateBusy;
     readonly System.Windows.Forms.Timer spin = new() { Interval = 40 };
     readonly Font iconFont, iconSmall;
@@ -668,6 +887,8 @@ class BrowserForm : Form
         histPath = Path.Combine(dataDir, "historique.txt");
         settingsPath = Path.Combine(dataDir, "reglages.txt");
         homeDir = Path.Combine(dataDir, "accueil");
+        extDir = Path.Combine(dataDir, "extensions");
+        extListPath = Path.Combine(dataDir, "extensions.txt");
 
         LoadSettings();
         favorites.AddRange(ReadPairs(favPath));
@@ -693,6 +914,7 @@ class BrowserForm : Form
         reloadBtn = Btn(Glyphs.Refresh, "Actualiser (F5)", () => { if (Cur?.Loading == true) Core?.Stop(); else Core?.Reload(); });
         homeBtn = Btn(Glyphs.Home, "Page d'accueil", () => Core?.Navigate(HomeUrl));
         menuBtn = Btn(Glyphs.More, "Menu : favoris, historique, moteur de recherche, thème…", ShowMenu);
+        extBtn = Btn("", "Extensions (NordPass, TrendTrack…)", ShowExtensionsMenu);
 
         addr = new AddressBox(iconFont, iconSmall, new Font("Segoe UI", 10.5f));
         addr.Star.Click += (_, _) => ToggleFavorite();
@@ -722,7 +944,7 @@ class BrowserForm : Form
         tip.SetToolTip(updatePill, "Une nouvelle version a été installée. Clique pour relancer LiteBrowser.");
         updatePill.Click += (_, _) => { Program.RestartRequested = true; Close(); };
 
-        toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, menuBtn });
+        toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, extBtn, menuBtn });
         toolbar.Resize += (_, _) => LayoutToolbar();
         toolbar.Paint += (_, e) =>
         {
@@ -810,7 +1032,8 @@ class BrowserForm : Form
         int h = toolbar.Height, b = S(34), y = (h - b) / 2, x = S(8);
         foreach (var btn in new[] { backBtn, fwdBtn, reloadBtn, homeBtn }) { btn.SetBounds(x, y, b, b); x += b + S(2); }
         menuBtn.SetBounds(toolbar.Width - S(8) - b, y, b, b);
-        int right = menuBtn.Left - S(8);
+        extBtn.SetBounds(menuBtn.Left - S(2) - b, y, b, b);
+        int right = extBtn.Left - S(8);
         if (updatePill.Visible)
         {
             int pw = updatePill.PreferredWidth, ph = S(30);
@@ -843,6 +1066,7 @@ class BrowserForm : Form
             "--disable-domain-reliability --disable-breakpad --no-pings " +
             "--renderer-process-limit=3 " +
             "--disable-features=Translate,msSmartScreenProtection,msEdgeShoppingAssistant,AutofillServerCommunication");
+        opts.AreBrowserExtensionsEnabled = true;
 
         env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(dataDir, "WebView2"), opts);
     }
@@ -953,6 +1177,13 @@ class BrowserForm : Form
         if (forceDark) { try { await ApplyForceDark(t); } catch { } }
         core.Navigate(url ?? HomeUrl);
         if (t == Cur) UpdateUi();
+
+        if (!extStarted)
+        {
+            extStarted = true;
+            profile = core.Profile;
+            _ = LoadExtensionsAsync();
+        }
     }
 
     void SelectTab(int i)
@@ -1066,7 +1297,7 @@ class BrowserForm : Form
         strip.Invalidate();
         toolbar.BackColor = theme.Bar;
         content.BackColor = theme.Bar;
-        foreach (var b in new[] { backBtn, fwdBtn, reloadBtn, homeBtn, menuBtn })
+        foreach (var b in new[] { backBtn, fwdBtn, reloadBtn, homeBtn, menuBtn, extBtn })
         {
             b.Theme = theme;
             b.BackColor = theme.Bar;
@@ -1256,6 +1487,254 @@ class BrowserForm : Form
         SaveList(favPath, favorites);
         UpdateUi();
         RefreshHomeTabs();
+    }
+
+    // ---------- Extensions ----------
+
+    List<(string StoreId, string RuntimeId)> ReadExtList()
+    {
+        if (!File.Exists(extListPath))
+            return Extensions.Defaults.Select(d => (d.StoreId, (string)null)).ToList();
+        var list = new List<(string, string)>();
+        try
+        {
+            foreach (var l in File.ReadAllLines(extListPath))
+            {
+                var p = l.Split('\t');
+                if (p[0].Length == 32) list.Add((p[0], p.Length > 1 && p[1].Length > 0 ? p[1] : null));
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    void SaveExtList()
+    {
+        try { File.WriteAllLines(extListPath, extensions.Select(e => e.StoreId + "\t" + e.RuntimeId)); } catch { }
+    }
+
+    async Task LoadExtensionsAsync()
+    {
+        if (profile == null) return;
+        extBusy = true;
+        try
+        {
+            IReadOnlyList<CoreWebView2BrowserExtension> installed;
+            try { installed = await profile.GetBrowserExtensionsAsync(); }
+            catch { installed = Array.Empty<CoreWebView2BrowserExtension>(); }
+
+            foreach (var (storeId, rid) in ReadExtList())
+            {
+                var e = new ExtInfo { StoreId = storeId, RuntimeId = rid, Folder = Path.Combine(extDir, storeId) };
+                extensions.Add(e);
+                await SetupExtension(e, installed);
+            }
+            SaveExtList();
+        }
+        finally { extBusy = false; }
+    }
+
+    /// Télécharge l'extension si besoin, la charge dans le moteur et lit son popup / icône.
+    async Task SetupExtension(ExtInfo e, IReadOnlyList<CoreWebView2BrowserExtension> installed)
+    {
+        var defaultName = Extensions.Defaults.FirstOrDefault(d => d.StoreId == e.StoreId).Name;
+        try
+        {
+            if (!File.Exists(Path.Combine(e.Folder, "manifest.json")))
+                await Extensions.DownloadAsync(e.StoreId, e.Folder);
+
+            var ext = installed?.FirstOrDefault(x => x.Id == e.RuntimeId);
+            if (ext == null)
+            {
+                try { ext = await profile.AddBrowserExtensionAsync(e.Folder); }
+                catch
+                {
+                    // déjà chargée sous un autre identifiant : on la retrouve par son nom
+                    var all = await profile.GetBrowserExtensionsAsync();
+                    ext = all.FirstOrDefault(x => defaultName != null && x.Name != null &&
+                                                  x.Name.Contains(defaultName, StringComparison.OrdinalIgnoreCase));
+                    if (ext == null) throw;
+                }
+            }
+            e.RuntimeId = ext.Id;
+            e.Enabled = ext.IsEnabled;
+            e.Name = defaultName ?? ext.Name;
+            e.Error = null;
+        }
+        catch (Exception ex)
+        {
+            e.Error = ex.Message;
+            e.Name ??= defaultName ?? "Extension";
+        }
+        Extensions.ReadManifest(e);
+    }
+
+    void StyleDropDowns(ToolStripItemCollection items, ToolStripRenderer r, Font f)
+    {
+        foreach (var it in items.OfType<ToolStripMenuItem>().Where(x => x.HasDropDownItems))
+        {
+            var dd = (ToolStripDropDownMenu)it.DropDown;
+            dd.Renderer = r;
+            dd.Font = f;
+            dd.ShowItemToolTips = true;
+            dd.ImageScalingSize = new Size(S(20), S(20));
+            StyleDropDowns(it.DropDownItems, r, f);
+        }
+    }
+
+    void ShowExtensionsMenu()
+    {
+        lastMenu?.Dispose();
+        var r = new MenuRenderer(theme, iconSmall);
+        var font = new Font("Segoe UI", 9.5f);
+        var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true, ImageScalingSize = new Size(S(20), S(20)) };
+        lastMenu = m;
+
+        if (extBusy) m.Items.Add(new ToolStripMenuItem("Installation des extensions en cours…") { Enabled = false });
+        foreach (var e in extensions)
+        {
+            var ext = e;
+            var label = ext.Name + (ext.Error != null ? "  (erreur, cliquer pour réessayer)" : !ext.Enabled ? "  (désactivée)" : "");
+            var it = MI(label, () => OpenExtPopup(ext));
+            it.Image = ext.Icon;
+            it.Enabled = ext.Error != null || (ext.Enabled && ext.RuntimeId != null && ext.Popup != null);
+            m.Items.Add(it);
+        }
+        if (extensions.Count == 0 && !extBusy) m.Items.Add(new ToolStripMenuItem("(aucune extension)") { Enabled = false });
+
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(MI("Ajouter une extension du Chrome Web Store…", AddExtensionPrompt));
+
+        var manage = MI("Gérer les extensions");
+        foreach (var e in extensions)
+        {
+            var ext = e;
+            var sub = MI(ext.Name);
+            sub.Image = ext.Icon;
+            var openTab = MI("Ouvrir dans un onglet", () => _ = NewTab($"chrome-extension://{ext.RuntimeId}/{ext.Popup}"));
+            openTab.Enabled = ext.Enabled && ext.RuntimeId != null && ext.Popup != null;
+            sub.DropDownItems.Add(openTab);
+            var toggle = MI(ext.Enabled ? "Désactiver" : "Activer", () => _ = ToggleExtension(ext));
+            toggle.Enabled = ext.RuntimeId != null;
+            sub.DropDownItems.Add(toggle);
+            sub.DropDownItems.Add(MI("Réinstaller (dernière version)", () => _ = ReinstallExtension(ext)));
+            sub.DropDownItems.Add(MI("Retirer", () => _ = RemoveExtension(ext)));
+            manage.DropDownItems.Add(sub);
+        }
+        manage.Enabled = extensions.Count > 0;
+        m.Items.Add(manage);
+
+        StyleDropDowns(m.Items, r, font);
+        m.Show(extBtn, new Point(extBtn.Width, extBtn.Height + S(4)), ToolStripDropDownDirection.BelowLeft);
+    }
+
+    void OpenExtPopup(ExtInfo e)
+    {
+        if (e.Error != null)
+        {
+            var retry = MessageBox.Show(this, $"{e.Name} n'a pas pu être installée :\n{e.Error}\n\nRéessayer ?",
+                "Extensions", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (retry == DialogResult.Yes) _ = ReinstallExtension(e);
+            return;
+        }
+        if (e.RuntimeId == null || e.Popup == null || env == null) return;
+        if (extPopup is { IsDisposed: false }) extPopup.Close();
+        var anchor = extBtn.RectangleToScreen(extBtn.ClientRectangle);
+        extPopup = new ExtensionPopup(env, $"chrome-extension://{e.RuntimeId}/{e.Popup}", anchor, theme, u => _ = NewTab(u));
+        extPopup.Show(this);
+    }
+
+    async Task<CoreWebView2BrowserExtension> FindExtension(ExtInfo e)
+    {
+        if (profile == null || e.RuntimeId == null) return null;
+        try { return (await profile.GetBrowserExtensionsAsync()).FirstOrDefault(x => x.Id == e.RuntimeId); }
+        catch { return null; }
+    }
+
+    async Task ToggleExtension(ExtInfo e)
+    {
+        var ext = await FindExtension(e);
+        if (ext == null) return;
+        bool target = !e.Enabled;
+        try { await ext.EnableAsync(target); e.Enabled = target; }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Extensions", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+    }
+
+    async Task RemoveExtension(ExtInfo e)
+    {
+        var ok = MessageBox.Show(this, $"Retirer {e.Name} ?", "Extensions", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (ok != DialogResult.Yes) return;
+        var ext = await FindExtension(e);
+        try { if (ext != null) await ext.RemoveAsync(); } catch { }
+        extensions.Remove(e);
+        SaveExtList();
+        try { Directory.Delete(e.Folder, true); } catch { }
+    }
+
+    async Task ReinstallExtension(ExtInfo e)
+    {
+        if (profile == null || extBusy) return;
+        extBusy = true;
+        try
+        {
+            var ext = await FindExtension(e);
+            try { if (ext != null) await ext.RemoveAsync(); } catch { }
+            e.RuntimeId = null;
+            try { await Extensions.DownloadAsync(e.StoreId, e.Folder); }
+            catch (Exception ex) { e.Error = ex.Message; }
+            if (e.Error == null || File.Exists(Path.Combine(e.Folder, "manifest.json"))) await SetupExtension(e, null);
+            SaveExtList();
+        }
+        finally { extBusy = false; }
+        MessageBox.Show(this, e.Error == null ? $"{e.Name} est installée et à jour." : $"Échec : {e.Error}",
+            "Extensions", MessageBoxButtons.OK, e.Error == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    void AddExtensionPrompt()
+    {
+        if (profile == null) return;
+        var src = Core?.Source ?? "";
+        string id = src.Contains("chromewebstore.google.com") || src.Contains("chrome.google.com/webstore")
+            ? Extensions.ParseStoreId(src) : null;
+
+        if (id != null)
+        {
+            var ok = MessageBox.Show(this, "Ajouter l'extension de cette page à LiteBrowser ?", "Extensions",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (ok != DialogResult.Yes) return;
+        }
+        else
+        {
+            var text = Prompt.Show(this, "Ajouter une extension",
+                "Colle le lien de l'extension sur le Chrome Web Store\n(ex. https://chromewebstore.google.com/detail/…)", theme);
+            if (text == null) return;
+            id = Extensions.ParseStoreId(text);
+            if (id == null)
+            {
+                MessageBox.Show(this, "Ce lien n'est pas reconnu. Copie l'adresse de la page de l'extension sur le Chrome Web Store.",
+                    "Extensions", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+        }
+        if (extensions.Any(e => e.StoreId == id))
+        {
+            MessageBox.Show(this, "Cette extension est déjà installée.", "Extensions", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        _ = AddExtension(id);
+    }
+
+    async Task AddExtension(string id)
+    {
+        var e = new ExtInfo { StoreId = id, Folder = Path.Combine(extDir, id) };
+        extensions.Add(e);
+        extBusy = true;
+        try { await SetupExtension(e, null); SaveExtList(); }
+        finally { extBusy = false; }
+        MessageBox.Show(this,
+            e.Error == null ? $"« {e.Name} » est installée. Clique sur le bouton Extensions (pièce de puzzle) pour l'ouvrir."
+                            : $"Impossible d'installer cette extension :\n{e.Error}",
+            "Extensions", MessageBoxButtons.OK, e.Error == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     // ---------- Menu ☰ ----------
