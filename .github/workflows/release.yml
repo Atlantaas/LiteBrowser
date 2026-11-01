@@ -71,6 +71,7 @@ jobs:
           if (-not $r.multiReady) { $fail += "page multistream" }
           if ($r.multiTiles -ne "2") { $fail += "lecteurs du multistream ($($r.multiTiles))" }
           if ([int]$r.homeLiveCards -lt 1) { $fail += "section Lives" }
+          if (@($r.m8Matches).Count -gt 0 -and [int]$r.homeMatchRows -lt 1) { $fail += "matchs sur l'accueil" }
           if ($fail.Count) { throw ("Échecs : " + ($fail -join ", ")) }
           Write-Host "Test de bout en bout : OK"
 

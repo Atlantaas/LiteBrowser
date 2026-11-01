@@ -1138,7 +1138,18 @@ class BrowserForm : Form
         };
 
         // Fenêtres ouvertes par la page (connexion Google/Discord, paiement…) : un vrai onglet relié à la page d'origine
-        core.NewWindowRequested += (_, e) => { var d = e.GetDeferral(); _ = NewTab(e.Uri, e, d); };
+        core.NewWindowRequested += (_, e) =>
+        {
+            // Une page d'extension déjà ouverte (ex. accueil de NordPass) est remise au premier plan, pas dupliquée
+            if (e.Uri.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase))
+            {
+                var page = e.Uri.Split('#')[0];
+                int same = tabs.FindIndex(x => x.View.CoreWebView2?.Source?.Split('#')[0] == page);
+                if (same >= 0) { e.Handled = true; BeginInvoke(new Action(() => SelectTab(same))); return; }
+            }
+            var d = e.GetDeferral();
+            _ = NewTab(e.Uri, e, d);
+        };
         // window.close() : comme dans Chrome, seulement pour un onglet ouvert par un script (popup de connexion…)
         core.WindowCloseRequested += (_, _) => { if (t.OpenedByScript) BeginInvoke(new Action(() => CloseTab(tabs.IndexOf(t)))); };
 
@@ -1971,6 +1982,7 @@ class BrowserForm : Form
                 .Select(m => $"{m.Game} vs {m.OpponentShort} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u} {m.Status} – {m.Tournament}").ToList();
             r["m8Tournaments"] = m8.Tournaments.Select(t => $"{t.Game}: {t.Name} ({t.When})").ToList();
             home = HomeCore() ?? home;
+            await Task.Delay(1500); // laisse la page afficher les matchs reçus
             r["homeMatchRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.match').length)"));
             SelectTab(Math.Max(0, tabs.FindIndex(x => x.View.CoreWebView2 != null && IsHome(x.View.CoreWebView2.Source))));
             await Task.Delay(1500);

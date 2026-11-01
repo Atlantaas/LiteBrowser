@@ -14,6 +14,14 @@ puis **se met à jour automatiquement** à chaque nouvelle version publiée ici.
 - Services de fond coupés : sync, traduction, télémétrie, shopping Edge…
 
 ## Fonctions
+- **Édition Gentle Mates** : thème noir M8, page d'accueil fan
+- **Centre de matchs M8** (Valorant, Game Changers, Call of Duty, Warzone, Rocket League, Fortnite, Age of Empires) depuis Liquipedia,
+  alerte Windows avant le match (réglable) et au coup d'envoi, bouton **Regarder** (co-stream M8 en live, sinon diffusion officielle)
+- **Lives** : tes chaînes Twitch / Kick / YouTube, qui est en live, alerte quand un favori lance son live (reprises de Nur Live si installé)
+- **Multistream** : jusqu'à 9 lives dans un onglet, dispositions (grille, grand + bande, grand + colonne, un seul),
+  son principal ou mixage, chat, mode cinéma — touches 1-9, [ ], M, G, C, T, F
+- **Horaires de prière** selon ta ville (Aladhan), prochaine prière dans la barre, notification à l'heure
+- Bloqueur de pubs (sites + YouTube), extensions Chrome (NordPass, TrendTrack…)
 - Onglets, page d'accueil avec recherche et raccourcis vers tes sites
 - Choix du moteur : Google, DuckDuckGo, Bing, Qwant, Ecosia
 - Favoris (Ctrl+D), historique, suggestions dans la barre d'adresse
