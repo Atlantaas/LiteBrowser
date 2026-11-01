@@ -1957,6 +1957,17 @@ class BrowserForm : Form
                     try { core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "added", id = existing.Id })); } catch { }
                     _ = RefreshStatus();
                     break;
+                case "searchChannels":
+                    var sq = Str("q");
+                    _ = Task.Run(async () =>
+                    {
+                        var hits = await ChannelSearch.SearchAsync(sq);
+                        BeginInvoke(() =>
+                        {
+                            try { core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "channelHits", q = sq, hits })); } catch { }
+                        });
+                    });
+                    break;
                 case "removeChannel": channels.RemoveAll(c => c.Id == Str("id")); SaveChannels(); SyncNlFromHost(); RefreshLocalPages(); break;
                 case "toggleFav":
                     if (channels.FirstOrDefault(c => c.Id == Str("id")) is Channel cf) { cf.Fav = !cf.Fav; SaveChannels(); SyncNlFromHost(); RefreshLocalPages(); }
@@ -2186,6 +2197,9 @@ class BrowserForm : Form
                             body = picked.CoStream ? "En live : " + string.Join(", ", picked.Ids.Select(x => x.Split(':')[1])) : "Aucune chaîne M8 en live pour l'instant.",
                         },
                     };
+                    break;
+                case "search":
+                    result = await ChannelSearch.SearchAsync(Arg(0), channels.Where(c => c.Platform == "twitch").Select(c => c.Key));
                     break;
                 case "pickEvent": result = null; break;
                 case "testAlert": Notify("LiteBrowser : test d'alerte", "Les alertes Windows fonctionnent. Tu seras prévenu avant chaque match M8."); break;

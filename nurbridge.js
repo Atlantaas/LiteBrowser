@@ -140,7 +140,7 @@
       if (found.length) dispatch({ type: "addSources", sources: found, start: !!start });
       return { snapshot: snap(), added: found.map(Sources.sourceId), bad };
     },
-    search: async () => [],
+    search: async (q) => { const r = await rpc("search", [String(q || "")]); return Array.isArray(r) ? r : []; },
     refresh: async () => { await rpc("refresh"); return snap(); },
     matches: async (force) => { await rpc("matches", [force !== false]); return snap(); },
     watchMatch: async (id) => {

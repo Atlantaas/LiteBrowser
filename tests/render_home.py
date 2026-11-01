@@ -93,6 +93,22 @@ with sync_playwright() as p:
         check(f"[{theme} {w}px] 6 horaires de prière", page.locator(".prow").count() == 6)
         check(f"[{theme} {w}px] prochaine prière affichée", page.locator(".next .name").count() == 1)
         check(f"[{theme} {w}px] pas de défilement horizontal", page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))
+        # suggestions de chaînes pendant la frappe
+        page.click("#lvin")
+        page.keyboard.type("gota")
+        page.wait_for_timeout(450)
+        check(f"[{theme} {w}px] la saisie demande des suggestions", page.evaluate("window.__posted.some(m => m.type === 'searchChannels' && m.q === 'gota')"))
+        page.evaluate("""__send({ type: 'channelHits', q: 'gota', hits: [
+          { platform: 'twitch', key: 'gotagatv', name: 'GotagaTV', avatar: '', live: true, viewers: 18300, game: 'Call of Duty', followers: 0 },
+          { platform: 'twitch', key: 'gotagalegends', name: 'gotagalegends', avatar: '', live: false, viewers: 0, game: '', followers: 1520 },
+          { platform: 'twitch', key: 'squeezie', name: 'Squeezie', avatar: '', live: true, viewers: 5, game: '', followers: 0 }]})""")
+        check(f"[{theme} {w}px] 2 suggestions (chaîne déjà suivie masquée)", page.locator(".lv-s").count() == 2)
+        check(f"[{theme} {w}px] suggestion en live : viewers + jeu", "18,3 k" in page.locator(".lv-s").first.inner_text() and "Call of Duty" in page.locator(".lv-s").first.inner_text())
+        check(f"[{theme} {w}px] suggestion hors live : abonnés", "1,5 k abonnés" in page.locator(".lv-s").nth(1).inner_text())
+        page.screenshot(path=str(out / f"home_sugg_{theme}_{w}.png"))
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+        check(f"[{theme} {w}px] ↓ + Entrée ajoute la suggestion", page.evaluate("window.__posted.some(m => m.type === 'addChannel' && m.input === 'gotagatv')") and page.locator("#lvsugg").is_hidden())
         check(f"[{theme} {w}px] aucune erreur JavaScript", not errors)
         page.fill("#q", "gentle mates valorant")
         page.press("#q", "Enter")

@@ -88,6 +88,16 @@ select option{background:var(--card);color:var(--text)}
 .lv-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .lv-tools input{background:var(--card2);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:7px 12px;font-family:inherit;font-size:13px;outline:0;width:200px}
 .lv-tools input:focus{border-color:var(--accent)}
+.lv-in{position:relative}
+.lv-sugg{position:absolute;right:0;top:calc(100% + 6px);width:290px;max-width:80vw;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:5px;z-index:20;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.lv-sugg[hidden]{display:none}
+.lv-s{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:9px;cursor:pointer}
+.lv-s:hover,.lv-s.on{background:var(--card2)}
+.lv-s img,.lv-s .av{width:30px;height:30px;border-radius:50%;flex:none;background:var(--card2);object-fit:cover}
+.lv-s .t{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.25}
+.lv-s .t b{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-s .t span{font-size:11.5px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-s .lb{font-size:10px;font-weight:700;color:#fff;background:#e5484d;border-radius:5px;padding:2px 5px;flex:none}
 .chs{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px}
 .ch{display:flex;gap:10px;align-items:center;padding:10px;border-radius:12px;background:var(--card2);border:1px solid transparent;cursor:pointer;position:relative;min-width:0}
 .ch:hover{border-color:var(--line)}
@@ -197,7 +207,7 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
       <form class="lv-tools" id="lvadd" autocomplete="off">
         <button type="button" class="btn" id="lvfilter" title="Afficher seulement les chaînes en live">Tous</button>
         <button type="button" class="btn main" id="lvall" title="Ouvrir toutes les chaînes en live dans le multistream">Tout regarder</button>
-        <input id="lvin" placeholder="+ Ajouter (nom Twitch ou lien)">
+        <span class="lv-in"><input id="lvin" placeholder="+ Ajouter (nom Twitch ou lien)"><div class="lv-sugg" id="lvsugg" hidden></div></span>
       </form>
     </div>
     <div class="chs" id="chs"></div>
@@ -333,8 +343,52 @@ $('lvall').addEventListener('click', () => {
   const ids = (state.channels || []).filter(c => c.live === true).sort((a, b) => (b.fav - a.fav) || (b.viewers - a.viewers)).slice(0, 6).map(c => c.id);
   if (ids.length) post({ type: 'watch', ids });
 });
+// suggestions de chaînes pendant la frappe
+let sugg = [], suggSel = -1, suggTimer = 0;
+const fmtN = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.', ',') + ' M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e5 ? 0 : 1).replace('.', ',') + ' k' : String(n || 0);
+function hideSugg() { sugg = []; suggSel = -1; $('lvsugg').hidden = true; }
+function renderSugg() {
+  const known = new Set((state.channels || []).map(c => c.id));
+  const list = sugg.filter(h => !known.has('twitch:' + h.key)).slice(0, 6);
+  if (!list.length || document.activeElement !== $('lvin')) { $('lvsugg').hidden = true; return; }
+  $('lvsugg').innerHTML = list.map((h, i) => `<div class="lv-s${i === suggSel ? ' on' : ''}" data-key="${esc(h.key)}">` +
+    (h.avatar ? `<img src="${esc(h.avatar)}" alt="">` : '<span class="av"></span>') +
+    `<div class="t"><b>${esc(h.name)}</b><span>${h.live ? 'En live · ' + fmtN(h.viewers) + (h.game ? ' · ' + esc(h.game) : '') : fmtN(h.followers) + ' abonnés'}</span></div>` +
+    (h.live ? '<b class="lb">LIVE</b>' : '') + '</div>').join('');
+  $('lvsugg').hidden = false;
+}
+function pickSugg(key) {
+  $('lverr').textContent = '';
+  post({ type: 'addChannel', input: key, fav: true });
+  $('lvin').value = ''; hideSugg();
+}
+$('lvin').addEventListener('input', () => {
+  clearTimeout(suggTimer);
+  const q = $('lvin').value.trim();
+  if (q.length < 2 || /[\s,;:/.]/.test(q)) { hideSugg(); return; }
+  suggTimer = setTimeout(() => post({ type: 'searchChannels', q }), 280);
+});
+$('lvin').addEventListener('keydown', e => {
+  const n = $('lvsugg').querySelectorAll('.lv-s').length;
+  if (!n || $('lvsugg').hidden) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    suggSel = (suggSel + (e.key === 'ArrowDown' ? 1 : n - 1) + (suggSel < 0 && e.key === 'ArrowUp' ? 1 : 0)) % n;
+    renderSugg();
+  } else if (e.key === 'Enter' && suggSel >= 0) {
+    e.preventDefault();
+    pickSugg($('lvsugg').querySelectorAll('.lv-s')[suggSel].dataset.key);
+  } else if (e.key === 'Escape') hideSugg();
+});
+$('lvin').addEventListener('blur', () => setTimeout(() => { $('lvsugg').hidden = true; }, 150));
+$('lvin').addEventListener('focus', renderSugg);
+$('lvsugg').addEventListener('mousedown', e => {
+  const r = e.target.closest('.lv-s'); if (!r) return;
+  e.preventDefault(); pickSugg(r.dataset.key);
+});
 $('lvadd').addEventListener('submit', e => {
   e.preventDefault();
+  hideSugg();
   const v = $('lvin').value.trim(); if (!v) return;
   $('lverr').textContent = '';
   post({ type: 'addChannel', input: v, fav: true });
@@ -385,6 +439,10 @@ function renderTiles() {
 function render(d) {
   if (d.type === 'error') { $('lverr').textContent = d.text; return; }
   if (d.type === 'added') return;
+  if (d.type === 'channelHits') {
+    if (d.q === $('lvin').value.trim()) { sugg = d.hits || []; suggSel = -1; renderSugg(); }
+    return;
+  }
   const first = !state;
   state = Object.assign(state || {}, d);
   document.body.classList.remove('dark', 'light', 'm8');

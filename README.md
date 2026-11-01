@@ -21,6 +21,7 @@ puis **se met à jour automatiquement** à chaque nouvelle version publiée ici.
 - **Multistream Nur Live** : si l'appli Nur Live est sur ton PC, son interface s'ouvre directement dans un onglet
   (Ctrl+Maj+M) avec tes chaînes, ton compte Twitch, les volumes par live et les matchs M8 — sinon un multistream intégré
   (jusqu'à 9 lives, dispositions, son principal ou mixage, chat, mode cinéma)
+- **Suggestions de chaînes** pendant la frappe (accueil et multistream) : avatar, live, viewers, abonnés
 - **Compte Twitch** : Nur Live → Twitch → « Se connecter » (connexion sur twitch.tv dans un onglet, reprise automatiquement)
 - **Horaires de prière** : calcul selon ta ville (Aladhan) **ou les horaires de ta mosquée** (Mawaqit), ajustement
   ± minutes par prière, Jumu'a, prochaine prière dans la barre, notification à l'heure — clic sur l'horaire pour régler

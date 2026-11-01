@@ -32,6 +32,7 @@ static class Program
         Extensions();
         M8Tests();
         ChannelTests();
+        SearchTests();
         NurLiveTests();
         PrayerParsing();
         YouTube();
@@ -399,8 +400,32 @@ static class Program
     }
 
     // ------------------------------------------------------------------
+    static void SearchTests()
+    {
+        Section("Suggestions de chaînes");
+        var a = ChannelSearch.Candidates("gota");
+        Check("« gota » → gota (tel quel) puis gotaga", a.Count >= 2 && a[0] == "gota" && a.Contains("gotaga"), string.Join(",", a));
+        var b = ChannelSearch.Candidates("squ");
+        Check("« squ » → squeezie proposé", b.Contains("squeezie"), string.Join(",", b));
+        Check("« ge » (trop court pour un pseudo) → suggestions par préfixe", ChannelSearch.Candidates("ge").Contains("gentlemates"));
+        Check("1 lettre → rien", ChannelSearch.Candidates("g").Count == 0);
+        Check("lien twitch.tv/Gotaga → gotaga en premier", ChannelSearch.Candidates("https://twitch.tv/Gotaga")[0] == "gotaga");
+        Check("au plus 5 candidats", ChannelSearch.Candidates("a").Count == 0 && ChannelSearch.Candidates("an").Count <= 5);
+        Check("tes chaînes sont aussi proposées", ChannelSearch.Candidates("zzmonpote", new[] { "zzmonpote_tv" }).Contains("zzmonpote_tv"));
+        var bridge = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "nurbridge.js"));
+        Check("Nur Live : la recherche passe par le navigateur", bridge.Contains("rpc(\"search\""));
+    }
+
     static async Task Online()
     {
+        Section("En ligne : recherche de chaînes");
+        var hits = await ChannelSearch.SearchAsync("gotag");
+        Check("« gotag » → Gotaga trouvé avec avatar", hits.Any(h => h.Key == "gotaga" && h.Avatar?.StartsWith("https://") == true),
+            string.Join(",", hits.Select(h => h.Key)));
+        Check("pseudo inexistant écarté", !hits.Any(h => h.Key == "gotag" && h.Avatar == null));
+        var g = hits.FirstOrDefault(h => h.Key == "gotaga");
+        Check("Gotaga : live (viewers) ou abonnés", g != null && (g.Live ? g.Viewers > 0 : g.Followers > 1000), g == null ? "" : $"live={g.Live} v={g.Viewers} f={g.Followers}");
+
         Section("En ligne : extensions réelles");
         foreach (var (name, id) in new[] { ("NordPass", "eiaeiblijfjekdanodkjadfinkhbfgcd"), ("TrendTrack", "cncdmciajmaojninbopinpijdodjgfpd") })
         {

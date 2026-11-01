@@ -576,6 +576,97 @@ namespace LiteCore
         };
     }
 
+    /// Suggestion de chaîne (même forme que la recherche de Nur Live).
+    public class SearchHit
+    {
+        [JsonPropertyName("platform")] public string Platform { get; set; } = "twitch";
+        [JsonPropertyName("key")] public string Key { get; set; }
+        [JsonPropertyName("name")] public string Name { get; set; }
+        [JsonPropertyName("avatar")] public string Avatar { get; set; }
+        [JsonPropertyName("live")] public bool Live { get; set; }
+        [JsonPropertyName("viewers")] public int Viewers { get; set; }
+        [JsonPropertyName("game")] public string Game { get; set; }
+        [JsonPropertyName("followers")] public int Followers { get; set; }
+    }
+
+    /// Recherche de chaînes Twitch : le nom tapé + une liste de streameurs connus (FR, M8, esport),
+    /// vérifiés et complétés via DecAPI (avatar, live, viewers, abonnés). Les noms inexistants sont écartés.
+    public static class ChannelSearch
+    {
+        public static readonly string[] Known =
+        {
+            "gentlemates", "gotaga", "squeezie", "brawks", "kamet0", "zerator", "mistermv", "domingo", "ponce",
+            "antoinedaniel", "inoxtag", "michou", "locklear", "joueur_du_grenier", "sardoche", "rivenzi", "aminematue",
+            "kaatsup", "maghla", "baghera", "gom4rt", "etoiles", "deujna", "solary", "jltomy", "tonton", "chowh1",
+            "kennystream", "lebouseuh", "ultia", "byilhann", "doigby", "fukano", "skyyart", "pfut", "mynthos",
+            "wankilstudio", "laink", "terracid", "jeelpatate", "horty", "billy", "cinna", "maxildan", "rebeudeter",
+            "lestream", "karminecorp", "vitality", "valorant", "valorant_emea", "valorant_fr", "callofduty",
+            "rocketleague", "fortnite", "ageofempires", "riotgames", "otplol_", "zackrawrr", "ibai", "kaicenat",
+            "xqc", "tarik", "shroud", "tenz", "nadeshot", "scump", "aceu", "tfue", "bugha", "mongraal", "lirik",
+        };
+
+        /// Candidats triés : nom exact tapé, puis noms qui commencent par la saisie, puis qui la contiennent.
+        public static List<string> Candidates(string query, IEnumerable<string> extra = null, int max = 5)
+        {
+            var q = Channels.TwitchLogin(query) ?? Regex.Replace((query ?? "").Trim().ToLowerInvariant(), "[^a-z0-9_]", "");
+            if (q.Length < 2) return new List<string>();
+            var pool = Known.Concat(extra ?? Enumerable.Empty<string>()).Select(x => (x ?? "").ToLowerInvariant())
+                .Where(x => x.Length > 0).Distinct().ToList();
+            var outp = new List<string>();
+            if (Regex.IsMatch(q, "^[a-z0-9_]{3,25}$")) outp.Add(q);
+            outp.AddRange(pool.Where(x => x != q && x.StartsWith(q)).OrderBy(x => x.Length));
+            outp.AddRange(pool.Where(x => x != q && !x.StartsWith(q) && x.Contains(q)).OrderBy(x => x.Length));
+            return outp.Distinct().Take(max).ToList();
+        }
+
+        static readonly Dictionary<string, (DateTime At, SearchHit Hit)> Cache = new();
+        const string DecApi = "https://decapi.me/twitch/";
+
+        static async Task<string> Get(HttpClient http, string path)
+        {
+            try { return (await http.GetStringAsync(DecApi + path)).Trim(); } catch { return null; }
+        }
+
+        static async Task<SearchHit> One(HttpClient http, string login)
+        {
+            lock (Cache)
+                if (Cache.TryGetValue(login, out var c) && DateTime.UtcNow - c.At < TimeSpan.FromMinutes(5)) return c.Hit;
+            var avatar = await Get(http, "avatar/" + login);
+            SearchHit hit = null;
+            if (avatar != null && avatar.StartsWith("https://"))
+            {
+                hit = new SearchHit { Key = login, Name = login, Avatar = avatar };
+                var live = LiveStatus.ParseUptime(await Get(http, "uptime/" + login)) == true;
+                hit.Live = live;
+                if (live)
+                {
+                    int.TryParse(await Get(http, "viewercount/" + login), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v);
+                    hit.Viewers = v;
+                    hit.Game = await Get(http, "game/" + login) ?? "";
+                }
+                else
+                {
+                    int.TryParse(await Get(http, "followcount/" + login), NumberStyles.Integer, CultureInfo.InvariantCulture, out var f);
+                    hit.Followers = f;
+                }
+            }
+            else if (avatar == null) return null; // réseau : on ne met pas en cache
+            lock (Cache) Cache[login] = (DateTime.UtcNow, hit);
+            return hit;
+        }
+
+        public static async Task<List<SearchHit>> SearchAsync(string query, IEnumerable<string> extra = null)
+        {
+            var cands = Candidates(query, extra);
+            if (cands.Count == 0) return new List<SearchHit>();
+            using var http = Net.Client(TimeSpan.FromSeconds(8));
+            var res = await Task.WhenAll(cands.Select(c => One(http, c)));
+            // en live d'abord, puis l'ordre de pertinence
+            return res.Select((h, i) => (h, i)).Where(x => x.h != null)
+                .OrderByDescending(x => x.h.Live).ThenBy(x => x.i).Select(x => x.h).ToList();
+        }
+    }
+
     public static class LiveStatus
     {
         // Statut Twitch via DecAPI (service public : https://decapi.me), sans identifiant ni clé.
