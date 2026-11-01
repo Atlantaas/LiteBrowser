@@ -677,4 +677,66 @@ namespace LiteCore
             return chosen.Count > 0 ? chosen : wanted.Take(1).ToList();
         }
     }
+
+    // ==================================================================
+    //  Nur Live : interface chargée depuis le dossier de l'appli, branchée sur le navigateur
+    // ==================================================================
+    public static class NurLive
+    {
+        public const string Host = "nurlive.home";
+        public const string Url = "https://nurlive.home/index.html";
+        const string ParentsLine = "const PARENTS = [\"127.0.0.1\", \"localhost\"];";
+
+        /// Dossiers où chercher Nur Live (réglage, Bureau, Documents, OneDrive, dossier perso).
+        public static IEnumerable<string> Candidates(string configured)
+        {
+            if (!string.IsNullOrWhiteSpace(configured)) yield return configured;
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var bases = new[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                Path.Combine(home, "Desktop"), Path.Combine(home, "OneDrive", "Desktop"), Path.Combine(home, "OneDrive", "Bureau"),
+                home,
+            };
+            foreach (var b in bases.Where(x => !string.IsNullOrEmpty(x)).Distinct())
+                foreach (var name in new[] { "nur-live", "Nur Live", "nurlive" })
+                    yield return Path.Combine(b, name);
+        }
+
+        public static bool IsNurLive(string dir) =>
+            !string.IsNullOrEmpty(dir) &&
+            File.Exists(Path.Combine(dir, "ui", "index.html")) && File.Exists(Path.Combine(dir, "ui", "js", "app.js")) &&
+            File.Exists(Path.Combine(dir, "core", "model.js")) && File.Exists(Path.Combine(dir, "core", "sources.js"));
+
+        public static string FindFolder(IEnumerable<string> candidates) => candidates.FirstOrDefault(IsNurLive);
+
+        /// Les lecteurs Twitch n'acceptent que l'adresse de la page qui les affiche : on autorise la nôtre.
+        public static string PatchApp(string appJs)
+        {
+            if (appJs.Contains(ParentsLine)) return appJs.Replace(ParentsLine, "const PARENTS = [location.hostname];");
+            return Regex.Replace(appJs, @"const PARENTS = \[[^\]]*\];", "const PARENTS = [location.hostname];");
+        }
+
+        /// Copie l'interface de Nur Live dans le dossier du navigateur (rafraîchie à chaque démarrage).
+        public static void Prepare(string src, string dst)
+        {
+            var ui = Path.Combine(src, "ui");
+            if (Directory.Exists(dst)) Directory.Delete(dst, true);
+            foreach (var file in Directory.GetFiles(ui, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(ui, file);
+                if (rel.StartsWith("node_modules")) continue;
+                var target = Path.Combine(dst, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                File.Copy(file, target, true);
+            }
+            var app = Path.Combine(dst, "js", "app.js");
+            File.WriteAllText(app, PatchApp(File.ReadAllText(app)));
+        }
+
+        /// Pont « window.nur » avec les modules de Nur Live (sources, modèle) insérés tels quels.
+        public static string Bridge(string template, string sourcesJs, string modelJs) =>
+            template.Replace("/*__SOURCES__*/", sourcesJs).Replace("/*__MODEL__*/", modelJs);
+    }
 }

@@ -231,6 +231,8 @@ namespace LiteCore
         public DateTime Date;
         public string City;
         public string Hijri;
+        public string Jumua;      // heure de la Jumu'a (mosquée)
+        public string Source;     // « calcul » ou nom de la mosquée
         public List<(string Key, string Name, TimeSpan Time)> Times = new();
     }
 
@@ -256,6 +258,18 @@ namespace LiteCore
             "Mouharram", "Safar", "Rabi al-Awwal", "Rabi ath-Thani", "Joumada al-Oula", "Joumada ath-Thania",
             "Rajab", "Chaabane", "Ramadan", "Chawwal", "Dhou al-Qi'da", "Dhou al-Hijja",
         };
+
+        /// Date hégirienne en français (calendrier Umm al-Qura, ajustement en jours possible).
+        public static string HijriFr(DateTime date, int adjustDays = 0)
+        {
+            try
+            {
+                var cal = new UmAlQuraCalendar();
+                var d = date.Date.AddDays(adjustDays);
+                return $"{cal.GetDayOfMonth(d)} {HijriMonths[cal.GetMonth(d) - 1]} {cal.GetYear(d)}";
+            }
+            catch { return null; }
+        }
 
         public static string ApiUrl(DateTime date, double lat, double lon, int method) =>
             string.Format(CultureInfo.InvariantCulture,
@@ -329,6 +343,129 @@ namespace LiteCore
             using var http = Net.Client(TimeSpan.FromSeconds(15));
             var json = await http.GetStringAsync(ApiUrl(date, lat, lon, method));
             return Parse(json, date, city);
+        }
+    }
+
+    // ==================================================================
+    //  Horaires de la mosquée (page publique Mawaqit) et ajustements
+    // ==================================================================
+    public static class Mawaqit
+    {
+        static readonly string[] Keys = { "Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha" };
+        static readonly string[] Names = { "Fajr", "Lever du soleil", "Dhuhr", "Asr", "Maghrib", "Isha" };
+
+        /// « mawaqit.net/fr/ma-mosquee », un lien complet ou juste le nom court → adresse de la page.
+        public static string NormalizeUrl(string input)
+        {
+            var s = (input ?? "").Trim();
+            if (s.Length == 0) return null;
+            var m = Regex.Match(s, @"mawaqit\.net/(?:[a-z]{2}/)?(?:w/|m/)?([a-z0-9][a-z0-9-]{2,120})", RegexOptions.IgnoreCase);
+            string slug = m.Success ? m.Groups[1].Value : Regex.IsMatch(s, "^[a-z0-9][a-z0-9-]{2,120}$", RegexOptions.IgnoreCase) ? s : null;
+            if (slug == null || slug is "fr" or "en" or "api" or "mosque" or "search") return null;
+            return "https://mawaqit.net/fr/" + slug.ToLowerInvariant();
+        }
+
+        /// Extrait l'objet JSON « confData » de la page de la mosquée.
+        public static JsonDocument ReadConf(string html)
+        {
+            var m = Regex.Match(html ?? "", @"(?:var|let|const)\s+confData\s*=\s*\{");
+            if (!m.Success) return null;
+            int start = m.Index + m.Length - 1, depth = 0;
+            bool inStr = false, esc = false;
+            for (int i = start; i < html.Length; i++)
+            {
+                char c = html[i];
+                if (inStr)
+                {
+                    if (esc) esc = false;
+                    else if (c == '\\') esc = true;
+                    else if (c == '"') inStr = false;
+                    continue;
+                }
+                if (c == '"') inStr = true;
+                else if (c == '{') depth++;
+                else if (c == '}' && --depth == 0) return JsonDocument.Parse(html.Substring(start, i - start + 1));
+            }
+            return null;
+        }
+
+        static bool TryTime(string s, out TimeSpan t)
+        {
+            t = default;
+            var m = Regex.Match(s ?? "", @"^(\d{1,2}):(\d{2})");
+            if (!m.Success) return false;
+            t = new TimeSpan(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), 0);
+            return true;
+        }
+
+        /// Horaires du jour : calendrier annuel de la mosquée, sinon horaires affichés aujourd'hui.
+        public static PrayerDay Parse(string html, DateTime date)
+        {
+            using var conf = ReadConf(html) ?? throw new InvalidDataException("Ce n'est pas une page de mosquée Mawaqit.");
+            var r = conf.RootElement;
+            string name = r.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : "Ma mosquée";
+            var list = new List<string>();
+            if (r.TryGetProperty("calendar", out var cal) && cal.ValueKind == JsonValueKind.Array && cal.GetArrayLength() >= date.Month)
+            {
+                var month = cal[date.Month - 1];
+                if (month.ValueKind == JsonValueKind.Object && month.TryGetProperty(date.Day.ToString(CultureInfo.InvariantCulture), out var day) && day.ValueKind == JsonValueKind.Array)
+                    foreach (var x in day.EnumerateArray()) list.Add(x.GetString());
+            }
+            if (list.Count < 6 && r.TryGetProperty("times", out var tm) && tm.ValueKind == JsonValueKind.Array && tm.GetArrayLength() >= 5)
+            {
+                var five = tm.EnumerateArray().Select(x => x.GetString()).ToList();
+                var shuruq = r.TryGetProperty("shuruq", out var sh) ? sh.GetString() : null;
+                list = new List<string> { five[0], shuruq, five[1], five[2], five[3], five[4] };
+            }
+            var dayOut = new PrayerDay { Date = date.Date, City = name, Source = name, Hijri = Prayers.HijriFr(date, r.TryGetProperty("hijriAdjustment", out var adj) && adj.TryGetInt32(out var a) ? a : 0) };
+            for (int i = 0; i < Keys.Length && i < list.Count; i++)
+                if (TryTime(list[i], out var t)) dayOut.Times.Add((Keys[i], Names[i], t));
+            if (dayOut.Times.Count(t => t.Key != "Sunrise") < 5) throw new InvalidDataException("Horaires introuvables sur la page de la mosquée.");
+            if (r.TryGetProperty("jumua", out var j) && j.ValueKind == JsonValueKind.String && TryTime(j.GetString(), out _)) dayOut.Jumua = j.GetString();
+            return dayOut;
+        }
+
+        public static async Task<PrayerDay> FetchAsync(string url, DateTime date)
+        {
+            using var http = Net.Client(TimeSpan.FromSeconds(15), chromeUa: true);
+            return Parse(await http.GetStringAsync(url), date);
+        }
+    }
+
+    public static class PrayerAdjust
+    {
+        /// « Fajr:5,Isha:-3 » → décalages en minutes.
+        public static Dictionary<string, int> ParseOffsets(string s)
+        {
+            var d = new Dictionary<string, int>();
+            foreach (var part in (s ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var kv = part.Split(':');
+                if (kv.Length == 2 && int.TryParse(kv[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) && v != 0)
+                    d[kv[0].Trim()] = Math.Clamp(v, -120, 120);
+            }
+            return d;
+        }
+
+        public static string Format(Dictionary<string, int> d) =>
+            string.Join(",", d.Where(kv => kv.Value != 0).Select(kv => kv.Key + ":" + kv.Value.ToString(CultureInfo.InvariantCulture)));
+
+        /// Applique les décalages (le lever du soleil n'est jamais décalé).
+        public static PrayerDay Apply(PrayerDay day, Dictionary<string, int> offsets)
+        {
+            if (day == null || offsets == null || offsets.Count == 0) return day;
+            for (int i = 0; i < day.Times.Count; i++)
+            {
+                var (key, name, time) = day.Times[i];
+                if (offsets.TryGetValue(key, out var m) && key != "Sunrise")
+                {
+                    var t = time.Add(TimeSpan.FromMinutes(m));
+                    if (t < TimeSpan.Zero) t = TimeSpan.Zero;
+                    if (t >= TimeSpan.FromDays(1)) t = new TimeSpan(23, 59, 0);
+                    day.Times[i] = (key, name, t);
+                }
+            }
+            return day;
         }
     }
 

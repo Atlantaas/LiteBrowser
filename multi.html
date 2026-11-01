@@ -189,8 +189,9 @@ function applyAudio() {
   for (const id of S.ids) {
     const t = tiles[id]; if (!t) continue;
     const muted = S.muted || (S.audio === 'focus' && id !== S.focus);
-    if (t.player) { try { t.player.setMuted(muted); if (!muted) t.player.setVolume(1); } catch (e) {} }
-    else if (t.muted !== muted && chInfo(id).platform !== 'twitch') setIframe(id, muted);
+    if (t.muted === muted) continue; // rien ne change : on ne touche pas au son (ni au volume réglé par toi)
+    if (t.player) { try { t.player.setMuted(muted); } catch (e) {} }
+    else if (chInfo(id).platform !== 'twitch') setIframe(id, muted);
     t.muted = muted;
   }
   $('snd').textContent = S.muted ? 'Son coupé' : S.audio === 'focus' ? 'Son principal' : 'Mixage';

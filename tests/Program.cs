@@ -32,6 +32,7 @@ static class Program
         Extensions();
         M8Tests();
         ChannelTests();
+        NurLiveTests();
         PrayerParsing();
         YouTube();
         if (online) await Online();
@@ -249,6 +250,39 @@ static class Program
     }
 
     // ------------------------------------------------------------------
+    static void NurLiveTests()
+    {
+        Section("Intégration de Nur Live");
+        var root = Path.Combine(Path.GetTempPath(), "lb-nurlive-test");
+        if (Directory.Exists(root)) Directory.Delete(root, true);
+        var src = Path.Combine(root, "nur-live");
+        Directory.CreateDirectory(Path.Combine(src, "ui", "js"));
+        Directory.CreateDirectory(Path.Combine(src, "ui", "assets"));
+        Directory.CreateDirectory(Path.Combine(src, "core"));
+        File.WriteAllText(Path.Combine(src, "ui", "index.html"), "<html></html>");
+        File.WriteAllText(Path.Combine(src, "ui", "js", "app.js"), "import x from './util.js';\nconst PARENTS = [\"127.0.0.1\", \"localhost\"];\nconsole.log(PARENTS);");
+        File.WriteAllText(Path.Combine(src, "ui", "assets", "logo.png"), "png");
+        File.WriteAllText(Path.Combine(src, "core", "model.js"), "module.exports = { reduce: (s) => s };");
+        File.WriteAllText(Path.Combine(src, "core", "sources.js"), "module.exports = { sourceId: (s) => s.platform + ':' + s.key };");
+
+        Check("dossier Nur Live reconnu", NurLive.FindFolder(new[] { Path.Combine(root, "absent"), src }) == src);
+        Check("dossier incomplet ignoré", NurLive.FindFolder(new[] { Path.Combine(root) }) == null);
+        Check("cherché sur le Bureau, dans Documents et OneDrive", NurLive.Candidates(null).Any(c => c.EndsWith(Path.Combine("Desktop", "nur-live"))) &&
+                                                                  NurLive.Candidates(null).Any(c => c.Contains("OneDrive")));
+        var dst = Path.Combine(root, "copie");
+        NurLive.Prepare(src, dst);
+        var app = File.ReadAllText(Path.Combine(dst, "js", "app.js"));
+        Check("interface copiée (avec les images)", File.Exists(Path.Combine(dst, "index.html")) && File.Exists(Path.Combine(dst, "assets", "logo.png")));
+        Check("lecteurs Twitch autorisés sur la page du navigateur", app.Contains("const PARENTS = [location.hostname];") && !app.Contains("127.0.0.1"));
+        Check("variante d'écriture aussi adaptée", NurLive.PatchApp("const PARENTS = ['a','b'];") == "const PARENTS = [location.hostname];");
+        Check("le dossier d'origine n'est pas modifié", File.ReadAllText(Path.Combine(src, "ui", "js", "app.js")).Contains("127.0.0.1"));
+        var bridge = NurLive.Bridge("A/*__SOURCES__*/B/*__MODEL__*/C", "S", "M");
+        Check("pont : modules insérés", bridge == "ASBMC");
+        var real = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "nurbridge.js"));
+        Check("pont réel : emplacements des modules présents", real.Contains("/*__SOURCES__*/") && real.Contains("/*__MODEL__*/") && real.Contains("window.nur ="));
+    }
+
+    // ------------------------------------------------------------------
     static void ChannelTests()
     {
         Section("Chaînes (Twitch, Kick, YouTube)");
@@ -303,7 +337,33 @@ static class Program
         var n3 = Prayers.Next(day, new DateTime(2026, 11, 1, 22, 0, 0));
         Check("22h00 → Fajr du lendemain", n3.Name == "Fajr" && n3.At.Day == 2, n3.Name + " " + n3.At);
 
-        var withTz = "{\"data\":{\"timings\":{\"Fajr\":\"06:10 (CET)\",\"Sunrise\":\"07:21 (CET)\",\"Dhuhr\":\"12:17 (CET)\",\"Asr\":\"14:47 (CET)\",\"Maghrib\":\"17:12 (CET)\",\"Isha\":\"18:23 (CET)\"}}}";
+        Section("Horaires de la mosquée (Mawaqit)");
+        Check("lien complet", Mawaqit.NormalizeUrl("https://mawaqit.net/fr/grande-mosquee-de-paris") == "https://mawaqit.net/fr/grande-mosquee-de-paris");
+        Check("lien sans https", Mawaqit.NormalizeUrl("mawaqit.net/en/m/Mosquee-Creutzwald-57150") == "https://mawaqit.net/fr/mosquee-creutzwald-57150");
+        Check("nom court seul", Mawaqit.NormalizeUrl("grande-mosquee-de-paris") == "https://mawaqit.net/fr/grande-mosquee-de-paris");
+        Check("lien hors Mawaqit refusé", Mawaqit.NormalizeUrl("https://google.com/x y") == null);
+        var mq = File.ReadAllText(Path.Combine(Fixtures, "mawaqit_paris.html"));
+        var nov1 = Mawaqit.Parse(mq, new DateTime(2026, 11, 1));
+        Check("nom de la mosquée", nov1.City == "GRANDE MOSQUÉE DE PARIS", nov1.City);
+        Check("1er novembre : Fajr 06:01, Isha 19:00", nov1.Times.First(t => t.Key == "Fajr").Time == new TimeSpan(6, 1, 0) && nov1.Times.First(t => t.Key == "Isha").Time == new TimeSpan(19, 0, 0));
+        Check("6 horaires dont le lever du soleil 07:37", nov1.Times.Count == 6 && nov1.Times[1].Time == new TimeSpan(7, 37, 0));
+        Check("Jumu'a 12:50", nov1.Jumua == "12:50", nov1.Jumua);
+        Check("date hégirienne calculée", !string.IsNullOrEmpty(nov1.Hijri) && nov1.Hijri.Contains("1448"), nov1.Hijri);
+        var feb29 = Mawaqit.Parse(mq, new DateTime(2028, 2, 29));
+        Check("autre jour lu dans le calendrier annuel (29 février)", feb29.Times.First(t => t.Key == "Dhuhr").Time == new TimeSpan(13, 8, 0));
+        bool bad = false;
+        try { Mawaqit.Parse("<html>pas une mosquée</html>", DateTime.Today); } catch (InvalidDataException) { bad = true; }
+        Check("page qui n'est pas une mosquée : erreur claire", bad);
+
+        Section("Ajustement manuel des horaires");
+        var off = PrayerAdjust.ParseOffsets("Fajr:5, Isha:-3,Dhuhr:0,Sunrise:10,bad");
+        Check("décalages lus", off.Count == 3 && off["Fajr"] == 5 && off["Isha"] == -3);
+        var adj = PrayerAdjust.Apply(Mawaqit.Parse(mq, new DateTime(2026, 11, 1)), off);
+        Check("Fajr +5 → 06:06, Isha −3 → 18:57", adj.Times.First(t => t.Key == "Fajr").Time == new TimeSpan(6, 6, 0) && adj.Times.First(t => t.Key == "Isha").Time == new TimeSpan(18, 57, 0));
+        Check("le lever du soleil ne bouge pas", adj.Times.First(t => t.Key == "Sunrise").Time == new TimeSpan(7, 37, 0));
+        Check("format enregistré", PrayerAdjust.Format(off) == "Fajr:5,Isha:-3,Sunrise:10", PrayerAdjust.Format(off));
+
+        var withTz ="{\"data\":{\"timings\":{\"Fajr\":\"06:10 (CET)\",\"Sunrise\":\"07:21 (CET)\",\"Dhuhr\":\"12:17 (CET)\",\"Asr\":\"14:47 (CET)\",\"Maghrib\":\"17:12 (CET)\",\"Isha\":\"18:23 (CET)\"}}}";
         Check("format « 06:10 (CET) » accepté", Prayers.Parse(withTz, DateTime.Today, "x").Times.Count == 6);
         Check("adresse API correcte (point décimal)",
             Prayers.ApiUrl(new DateTime(2026, 11, 1), 49.205, 6.696, 12) ==

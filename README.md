@@ -18,9 +18,14 @@ puis **se met à jour automatiquement** à chaque nouvelle version publiée ici.
 - **Centre de matchs M8** (Valorant, Game Changers, Call of Duty, Warzone, Rocket League, Fortnite, Age of Empires) depuis Liquipedia,
   alerte Windows avant le match (réglable) et au coup d'envoi, bouton **Regarder** (co-stream M8 en live, sinon diffusion officielle)
 - **Lives** : tes chaînes Twitch / Kick / YouTube, qui est en live, alerte quand un favori lance son live (reprises de Nur Live si installé)
-- **Multistream** : jusqu'à 9 lives dans un onglet, dispositions (grille, grand + bande, grand + colonne, un seul),
-  son principal ou mixage, chat, mode cinéma — touches 1-9, [ ], M, G, C, T, F
-- **Horaires de prière** selon ta ville (Aladhan), prochaine prière dans la barre, notification à l'heure
+- **Multistream Nur Live** : si l'appli Nur Live est sur ton PC, son interface s'ouvre directement dans un onglet
+  (Ctrl+Maj+M) avec tes chaînes, ton compte Twitch, les volumes par live et les matchs M8 — sinon un multistream intégré
+  (jusqu'à 9 lives, dispositions, son principal ou mixage, chat, mode cinéma)
+- **Compte Twitch** : Nur Live → Twitch → « Se connecter » (connexion sur twitch.tv dans un onglet, reprise automatiquement)
+- **Horaires de prière** : calcul selon ta ville (Aladhan) **ou les horaires de ta mosquée** (Mawaqit), ajustement
+  ± minutes par prière, Jumu'a, prochaine prière dans la barre, notification à l'heure — clic sur l'horaire pour régler
+- **Barre de favoris** sous la barre d'adresse (Ctrl+Maj+B), clic droit pour renommer / déplacer / supprimer
+- **Son des onglets** : icône haut-parleur sur l'onglet qui joue du son, clic pour couper (Ctrl+M), clic droit = menu de l'onglet
 - Bloqueur de pubs (sites + YouTube), extensions Chrome (NordPass, TrendTrack…)
 - Onglets, page d'accueil avec recherche et raccourcis vers tes sites
 - Choix du moteur : Google, DuckDuckGo, Bing, Qwant, Ecosia
@@ -30,7 +35,7 @@ puis **se met à jour automatiquement** à chaque nouvelle version publiée ici.
 
 ## Raccourcis
 Ctrl+T nouvel onglet · Ctrl+W fermer · Ctrl+Maj+T rouvrir · Ctrl+Tab onglet suivant · Ctrl+1…9 aller à un onglet ·
-Ctrl+L barre d'adresse · Ctrl+D favori · F5 actualiser · Alt+←/→ précédent/suivant · F11 plein écran
+Ctrl+L barre d'adresse · Ctrl+D favori · Ctrl+Maj+B barre de favoris · Ctrl+M couper le son · Ctrl+Maj+M multistream · F5 actualiser · Alt+←/→ précédent/suivant · F11 plein écran
 
 ## Compiler soi-même
 ```
@@ -40,5 +45,5 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 ## Publier une mise à jour
 1. Augmenter `<Version>` dans `LiteBrowser.csproj`
-2. Compiler, puis créer une release GitHub avec le tag `vX.Y.Z` et `LiteBrowser.exe` en pièce jointe
+2. Pousser sur `main` : GitHub Actions teste, compile, vérifie sur Windows et publie la release `vX.Y.Z`
 3. Tous les navigateurs installés la récupèrent au prochain lancement

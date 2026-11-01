@@ -185,7 +185,7 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
     <aside class="card">
       <div class="card-h">
         <div class="card-t">Prières</div>
-        <button class="link" id="city" title="Changer de ville">…</button>
+        <button class="link" id="city" title="Ville, mosquée, ajustements…">…</button>
       </div>
       <div id="prayers"><div class="skel"></div><div class="skel" style="height:180px"></div></div>
     </aside>
@@ -362,6 +362,7 @@ function renderPrayers() {
       <div class="in">${until(nextAt - now)}</div></div>
     ${times.map(t => `<div class="prow ${t.key === 'Sunrise' ? 'minor' : ''} ${t.key === next.key && nextAt.getDate() === now.getDate() ? 'is-next' : (t.d < now ? 'past' : '')}">
         <span>${esc(t.name)}</span><span class="tm">${esc(t.time)}</span></div>`).join('')}
+    ${p.jumua ? `<div class="prow minor"><span>Jumu'a (vendredi)</span><span class="tm">${esc(p.jumua)}</span></div>` : ''}
     <div class="credit">${esc(p.methodName || '')} · <a href="https://aladhan.com/">Aladhan</a></div>`;
 }
 

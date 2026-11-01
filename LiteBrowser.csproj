@@ -8,7 +8,7 @@
     <AssemblyName>LiteBrowser</AssemblyName>
     <RootNamespace>LiteBrowser</RootNamespace>
     <Product>LiteBrowser</Product>
-    <Version>3.0.0</Version>
+    <Version>3.1.0</Version>
     <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
     <!-- Réglages pour consommer le moins de RAM possible côté appli -->
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -21,6 +21,7 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" />
     <EmbeddedResource Include="home.html" LogicalName="home.html" />
     <EmbeddedResource Include="multi.html" LogicalName="multi.html" />
+    <EmbeddedResource Include="nurbridge.js" LogicalName="nurbridge.js" />
     <Compile Remove="tests/**" />
     <None Remove="tests/**" />
   </ItemGroup>
