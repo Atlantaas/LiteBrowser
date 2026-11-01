@@ -1981,11 +1981,11 @@ class BrowserForm : Form
             r["m8Matches"] = m8.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
                 .Select(m => $"{m.Game} vs {m.OpponentShort} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u} {m.Status} – {m.Tournament}").ToList();
             r["m8Tournaments"] = m8.Tournaments.Select(t => $"{t.Game}: {t.Name} ({t.When})").ToList();
-            home = HomeCore() ?? home;
-            await Task.Delay(1500); // laisse la page afficher les matchs reçus
-            r["homeMatchRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.match').length)"));
+            // l'accueil était en arrière-plan (gelé pour économiser la RAM) : on y revient avant de compter
             SelectTab(Math.Max(0, tabs.FindIndex(x => x.View.CoreWebView2 != null && IsHome(x.View.CoreWebView2.Source))));
-            await Task.Delay(1500);
+            await Task.Delay(2500);
+            home = HomeCore() ?? home;
+            r["homeMatchRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.match').length)"));
             r["screenshotHomeFinal"] = Screenshot("home_final");
 
             // Multistream : 2 chaînes + chat
