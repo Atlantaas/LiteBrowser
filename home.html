@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Nouvel onglet</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1f1f1f;--sub:#5f6368;--border:#dadce0;--accent:#1a73e8;--hover:#eceef1}
+body.dark{--bg:#1b1c1f;--card:#2b2c30;--text:#e8eaed;--sub:#9aa0a6;--border:#3c4043;--accent:#8ab4f8;--hover:#323337}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;transition:background .2s,color .2s}
+.clock{font-size:72px;font-weight:300;letter-spacing:-2px;line-height:1}
+.greet{color:var(--sub);font-size:18px;margin:10px 0 34px}
+form{width:min(660px,92vw);display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);
+  border-radius:30px;height:58px;padding:0 8px 0 22px;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:box-shadow .15s,border-color .15s}
+form:focus-within{border-color:var(--accent);box-shadow:0 4px 18px rgba(0,0,0,.12)}
+.ic{font-family:"Segoe Fluent Icons","Segoe MDL2 Assets";color:var(--sub);font-size:16px}
+input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font-size:17px;font-family:inherit;height:100%;padding-left:6px}
+input::placeholder{color:var(--sub)}
+select{border:0;background:var(--hover);color:var(--text);border-radius:20px;padding:9px 14px;font-family:inherit;font-size:13px;cursor:pointer;outline:0}
+select option{background:var(--card);color:var(--text)}
+.tiles{display:grid;grid-template-columns:repeat(4,116px);gap:10px;margin-top:42px}
+.tile{display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 8px 14px;border-radius:16px;text-decoration:none;color:var(--text);font-size:13px;transition:background .12s}
+.tile:hover{background:var(--hover)}
+.fav{width:52px;height:52px;border-radius:50%;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+  font-weight:600;font-size:20px;color:var(--accent);overflow:hidden}
+.fav img{width:26px;height:26px}
+.name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:var(--sub);font-size:12px}
+kbd{font-family:inherit;background:var(--hover);border-radius:5px;padding:1px 6px}
+@media (max-width:560px){.tiles{grid-template-columns:repeat(3,100px)}.clock{font-size:52px}}
+</style>
+</head>
+<body>
+<div class="clock" id="clock"></div>
+<div class="greet" id="greet"></div>
+<form id="f" autocomplete="off">
+  <span class="ic">&#xE721;</span>
+  <input id="q" placeholder="Rechercher sur le web ou saisir une adresse" autofocus>
+  <select id="eng" title="Moteur de recherche"></select>
+</form>
+<div class="tiles" id="tiles"></div>
+<div class="hint"><kbd>Ctrl+T</kbd> nouvel onglet &nbsp;·&nbsp; <kbd>Ctrl+D</kbd> ajouter aux favoris &nbsp;·&nbsp; <kbd>Ctrl+L</kbd> barre d'adresse</div>
+<script>
+const post = m => { if (window.chrome && chrome.webview) chrome.webview.postMessage(m); };
+const $ = id => document.getElementById(id);
+
+function tick() {
+  const d = new Date();
+  $('clock').textContent = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const h = d.getHours();
+  $('greet').textContent = h < 5 ? 'Bonne nuit' : h < 18 ? 'Bonjour' : 'Bonsoir';
+}
+tick(); setInterval(tick, 10000);
+
+$('f').addEventListener('submit', e => {
+  e.preventDefault();
+  const v = $('q').value.trim();
+  if (v) post({ type: 'search', q: v });
+});
+$('eng').addEventListener('change', () => { post({ type: 'engine', id: $('eng').value }); updatePlaceholder(); });
+
+function updatePlaceholder() {
+  const o = $('eng').options[$('eng').selectedIndex];
+  $('q').placeholder = 'Rechercher avec ' + (o ? o.text : 'le web') + ' ou saisir une adresse';
+}
+
+function render(d) {
+  document.body.classList.toggle('dark', d.theme === 'dark');
+  const eng = $('eng'); eng.innerHTML = '';
+  for (const e of d.engines) { const o = new Option(e.name, e.id); o.selected = e.id === d.engine; eng.add(o); }
+  updatePlaceholder();
+
+  const tiles = $('tiles'); tiles.innerHTML = '';
+  for (const t of d.tiles) {
+    let host = ''; try { host = new URL(t.url).hostname; } catch {}
+    const a = document.createElement('a'); a.className = 'tile'; a.href = t.url; a.title = t.url;
+    const fv = document.createElement('div'); fv.className = 'fav';
+    const img = new Image(); img.alt = '';
+    img.onerror = () => { fv.textContent = (t.title || host || '?').charAt(0).toUpperCase(); };
+    img.src = 'https://icons.duckduckgo.com/ip3/' + host + '.ico';
+    fv.appendChild(img);
+    const n = document.createElement('div'); n.className = 'name'; n.textContent = t.title;
+    a.append(fv, n); tiles.appendChild(a);
+  }
+}
+
+if (window.chrome && chrome.webview) {
+  chrome.webview.addEventListener('message', e => render(e.data));
+  post({ type: 'ready' });
+}
+$('q').focus();
+</script>
+</body>
+</html>
