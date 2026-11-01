@@ -58,7 +58,7 @@ jobs:
           $report = Join-Path $dir "rapport.json"
           $env:LITEBROWSER_SMOKE = $report
           $p = Start-Process -FilePath "out\LiteBrowser.exe" -PassThru
-          if (-not $p.WaitForExit(420000)) { $p.Kill(); throw "LiteBrowser ne s'est pas fermé à temps" }
+          if (-not $p.WaitForExit(660000)) { $p.Kill(); throw "LiteBrowser ne s'est pas fermé à temps" }
           if (-not (Test-Path $report)) { throw "Aucun rapport : l'appli a planté au démarrage" }
           Get-Content $report -Encoding UTF8
           $r = Get-Content $report -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -68,6 +68,9 @@ jobs:
           if (-not $r.youtubeAdblockActive) { $fail += "bloqueur YouTube" }
           foreach ($e in $r.extensions) { if ($e.Error) { $fail += "extension $($e.Name)" } }
           if ($r.download -ne "terminé") { $fail += "téléchargement ($($r.download))" }
+          if (-not $r.multiReady) { $fail += "page multistream" }
+          if ($r.multiTiles -ne "2") { $fail += "lecteurs du multistream ($($r.multiTiles))" }
+          if ([int]$r.homeLiveCards -lt 1) { $fail += "section Lives" }
           if ($fail.Count) { throw ("Échecs : " + ($fail -join ", ")) }
           Write-Host "Test de bout en bout : OK"
 

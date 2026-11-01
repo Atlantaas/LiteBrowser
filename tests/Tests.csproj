@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="../Core.cs" Link="Core.cs" />
+    <Compile Include="../M8.cs" Link="M8.cs" />
     <None Include="fixtures/**" CopyToOutputDirectory="PreserveNewest" />
     <None Include="youtube_test.js" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

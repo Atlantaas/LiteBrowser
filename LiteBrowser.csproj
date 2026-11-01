@@ -20,6 +20,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" />
     <EmbeddedResource Include="home.html" LogicalName="home.html" />
+    <EmbeddedResource Include="multi.html" LogicalName="multi.html" />
     <Compile Remove="tests/**" />
     <None Remove="tests/**" />
   </ItemGroup>

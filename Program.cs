@@ -457,7 +457,7 @@ class BrowserTab
     public string Title = "Nouvel onglet";
     public Image Icon;
     public bool Loading, IsHome = true;
-    public string DarkScriptId;
+    public string DarkScriptId, YtScriptId;
     public System.Windows.Forms.Timer SuspendTimer;
 }
 
@@ -783,8 +783,21 @@ class BrowserForm : Form
     string themeName = "m8";                    // m8 (Gentle Mates) | dark | light
     bool dark => themeName != "light";
 
-    // Matchs, prières, notifications
-    MatchService matches;
+    // Matchs M8, lives, prières, notifications
+    M8Service m8;
+    List<Channel> channels = new();
+    Dictionary<string, LiveInfo> liveStatus = new();
+    readonly HashSet<string> multiIds = new();          // chaînes ouvertes dans les onglets multistream
+    readonly HashSet<string> matchMutes = new();
+    HashSet<string> firedAlerts = new();
+    readonly Dictionary<string, bool> m8Games = new();
+    bool m8Notify = true, liveNotify = true, statusBusy, pageFullscreen;
+    int m8Reminder = 15;
+    DateTime lastMatchTry = DateTime.MinValue;
+    string m8Path, channelsPath, firedPath;
+    readonly System.Windows.Forms.Timer statusTimer = new() { Interval = 120_000 };
+    readonly List<string> pendingSuggestions = new();
+    bool prayerPending;
     PrayerDay prayerDay;
     string prayerError, prayerCity, lastNotified;
     double prayerLat = double.NaN, prayerLon = double.NaN;
@@ -802,7 +815,9 @@ class BrowserForm : Form
     BrowserTab Cur => sel >= 0 && sel < tabs.Count ? tabs[sel] : null;
     CoreWebView2 Core => Cur?.View?.CoreWebView2;
     (string Id, string Name, string Url) Engine => Engines.First(e => e.Id == engineId);
-    static bool IsHome(string url) => url != null && url.StartsWith("https://" + HomeHost + "/", StringComparison.OrdinalIgnoreCase);
+    static bool IsHome(string url) => url != null && url.StartsWith(HomeUrl, StringComparison.OrdinalIgnoreCase);
+    static bool IsLocalPage(string url) => url != null && url.StartsWith("https://" + HomeHost + "/", StringComparison.OrdinalIgnoreCase);
+    const string MultiUrl = "https://litebrowser.home/multi.html";
 
     public BrowserForm()
     {
@@ -871,7 +886,11 @@ class BrowserForm : Form
         };
         addr.Box.Enter += (_, _) => { selectOnClick = true; BeginInvoke(new Action(() => addr.Box.SelectAll())); };
         addr.Box.MouseUp += (_, _) => { if (selectOnClick && addr.Box.SelectionLength == 0) addr.Box.SelectAll(); selectOnClick = false; };
-        addr.Box.Leave += (_, _) => UpdateUi();
+        addr.Box.Leave += (_, _) =>
+        {
+            if (pendingSuggestions.Count > 0) { suggestions.AddRange(pendingSuggestions.ToArray()); pendingSuggestions.Clear(); }
+            UpdateUi();
+        };
 
         updatePill = new PillButton("Mise à jour prête · Redémarrer", new Font("Segoe UI", 9f, FontStyle.Bold)) { Visible = false };
         tip.SetToolTip(updatePill, "Une nouvelle version a été installée. Clique pour relancer LiteBrowser.");
@@ -880,9 +899,17 @@ class BrowserForm : Form
         prayerChip = new PillButton("", new Font("Segoe UI", 9f)) { Subtle = true, Visible = false };
         prayerChip.Click += (_, _) => ShowPrayerMenu();
 
-        matches = new MatchService(Path.Combine(dataDir, "matchs.json"));
-        matches.Updated += () => { if (IsHandleCreated) BeginInvoke(new Action(RefreshHomeTabs)); };
+        m8Path = Path.Combine(dataDir, "m8.json");
+        channelsPath = Path.Combine(dataDir, "chaines.json");
+        firedPath = Path.Combine(dataDir, "alertes.json");
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        m8 = new M8Service(Path.Combine(dataDir, "matches-cache.json"),
+            Path.Combine(appData, "nur-live", "matches-cache.json"), Path.Combine(appData, "Nur Live", "matches-cache.json"));
+        m8.Updated += () => { if (IsHandleCreated) BeginInvoke(new Action(RefreshLocalPages)); };
+        LoadM8Settings();
+        LoadChannels(appData);
         minuteTimer.Tick += (_, _) => MinuteTick();
+        statusTimer.Tick += (_, _) => _ = RefreshStatus();
         FormClosed += (_, _) => { try { tray?.Dispose(); } catch { } };
 
         toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, prayerChip, extBtn, menuBtn });
@@ -918,13 +945,19 @@ class BrowserForm : Form
                 Close();
                 return;
             }
-            await NewTab();
-            minuteTimer.Start();
-            _ = RefreshPrayers();
-            _ = RefreshMatches();
-            await Task.Delay(3000);
-            if (SmokeReport != null) { await RunSmoke(); return; }
-            await CheckUpdates(silent: true);
+            try
+            {
+                await NewTab();
+                minuteTimer.Start();
+                statusTimer.Start();
+                _ = RefreshPrayers();
+                _ = RefreshMatches();
+                _ = RefreshStatus();
+                await Task.Delay(3000);
+                if (SmokeReport != null) { await RunSmoke(); return; }
+                await CheckUpdates(silent: true);
+            }
+            catch (Exception ex) { Debug.WriteLine(ex); }
         };
     }
 
@@ -937,6 +970,7 @@ class BrowserForm : Form
             if (!silent) { Program.RestartRequested = true; Close(); }
             return;
         }
+        if (SmokeReport != null) return;
         if (updateBusy) return;
         updateBusy = true;
         try
@@ -979,20 +1013,29 @@ class BrowserForm : Form
         menuBtn.SetBounds(toolbar.Width - S(8) - b, y, b, b);
         extBtn.SetBounds(menuBtn.Left - S(2) - b, y, b, b);
         int right = extBtn.Left - S(8);
-        if (prayerChip.Visible)
-        {
-            int pw = prayerChip.PreferredWidth, ph = S(30);
-            prayerChip.SetBounds(right - pw, (h - ph) / 2, pw, ph);
-            right = prayerChip.Left - S(8);
-        }
-        if (updatePill.Visible)
-        {
-            int pw = updatePill.PreferredWidth, ph = S(30);
-            updatePill.SetBounds(right - pw, (h - ph) / 2, pw, ph);
-            right = updatePill.Left - S(8);
-        }
         int ah = S(34), ax = x + S(6);
+        // Les pastilles ne s'affichent que s'il reste assez de place pour la barre d'adresse
+        foreach (var pill in new[] { prayerChip, updatePill })
+        {
+            bool want = pill == prayerChip ? prayerChip.Tag as string == "on" : updateReady;
+            int pw = pill.PreferredWidth, ph = S(30);
+            if (want && right - pw - S(8) - ax >= S(220))
+            {
+                pill.SetBounds(right - pw, (h - ph) / 2, pw, ph);
+                pill.Visible = true;
+                right = pill.Left - S(8);
+            }
+            else pill.Visible = false;
+        }
         addr.SetBounds(ax, (h - ah) / 2, Math.Max(S(100), right - ax), ah);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        strip.Height = S(42);
+        toolbar.Height = S(46);
+        LayoutToolbar();
     }
 
     // ---------- Démarrage ----------
@@ -1003,13 +1046,16 @@ class BrowserForm : Form
 
         // Page d'accueil intégrée à l'exe, recopiée à chaque démarrage
         Directory.CreateDirectory(homeDir);
-        try
+        foreach (var (res, file) in new[] { ("home.html", "index.html"), ("multi.html", "multi.html") })
         {
-            using var src = Assembly.GetExecutingAssembly().GetManifestResourceStream("home.html");
-            using var dst = File.Create(Path.Combine(homeDir, "index.html"));
-            src.CopyTo(dst);
+            try
+            {
+                using var src = Assembly.GetExecutingAssembly().GetManifestResourceStream(res);
+                using var dst = File.Create(Path.Combine(homeDir, file));
+                src.CopyTo(dst);
+            }
+            catch { /* déjà présente / ouverte par une autre fenêtre */ }
         }
-        catch { /* déjà présente / ouverte par une autre fenêtre */ }
 
         // On coupe tout ce qui tourne en arrière-plan pour rien
         var opts = new CoreWebView2EnvironmentOptions(
@@ -1024,18 +1070,19 @@ class BrowserForm : Form
 
     // ---------- Onglets ----------
 
-    async Task NewTab(string url = null)
+    async Task NewTab(string url = null, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null)
     {
-        if (env == null) return;
-        var t = new BrowserTab { IsHome = url == null };
+        if (env == null) { deferral?.Complete(); return; }
+        var t = new BrowserTab { IsHome = url == null && popup == null };
         t.View = new WebView2 { Dock = DockStyle.Fill, Visible = false, DefaultBackgroundColor = theme.Bar };
         content.Controls.Add(t.View);
         int idx = sel >= 0 ? sel + 1 : tabs.Count; // s'ouvre juste à droite de l'onglet actuel
         tabs.Insert(idx, t);
         SelectTab(idx);
 
-        try { await t.View.EnsureCoreWebView2Async(env); } catch { return; }
-        if (!tabs.Contains(t)) return; // fermé entre-temps
+        try { await t.View.EnsureCoreWebView2Async(env); }
+        catch { if (popup != null) popup.Handled = true; deferral?.Complete(); return; }
+        if (!tabs.Contains(t)) { if (popup != null) popup.Handled = true; deferral?.Complete(); return; } // fermé entre-temps
         var core = t.View.CoreWebView2;
 
         var s = core.Settings;
@@ -1065,12 +1112,20 @@ class BrowserForm : Form
             }
         };
 
-        core.NewWindowRequested += (_, e) => { e.Handled = true; _ = NewTab(e.Uri); };
+        // Fenêtres ouvertes par la page (connexion Google/Discord, paiement…) : un vrai onglet relié à la page d'origine
+        core.NewWindowRequested += (_, e) => { var d = e.GetDeferral(); _ = NewTab(e.Uri, e, d); };
+        core.WindowCloseRequested += (_, _) => BeginInvoke(new Action(() => CloseTab(tabs.IndexOf(t))));
+
+        // Cadres publicitaires (iframes) bloqués eux aussi
+        core.FrameNavigationStarting += (_, e) =>
+        {
+            if (adblock && Uri.TryCreate(e.Uri, UriKind.Absolute, out var fu) && IsBlocked(fu.Host)) { e.Cancel = true; blockedCount++; }
+        };
 
         // Bloqueur de pubs YouTube (le script ne s'active que sur youtube.com)
         if (adblock)
         {
-            try { await core.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script); } catch { }
+            try { t.YtScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script); } catch { }
         }
 
         // Téléchargements : on suit chaque fichier et on prévient clairement en cas de souci
@@ -1124,33 +1179,28 @@ class BrowserForm : Form
             catch { }
             strip.Invalidate();
         };
-        core.ContainsFullScreenElementChanged += (_, _) => SetFullscreen(core.ContainsFullScreenElement);
+        core.ContainsFullScreenElementChanged += (_, _) =>
+        {
+            pageFullscreen = core.ContainsFullScreenElement;
+            SetFullscreen(core.ContainsFullScreenElement);
+        };
 
-        // Messages de la page d'accueil (recherche, choix du moteur)
+        // Messages des pages intégrées (accueil, multistream)
         core.WebMessageReceived += (_, e) =>
         {
-            if (!IsHome(e.Source)) return;
-            try
-            {
-                using var doc = JsonDocument.Parse(e.WebMessageAsJson);
-                var root = doc.RootElement;
-                switch (root.GetProperty("type").GetString())
-                {
-                    case "ready": SendHomeData(core); homeReady.TrySetResult(true); break;
-                    case "search":
-                        var u = ToUrl(root.GetProperty("q").GetString());
-                        if (u != null) { core.Navigate(u); t.View.Focus(); }
-                        break;
-                    case "engine": SetEngine(root.GetProperty("id").GetString()); break;
-                    case "city": ChangeCity(); break;
-                    case "refreshMatches": _ = RefreshMatches(force: true); break;
-                }
-            }
-            catch { }
+            if (!IsLocalPage(e.Source)) return;
+            string json = e.WebMessageAsJson;
+            // Hors de l'évènement WebView2 : on peut y ouvrir des fenêtres sans bloquer la page
+            BeginInvoke(new Action(() => HandlePageMessage(core, t, json)));
         };
 
         if (forceDark) { try { await ApplyForceDark(t); } catch { } }
-        core.Navigate(url ?? HomeUrl);
+        if (popup != null)
+        {
+            try { popup.NewWindow = core; } catch { core.Navigate(popup.Uri); }
+            deferral?.Complete();
+        }
+        else core.Navigate(url ?? HomeUrl);
         if (t == Cur) UpdateUi();
 
         if (!extStarted)
@@ -1200,6 +1250,7 @@ class BrowserForm : Form
         strip.Selected = i;
         strip.Invalidate();
         UpdateUi();
+        if (pageFullscreen && Core?.ContainsFullScreenElement != true) { pageFullscreen = false; SetFullscreen(false); }
         if (Cur.IsHome) addr.Box.Focus(); else Cur.View.Focus();
     }
 
@@ -1362,11 +1413,40 @@ class BrowserForm : Form
         };
     }
 
-    object[] HomeMatches() => (matches?.Items ?? new List<LiteCore.Match>()).Select(m => (object)new
+    object HomeM8()
     {
-        game = m.Game, ts = m.Ts, t1 = m.Team1, s1 = m.Short1, t2 = m.Team2, s2 = m.Short2,
-        format = m.Format, tournament = m.Tournament, url = m.Url
-    }).ToArray();
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var list = m8.Current(now).Where(m => m.Status != "finished" && (!m8Games.TryGetValue(m.Game, out var on) || on)).ToList();
+        return new
+        {
+            loading = m8.Loading,
+            updated = m8.FetchedAtMs > 0 ? m8.FetchedAtMs : (long?)null,
+            source = m8.Source,
+            notify = m8Notify,
+            reminder = m8Reminder,
+            games = M8.Pages.Select(p => new { id = p.Game, label = p.Label, @short = p.Short, on = !m8Games.TryGetValue(p.Game, out var on) || on }).ToArray(),
+            matches = list.Select(m => new
+            {
+                id = m.Id, game = m.Game, gameLabel = M8.Info(m.Game).Label, gameShort = M8.Info(m.Game).Short,
+                ts = m.Ts, status = m.Status, opp = m.Opponent, oppShort = m.OpponentShort,
+                tournament = m.Tournament, stage = m.Stage, score = m.Score, url = m.Url, muted = matchMutes.Contains(m.Id),
+            }).ToArray(),
+            tournaments = m8.Tournaments.Where(t => !m8Games.TryGetValue(t.Game, out var on) || on)
+                .Select(t => new { game = M8.Info(t.Game).Label, name = t.Name, when = t.When, url = t.Url }).ToArray(),
+        };
+    }
+
+    object ChannelData(Channel c)
+    {
+        liveStatus.TryGetValue(c.Id, out var st);
+        return new
+        {
+            id = c.Id, platform = c.Platform, key = c.Key, label = c.Label, fav = c.Fav, notify = c.Notify,
+            live = st?.Live, name = string.IsNullOrEmpty(st?.Name) || st.Name == c.Key ? c.Label : st.Name,
+            avatar = st?.Avatar, title = st?.Title, game = st?.Game, viewers = st?.Viewers ?? 0,
+            url = Channels.PageUrl(c),
+        };
+    }
 
     void SendHomeData(CoreWebView2 core)
     {
@@ -1379,20 +1459,297 @@ class BrowserForm : Form
             engine = engineId,
             engines = Engines.Select(e => new { id = e.Id, name = e.Name }).ToArray(),
             tiles,
-            matches = HomeMatches(),
-            matchesLoading = matches?.Loading ?? false,
-            matchesUpdated = matches == null || matches.FetchedAt == default ? (long?)null : matches.FetchedAt.ToUnixTimeMilliseconds(),
+            m8 = HomeM8(),
+            channels = channels.Select(ChannelData).ToArray(),
             prayers = HomePrayers(),
         });
         try { core.PostWebMessageAsJson(json); } catch { }
     }
 
-    void RefreshHomeTabs()
+    void RefreshHomeTabs() => RefreshLocalPages();
+
+    /// Renvoie leurs données à toutes les pages intégrées ouvertes (accueil, multistream).
+    void RefreshLocalPages()
     {
         foreach (var t in tabs)
         {
             var c = t.View.CoreWebView2;
-            if (c != null && IsHome(c.Source)) SendHomeData(c);
+            if (c == null) continue;
+            if (IsHome(c.Source)) SendHomeData(c);
+            else if (c.Source.StartsWith(MultiUrl, StringComparison.OrdinalIgnoreCase)) SendMultiData(c);
+        }
+    }
+
+    // ---------- Messages des pages intégrées ----------
+
+    void HandlePageMessage(CoreWebView2 core, BrowserTab t, string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            string Str(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            bool isHome = IsHome(core.Source);
+            switch (Str("type"))
+            {
+                case "ready":
+                    if (isHome) { SendHomeData(core); homeReady.TrySetResult(true); }
+                    else { SendMultiData(core); multiReady?.TrySetResult(true); }
+                    break;
+                case "search":
+                    var u = ToUrl(Str("q"));
+                    if (u != null) { core.Navigate(u); t.View.Focus(); }
+                    break;
+                case "engine": SetEngine(Str("id")); break;
+                case "city": ChangeCity(); break;
+                case "refreshMatches": _ = RefreshMatches(force: true); break;
+                case "watchMatch": _ = WatchMatch(Str("id")); break;
+                case "muteMatch":
+                    var mid = Str("id");
+                    if (mid != null && !matchMutes.Remove(mid)) matchMutes.Add(mid);
+                    SaveM8Settings(); RefreshLocalPages();
+                    break;
+                case "m8Settings":
+                    if (root.TryGetProperty("reminder", out var rm) && rm.TryGetInt32(out var rmi)) m8Reminder = Math.Clamp(rmi, 0, 120);
+                    if (root.TryGetProperty("notify", out var nt)) m8Notify = nt.ValueKind == JsonValueKind.True;
+                    if (Str("toggleGame") is string g) m8Games[g] = m8Games.TryGetValue(g, out var on) && !on;
+                    SaveM8Settings(); RefreshLocalPages();
+                    break;
+                case "watch":
+                    var ids = root.TryGetProperty("ids", out var arr) && arr.ValueKind == JsonValueKind.Array
+                        ? arr.EnumerateArray().Select(x => x.GetString()).Where(x => x != null).ToList() : new List<string>();
+                    OpenMulti(ids, chat: true);
+                    break;
+                case "addChannel":
+                    var ch = Channels.Parse(Str("input"));
+                    if (ch == null)
+                    {
+                        try { core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "error", text = "Chaîne non reconnue : tape un nom Twitch, ou colle un lien Twitch / Kick / YouTube." })); } catch { }
+                        break;
+                    }
+                    var existing = channels.FirstOrDefault(c => c.Id == ch.Id);
+                    if (existing == null) { ch.Fav = root.TryGetProperty("fav", out var fv) && fv.ValueKind == JsonValueKind.True; channels.Add(ch); existing = ch; }
+                    else if (root.TryGetProperty("fav", out var fv2) && fv2.ValueKind == JsonValueKind.True) existing.Fav = true;
+                    SaveChannels();
+                    try { core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "added", id = existing.Id })); } catch { }
+                    _ = RefreshStatus();
+                    break;
+                case "removeChannel": channels.RemoveAll(c => c.Id == Str("id")); SaveChannels(); RefreshLocalPages(); break;
+                case "toggleFav":
+                    if (channels.FirstOrDefault(c => c.Id == Str("id")) is Channel cf) { cf.Fav = !cf.Fav; SaveChannels(); RefreshLocalPages(); }
+                    break;
+                case "toggleNotify":
+                    if (channels.FirstOrDefault(c => c.Id == Str("id")) is Channel cn) { cn.Notify = !cn.Notify; SaveChannels(); RefreshLocalPages(); }
+                    break;
+                case "multiIds":
+                    // Chaînes affichées par un onglet multistream : on suit aussi leur statut
+                    if (root.TryGetProperty("ids", out var mi) && mi.ValueKind == JsonValueKind.Array)
+                    {
+                        bool added = false;
+                        foreach (var x in mi.EnumerateArray()) if (x.GetString() is string id && multiIds.Add(id)) added = true;
+                        if (added) _ = RefreshStatus();
+                    }
+                    break;
+                case "openUrl":
+                    var link = Str("url");
+                    if (link != null && link.StartsWith("http")) _ = NewTab(link);
+                    break;
+            }
+        }
+        catch (Exception ex) { Debug.WriteLine(ex); }
+    }
+
+    // ---------- Réglages M8 et chaînes ----------
+
+    void LoadM8Settings()
+    {
+        try
+        {
+            if (File.Exists(m8Path))
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(m8Path));
+                var r = doc.RootElement;
+                if (r.TryGetProperty("notify", out var n)) m8Notify = n.ValueKind != JsonValueKind.False;
+                if (r.TryGetProperty("liveNotify", out var ln)) liveNotify = ln.ValueKind != JsonValueKind.False;
+                if (r.TryGetProperty("reminder", out var rm) && rm.TryGetInt32(out var rmi)) m8Reminder = rmi;
+                if (r.TryGetProperty("games", out var g) && g.ValueKind == JsonValueKind.Object)
+                    foreach (var p in g.EnumerateObject()) m8Games[p.Name] = p.Value.ValueKind != JsonValueKind.False;
+                if (r.TryGetProperty("mutes", out var mu) && mu.ValueKind == JsonValueKind.Array)
+                    foreach (var x in mu.EnumerateArray()) if (x.GetString() is string id) matchMutes.Add(id);
+            }
+            if (File.Exists(firedPath))
+                firedAlerts = new HashSet<string>(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(firedPath)) ?? new());
+        }
+        catch { }
+    }
+
+    void SaveM8Settings()
+    {
+        try
+        {
+            File.WriteAllText(m8Path, JsonSerializer.Serialize(new
+            {
+                notify = m8Notify, liveNotify, reminder = m8Reminder, games = m8Games, mutes = matchMutes.ToArray(),
+            }));
+        }
+        catch { }
+    }
+
+    void LoadChannels(string appData)
+    {
+        try
+        {
+            if (File.Exists(channelsPath))
+            {
+                channels = JsonSerializer.Deserialize<List<Channel>>(File.ReadAllText(channelsPath)) ?? new();
+                if (channels.Count > 0) return;
+            }
+            // Premier lancement : on reprend les chaînes de Nur Live si elle est installée
+            foreach (var dir in new[] { "nur-live", "Nur Live" })
+            {
+                var imported = Channels.ReadNurLive(Path.Combine(appData, dir, "nur-live-v3.json"));
+                if (imported != null && imported.Count > 0) { channels = imported; SaveChannels(); return; }
+            }
+        }
+        catch { }
+        channels = Channels.DefaultList();
+        SaveChannels();
+    }
+
+    void SaveChannels()
+    {
+        try { File.WriteAllText(channelsPath, JsonSerializer.Serialize(channels)); } catch { }
+    }
+
+    // ---------- Lives : statut en direct + alertes ----------
+
+    async Task RefreshStatus()
+    {
+        if (statusBusy) return;
+        statusBusy = true;
+        try
+        {
+            var all = channels.ToList();
+            foreach (var id in multiIds)
+            {
+                var parts = id.Split(':', 2);
+                if (parts.Length == 2 && !all.Any(c => c.Id == id)) all.Add(new Channel { Platform = parts[0], Key = parts[1], Label = parts[1] });
+            }
+            var next = await LiveStatus.FetchAsync(all);
+            var prev = liveStatus;
+            // une chaîne au statut inconnu garde l'ancien
+            foreach (var kv in prev) if (next.TryGetValue(kv.Key, out var n) && n.Live == null && kv.Value.Live != null) next[kv.Key] = kv.Value;
+            liveStatus = next;
+            if (liveNotify && prev.Count > 0)
+                foreach (var id in LiveStatus.WentLive(prev, next))
+                {
+                    var c = channels.FirstOrDefault(x => x.Id == id);
+                    if (c == null || !c.Notify) continue;
+                    var st = next[id];
+                    var body = string.Join(" · ", new[] { st.Game, st.Title }.Where(x => !string.IsNullOrWhiteSpace(x)));
+                    Notify($"{(string.IsNullOrEmpty(st.Name) ? c.Label : st.Name)} est en live", body.Length > 0 ? body : "Clique pour regarder.",
+                        () => OpenMulti(new List<string> { id }, chat: true));
+                }
+        }
+        catch (Exception ex) { Debug.WriteLine(ex); }
+        finally { statusBusy = false; RefreshLocalPages(); }
+    }
+
+    void MatchAlerts(long nowMs)
+    {
+        if (m8 == null) return;
+        var due = M8.DueAlerts(m8.Current(nowMs), m8Notify, m8Reminder, m8Games, matchMutes, firedAlerts, nowMs);
+        foreach (var a in due)
+        {
+            firedAlerts.Add(a.Key);
+            var info = M8.Info(a.Match.Game);
+            var mins = (int)Math.Max(1, Math.Round((a.Match.Ts * 1000 - nowMs) / 60000.0));
+            var title = a.Kind == "start" ? $"M8 vs {a.Match.OpponentShort} : c'est parti !" : $"M8 vs {a.Match.OpponentShort} dans {mins} min";
+            var body = $"{info.Label} · {a.Match.Tournament}{(string.IsNullOrEmpty(a.Match.Stage) ? "" : " · " + a.Match.Stage)} — clique pour regarder";
+            var id = a.Match.Id;
+            Notify(title, body, () => _ = WatchMatch(id));
+        }
+        if (due.Count > 0)
+        {
+            try { File.WriteAllText(firedPath, JsonSerializer.Serialize(firedAlerts.TakeLast(300).ToList())); } catch { }
+        }
+    }
+
+    /// « Regarder » un match : co-stream M8 en live, sinon une chaîne suivie qui en parle, sinon la diffusion officielle.
+    async Task WatchMatch(string id)
+    {
+        var m = m8?.Matches.FirstOrDefault(x => x.Id == id);
+        if (m == null) return;
+        var official = (m.Streams ?? new()).Where(x => x.Platform == "twitch").Select(x => x.Key)
+            .Concat(M8.Broadcast.TryGetValue(m.Game, out var b) ? b : Array.Empty<string>()).ToList();
+        M8.CoStreams.TryGetValue(m.Game, out var co);
+        var wanted = (co ?? "").Split(new[] { ' ', ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.ToLowerInvariant());
+        var own = channels.Where(c => c.Platform == "twitch").Select(c => c.Key).ToList();
+        var check = wanted.Concat(own).Distinct().Take(40).Select(k => new Channel { Platform = "twitch", Key = k, Label = k }).ToList();
+        Dictionary<string, LiveInfo> st;
+        try { st = await LiveStatus.FetchAsync(check); } catch { st = new(); }
+        foreach (var kv in st) liveStatus[kv.Key] = kv.Value;
+        var keys = LiveStatus.PickStreams(m.Game, official, co, own, st);
+        if (keys.Count == 0) return;
+        OpenMulti(keys.Select(k => "twitch:" + k).ToList(), chat: true);
+    }
+
+    /// Ouvre (ou réutilise) l'onglet multistream avec ces chaînes.
+    void OpenMulti(List<string> ids, bool chat)
+    {
+        ids = ids.Where(i => !string.IsNullOrWhiteSpace(i)).Distinct().Take(9).ToList();
+        if (ids.Count == 0) return;
+        foreach (var id in ids) multiIds.Add(id);
+        var url = MultiUrl + "#c=" + Uri.EscapeDataString(string.Join(",", ids)) + (chat ? "&chat=1" : "");
+        int existing = tabs.FindIndex(x => x.View.CoreWebView2?.Source?.StartsWith(MultiUrl, StringComparison.OrdinalIgnoreCase) == true);
+        if (existing >= 0)
+        {
+            SelectTab(existing);
+            Core?.Navigate(url);
+        }
+        else _ = NewTab(url);
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized;
+        Activate();
+        _ = RefreshStatus();
+    }
+
+    void SendMultiData(CoreWebView2 core)
+    {
+        var known = channels.ToDictionary(c => c.Id);
+        foreach (var id in multiIds)
+            if (!known.ContainsKey(id) && id.Split(':', 2) is { Length: 2 } p)
+                known[id] = new Channel { Platform = p[0], Key = p[1], Label = p[1] };
+        var json = JsonSerializer.Serialize(new
+        {
+            type = "multi",
+            theme = themeName,
+            parent = HomeHost,
+            channels = known.Values.Select(c => new
+            {
+                id = c.Id, platform = c.Platform, key = c.Key, label = c.Label, fav = c.Fav,
+                live = liveStatus.TryGetValue(c.Id, out var st) ? st.Live : null,
+                name = st?.Name, avatar = st?.Avatar, title = st?.Title, game = st?.Game, viewers = st?.Viewers ?? 0,
+                player = Channels.PlayerUrl(c, HomeHost, true),
+                chat = Channels.ChatUrl(c, HomeHost, themeName != "light"),
+                page = Channels.PageUrl(c),
+            }).ToArray(),
+        });
+        try { core.PostWebMessageAsJson(json); } catch { }
+    }
+
+    /// Le bloqueur YouTube suit le réglage « Bloquer les pubs », y compris dans les onglets déjà ouverts.
+    async Task ApplyYouTubeAdblock()
+    {
+        foreach (var t in tabs.ToArray())
+        {
+            var c = t.View.CoreWebView2;
+            if (c == null) continue;
+            try
+            {
+                if (adblock && t.YtScriptId == null) t.YtScriptId = await c.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script);
+                else if (!adblock && t.YtScriptId != null) { c.RemoveScriptToExecuteOnDocumentCreated(t.YtScriptId); t.YtScriptId = null; }
+            }
+            catch { }
         }
     }
 
@@ -1431,7 +1788,9 @@ class BrowserForm : Form
     void AddSuggestion(string url)
     {
         var s = UrlTools.ShortForm(url);
-        if (s != null && suggestSet.Add(s)) suggestions.Add(s);
+        if (s == null || !suggestSet.Add(s)) return;
+        // Modifier la liste pendant que la barre d'adresse est utilisée peut figer WinForms : on attend
+        if (addr != null && addr.Box.Focused) pendingSuggestions.Add(s); else suggestions.Add(s);
     }
 
     void AddHistory(string title, string url)
@@ -1464,6 +1823,7 @@ class BrowserForm : Form
 
     public static readonly string SmokeReport = Environment.GetEnvironmentVariable("LITEBROWSER_SMOKE");
     readonly TaskCompletionSource<bool> homeReady = new();
+    TaskCompletionSource<bool> multiReady;
     TaskCompletionSource<CoreWebView2DownloadOperation> smokeDownload;
     Task extTask;
 
@@ -1551,9 +1911,35 @@ class BrowserForm : Form
             r["prayerError"] = prayerError;
             r["prayerChip"] = prayerChip.Visible ? prayerChip.Text : null;
 
-            for (int i = 0; i < 20 && (matches.Loading || matches.FetchedAt == default); i++) await Task.Delay(1000);
-            r["matches"] = matches.Items.Select(m => $"{m.Game} {m.Short1} vs {m.Short2} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u}").ToList();
             r["homePrayerRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.prow').length)"));
+
+            // Lives : statut des chaînes suivies
+            for (int i = 0; i < 30 && liveStatus.Count == 0; i++) await Task.Delay(1000);
+            r["lives"] = liveStatus.Select(kv => $"{kv.Key} {(kv.Value.Live == true ? "LIVE" : kv.Value.Live == false ? "off" : "?")}").ToList();
+            r["homeLiveCards"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.ch').length)"));
+
+            // Matchs M8 (7 jeux) : premier passage sur Liquipedia (31 s entre les pages)
+            for (int i = 0; i < 260 && (m8.Loading || m8.FetchedAtMs == 0); i++) await Task.Delay(1000);
+            r["m8Source"] = m8.Source;
+            r["m8Errors"] = m8.Errors.ToList();
+            r["m8Matches"] = m8.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                .Select(m => $"{m.Game} vs {m.OpponentShort} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u} {m.Status} – {m.Tournament}").ToList();
+            r["m8Tournaments"] = m8.Tournaments.Select(t => $"{t.Game}: {t.Name} ({t.When})").ToList();
+            r["homeMatchRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.match').length)"));
+            SelectTab(0);
+            await Task.Delay(1500);
+            r["screenshotHomeFinal"] = Screenshot("home_final");
+
+            // Multistream : 2 chaînes + chat
+            multiReady = new TaskCompletionSource<bool>();
+            OpenMulti(new List<string> { "twitch:gentlemates", "twitch:valorant_emea" }, chat: true);
+            r["multiReady"] = await Task.WhenAny(multiReady.Task, Task.Delay(30_000)) == multiReady.Task;
+            await Task.Delay(8000);
+            var mc = Core;
+            r["multiTiles"] = JsString(await mc.ExecuteScriptAsync("String(document.querySelectorAll('#stage .tile').length)"));
+            r["multiPlayers"] = JsString(await mc.ExecuteScriptAsync("String(document.querySelectorAll('#stage iframe').length)"));
+            r["multiChat"] = JsString(await mc.ExecuteScriptAsync("String(document.querySelectorAll('#chat iframe').length)"));
+            r["screenshotMulti"] = Screenshot("multi");
         }
         catch (Exception ex) { r["exception"] = ex.ToString(); }
 
@@ -1623,18 +2009,18 @@ class BrowserForm : Form
 
     async Task RefreshMatches(bool force = false)
     {
-        if (matches == null || matches.Loading) return;
-        if (!force && !matches.IsStale) { RefreshHomeTabs(); return; }
-        var t = matches.RefreshAsync();
-        RefreshHomeTabs(); // affiche « Mise à jour… »
-        await t;
+        if (m8 == null || m8.Loading) return;
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (!force && !m8.IsStale(now)) { RefreshLocalPages(); return; }
+        lastMatchTry = DateTime.Now;
+        await m8.RefreshAsync(force);
     }
 
     // ---------- Horaires de prière ----------
 
     async Task RefreshPrayers(bool relocate = false)
     {
-        if (prayerBusy) return;
+        if (prayerBusy) { prayerPending = true; return; } // rejoué dès que le chargement en cours est fini
         prayerBusy = true;
         lastPrayerTry = DateTime.Now;
         try
@@ -1644,7 +2030,8 @@ class BrowserForm : Form
                 if (prayerAuto)
                 {
                     var loc = await Prayers.LocateByIpAsync();
-                    if (loc != null) { prayerLat = loc.Value.Lat; prayerLon = loc.Value.Lon; prayerCity = loc.Value.City; SaveSettings(); }
+                    // la ville a pu être choisie à la main pendant la recherche : on ne l'écrase pas
+                    if (loc != null && prayerAuto) { prayerLat = loc.Value.Lat; prayerLon = loc.Value.Lon; prayerCity = loc.Value.City; SaveSettings(); }
                 }
             }
             if (double.IsNaN(prayerLat)) { prayerError = "Choisis ta ville pour afficher les horaires."; return; }
@@ -1657,6 +2044,7 @@ class BrowserForm : Form
             prayerBusy = false;
             UpdatePrayerChip();
             RefreshHomeTabs();
+            if (prayerPending) { prayerPending = false; _ = RefreshPrayers(); }
         }
     }
 
@@ -1664,7 +2052,7 @@ class BrowserForm : Form
     {
         if (prayerDay == null || prayerDay.Times.Count == 0)
         {
-            prayerChip.Visible = false;
+            prayerChip.Tag = "off";
             LayoutToolbar();
             return;
         }
@@ -1672,7 +2060,7 @@ class BrowserForm : Form
         prayerChip.Text = $"☾  {name} {at:HH\\:mm}";
         var left = at - DateTime.Now;
         tip.SetToolTip(prayerChip, $"Prochaine prière : {name} à {at:HH\\:mm} (dans {(left.TotalHours >= 1 ? $"{(int)left.TotalHours} h {left.Minutes:00}" : $"{Math.Max(0, (int)left.TotalMinutes)} min")})\n{prayerDay.City}");
-        prayerChip.Visible = true;
+        prayerChip.Tag = "on";
         prayerChip.Invalidate();
         LayoutToolbar();
     }
@@ -1680,7 +2068,7 @@ class BrowserForm : Form
     void MinuteTick()
     {
         // Nouveau jour → nouveaux horaires ; échec précédent → nouvel essai toutes les 10 min
-        if (prayerDay != null && prayerDay.Date != DateTime.Today) { _ = RefreshPrayers(); return; }
+        if (prayerDay != null && prayerDay.Date != DateTime.Today && DateTime.Now - lastPrayerTry > TimeSpan.FromMinutes(2)) { _ = RefreshPrayers(); return; }
         if (prayerDay == null && !prayerBusy && DateTime.Now - lastPrayerTry > TimeSpan.FromMinutes(10)) { _ = RefreshPrayers(); return; }
         if (prayerDay != null)
         {
@@ -1699,7 +2087,10 @@ class BrowserForm : Form
             }
             UpdatePrayerChip();
         }
-        if (matches != null && matches.IsStale && !matches.Loading) _ = RefreshMatches();
+        // Matchs : rafraîchis toutes les heures (et 15 min d'attente après un échec)
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (m8 != null && m8.IsStale(nowMs) && !m8.Loading && DateTime.Now - lastMatchTry > TimeSpan.FromMinutes(15)) _ = RefreshMatches();
+        MatchAlerts(nowMs);
     }
 
     void ShowPrayerMenu()
@@ -1962,6 +2353,12 @@ class BrowserForm : Form
     void AddExtensionPrompt()
     {
         if (profile == null) return;
+        if (extBusy)
+        {
+            MessageBox.Show(this, "Une installation d'extension est déjà en cours, réessaie dans un instant.", "Extensions",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         var src = Core?.Source ?? "";
         string id = src.Contains("chromewebstore.google.com") || src.Contains("chrome.google.com/webstore")
             ? Extensions.ParseStoreId(src) : null;
@@ -2065,6 +2462,9 @@ class BrowserForm : Form
             {
                 history.Clear();
                 SaveList(histPath, history);
+                suggestions.Clear();
+                suggestSet.Clear();
+                foreach (var f in favorites) AddSuggestion(f.Url);
             }));
         }
         m.Items.Add(hist);
@@ -2079,7 +2479,7 @@ class BrowserForm : Form
             th.DropDownItems.Add(MI(label, () => { themeName = id; SaveSettings(); ApplyTheme(); }, null, themeName == id));
         m.Items.Add(th);
         m.Items.Add(MI("Forcer le mode sombre sur tous les sites", ToggleForceDark, null, forceDark));
-        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => { adblock = !adblock; SaveSettings(); }, null, adblock));
+        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => { adblock = !adblock; SaveSettings(); _ = ApplyYouTubeAdblock(); }, null, adblock));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Plein écran", () => SetFullscreen(!fullscreen), "F11"));
         m.Items.Add(MI("Effacer les données de navigation…", ClearData));
@@ -2253,7 +2653,7 @@ class BrowserForm : Form
             case Keys.Control | Keys.T: _ = NewTab(); return true;
             case Keys.Control | Keys.Shift | Keys.T: ReopenClosed(); return true;
             case Keys.Control | Keys.W:
-            case Keys.Control | Keys.F4: CloseTab(sel); return true;
+            case Keys.Control | Keys.F4: BeginInvoke(new Action(() => CloseTab(sel))); return true;
             case Keys.Control | Keys.L:
             case Keys.Alt | Keys.D:
             case Keys.F6: addr.Box.Focus(); addr.Box.SelectAll(); return true;

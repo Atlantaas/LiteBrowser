@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Multistream</title>
+<style>
+:root{--bg:#08080a;--bar:#111114;--card:#17171c;--line:#26262d;--text:#f4f2ee;--sub:#8f8d96;--accent:#ffffff;--accent-text:#08080a;--live:#ff3b3b;
+  --head:"Bahnschrift","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif}
+body.light{--bg:#eef0f3;--bar:#ffffff;--card:#ffffff;--line:#dfe2e6;--text:#1f1f1f;--sub:#5f6368;--accent:#1a73e8;--accent-text:#fff}
+body.dark{--bg:#1b1c1f;--bar:#26272a;--card:#2b2c30;--line:#3c4043;--text:#e8eaed;--sub:#9aa0a6;--accent:#8ab4f8;--accent-text:#202124}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column}
+button{font-family:inherit;color:inherit}
+
+/* ---- Barre ---- */
+#bar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bar);border-bottom:1px solid var(--line);flex:none;min-height:50px;transition:margin-top .2s}
+body.cinema #bar{position:fixed;left:0;right:0;top:0;z-index:20;margin-top:-52px}
+body.cinema #bar:hover,body.cinema #bar:focus-within{margin-top:0}
+body.cinema #hot{position:fixed;left:0;right:0;top:0;height:8px;z-index:19}
+body.cinema #hot:hover + #bar{margin-top:0}
+.title{font-family:var(--head);font-weight:700;letter-spacing:2px;text-transform:uppercase;font-size:13px;margin-right:4px;white-space:nowrap}
+#chips{display:flex;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:none;flex:1}
+.chip{display:flex;align-items:center;gap:7px;padding:5px 6px 5px 10px;border-radius:20px;background:var(--card);border:1px solid var(--line);cursor:pointer;white-space:nowrap;font-size:13px;flex:none}
+.chip.on{border-color:var(--accent)}
+.chip .n{font-weight:600}
+.chip .x{border:0;background:none;cursor:pointer;opacity:.6;font-size:14px;padding:0 4px;border-radius:50%}
+.chip .x:hover{opacity:1;background:var(--line)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--sub);flex:none}
+.dot.live{background:var(--live)}
+#add{display:flex;align-items:center;gap:6px;flex:none}
+#addIn{width:170px;background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:18px;padding:7px 12px;font-family:inherit;font-size:13px;outline:0}
+#addIn:focus{border-color:var(--accent)}
+.tools{display:flex;gap:4px;flex:none}
+.tb{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:6px 10px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.tb:hover{border-color:var(--sub)}
+.tb.on{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+#err{position:fixed;left:50%;top:60px;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:10px 16px;border-radius:12px;font-size:13px;display:none;z-index:30;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+
+/* ---- Scène ---- */
+#main{flex:1;display:flex;min-height:0}
+#stage{flex:1;display:grid;gap:4px;padding:4px;min-width:0;--n:1;--cols:1}
+#stage.auto{grid-template-columns:repeat(var(--cols),1fr);grid-auto-rows:1fr}
+#stage.strip{grid-template-columns:repeat(var(--rest),1fr);grid-template-rows:1fr 22%}
+#stage.strip .tile.focus{grid-column:1 / -1;grid-row:1}
+#stage.side{grid-template-columns:1fr 24%;grid-template-rows:repeat(var(--rest),1fr)}
+#stage.side .tile.focus{grid-column:1;grid-row:1 / -1}
+#stage.side .tile:not(.focus){grid-column:2}
+#stage.solo{grid-template-columns:1fr;grid-template-rows:1fr}
+#stage.solo .tile:not(.focus){display:none}
+.tile{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:0;min-width:0;outline:2px solid transparent;outline-offset:-2px}
+.tile.focus{outline-color:var(--accent)}
+#stage.auto.n1 .tile.focus,#stage.solo .tile.focus{outline-color:transparent}
+.tile .player,.tile iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.tile .over{position:absolute;left:8px;top:8px;right:8px;display:flex;align-items:center;gap:6px;opacity:0;transition:opacity .15s;pointer-events:none;z-index:2}
+.tile:hover .over{opacity:1}
+.tag{background:rgba(0,0,0,.72);color:#fff;border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;pointer-events:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
+.tag.btn{cursor:pointer;font-weight:500}
+.tag.btn:hover{background:rgba(0,0,0,.9)}
+.sp{flex:1}
+.focusbtn{position:absolute;inset:0;z-index:1;cursor:pointer;background:transparent}
+.tile.focus .focusbtn{display:none}
+.empty{margin:auto;text-align:center;color:var(--sub);max-width:420px;line-height:1.6}
+.empty b{color:var(--text)}
+
+/* ---- Chat ---- */
+#chat{width:340px;flex:none;display:none;flex-direction:column;border-left:1px solid var(--line);background:var(--bar)}
+body.chat #chat{display:flex}
+#ctabs{display:flex;gap:4px;padding:6px;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line)}
+.ct{border:0;background:none;padding:6px 10px;border-radius:8px;font-size:12.5px;cursor:pointer;white-space:nowrap;color:var(--sub)}
+.ct.on{background:var(--card);color:var(--text);font-weight:600}
+#cframe{flex:1;position:relative}
+#cframe iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+#cframe .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:20px}
+</style>
+</head>
+<body class="chat">
+<div id="hot"></div>
+<div id="bar">
+  <span class="title">Multistream</span>
+  <div id="chips"></div>
+  <form id="add" autocomplete="off">
+    <input id="addIn" list="favs" placeholder="+ Ajouter une chaîne">
+    <datalist id="favs"></datalist>
+  </form>
+  <div class="tools">
+    <button class="tb" id="lay" title="Changer de disposition (G)">Disposition</button>
+    <button class="tb" id="snd" title="Son : seulement le live en grand, ou tous (M pour couper)">Son principal</button>
+    <button class="tb" id="chatBtn" title="Afficher / masquer le chat (C)">Chat</button>
+    <button class="tb" id="cin" title="Mode cinéma (T)">Cinéma</button>
+  </div>
+</div>
+<div id="err"></div>
+<div id="main">
+  <div id="stage" class="auto"></div>
+  <aside id="chat"><div id="ctabs"></div><div id="cframe"></div></aside>
+</div>
+
+<script src="https://player.twitch.tv/js/embed/v1.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const post = m => { if (window.chrome && chrome.webview) chrome.webview.postMessage(m); };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const LAYOUTS = [['auto', 'Grille'], ['strip', 'Grand + bande'], ['side', 'Grand + colonne'], ['solo', 'Un seul']];
+
+// ---------- État (repris de l'adresse : #c=twitch:a,twitch:b&chat=1) ----------
+const hash = new URLSearchParams(location.hash.slice(1));
+const S = {
+  ids: (hash.get('c') || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 9),
+  focus: '', layout: hash.get('layout') || '', audio: 'focus', muted: false,
+  chat: hash.get('chat') !== '0', chatTab: '', cinema: false,
+};
+S.focus = S.ids[0] || '';
+let info = {};           // id → données envoyées par le navigateur
+let parent = 'litebrowser.home';
+const tiles = {};        // id → { el, player, iframe, muted, src }
+const chats = {};        // id → iframe
+
+function saveHash() {
+  const h = new URLSearchParams();
+  if (S.ids.length) h.set('c', S.ids.join(','));
+  if (!S.chat) h.set('chat', '0');
+  if (S.layout) h.set('layout', S.layout);
+  history.replaceState(null, '', '#' + h.toString());
+  post({ type: 'multiIds', ids: S.ids });
+}
+
+// Adresses par défaut, utilisées tant que le navigateur n'a pas envoyé les siennes
+function fallback(platform, key) {
+  if (platform === 'kick') return { player: `https://player.kick.com/${encodeURIComponent(key)}?muted=true&autoplay=true`, chat: `https://kick.com/popout/${encodeURIComponent(key)}/chat`, page: `https://kick.com/${key}` };
+  if (platform === 'youtube') {
+    const v = key.startsWith('v_'), id = key.slice(2);
+    return { player: v ? `https://www.youtube.com/embed/${id}?autoplay=1&mute=1` : `https://www.youtube.com/embed/live_stream?channel=${id}&autoplay=1&mute=1`,
+             chat: v ? `https://www.youtube.com/live_chat?v=${id}&embed_domain=${parent}` : null,
+             page: v ? `https://www.youtube.com/watch?v=${id}` : `https://www.youtube.com/channel/${id}/live` };
+  }
+  return { player: `https://player.twitch.tv/?channel=${key}&parent=${parent}&muted=true&autoplay=true`,
+           chat: `https://www.twitch.tv/embed/${key}/chat?parent=${parent}&darkpopout`, page: `https://www.twitch.tv/${key}` };
+}
+function chInfo(id) {
+  const [platform, key] = id.split(':');
+  return Object.assign({ id, platform, key, label: key, live: null }, fallback(platform, key), info[id] || {});
+}
+function displayName(c) { return c.name && c.name !== c.key ? c.name : (c.label || c.key); }
+
+// ---------- Lecteurs ----------
+function makeTile(id) {
+  const c = chInfo(id);
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.innerHTML = `<div class="player" id="p_${id.replace(/[^a-z0-9]/gi, '_')}"></div>
+    <div class="focusbtn" title="Mettre en grand"></div>
+    <div class="over"><span class="tag name"></span><span class="sp"></span>
+      <span class="tag btn open" title="Ouvrir la chaîne dans un onglet">↗</span>
+      <span class="tag btn rm" title="Retirer">✕</span></div>`;
+  el.querySelector('.focusbtn').onclick = () => setFocus(id);
+  el.querySelector('.open').onclick = () => post({ type: 'openUrl', url: chInfo(id).page });
+  el.querySelector('.rm').onclick = () => removeId(id);
+  $('stage').appendChild(el);
+  const t = { el, player: null, iframe: null, muted: true, src: '' };
+  tiles[id] = t;
+  if (c.platform === 'twitch' && window.Twitch && Twitch.Player) {
+    try {
+      t.player = new Twitch.Player(el.querySelector('.player').id, {
+        channel: c.key, parent: [parent], width: '100%', height: '100%', muted: true, autoplay: true,
+      });
+    } catch (e) { t.player = null; }
+  }
+  if (!t.player) setIframe(id, true);
+}
+
+function setIframe(id, muted) {
+  const t = tiles[id], c = chInfo(id);
+  let src = c.player;
+  if (!src) return;
+  if (!muted) src = src.replace('muted=true', 'muted=false').replace('mute=1', 'mute=0');
+  if (t.src === src) return;
+  t.src = src;
+  if (!t.iframe) {
+    t.iframe = document.createElement('iframe');
+    t.iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+    t.iframe.setAttribute('allowfullscreen', '');
+    t.el.querySelector('.player').appendChild(t.iframe);
+  }
+  t.iframe.src = src;
+}
+
+function applyAudio() {
+  for (const id of S.ids) {
+    const t = tiles[id]; if (!t) continue;
+    const muted = S.muted || (S.audio === 'focus' && id !== S.focus);
+    if (t.player) { try { t.player.setMuted(muted); if (!muted) t.player.setVolume(1); } catch (e) {} }
+    else if (t.muted !== muted && chInfo(id).platform !== 'twitch') setIframe(id, muted);
+    t.muted = muted;
+  }
+  $('snd').textContent = S.muted ? 'Son coupé' : S.audio === 'focus' ? 'Son principal' : 'Mixage';
+  $('snd').classList.toggle('on', S.audio === 'mix' && !S.muted);
+}
+
+// ---------- Rendu ----------
+function render() {
+  // tuiles : on garde les lecteurs existants (pas de rechargement)
+  for (const id of Object.keys(tiles)) if (!S.ids.includes(id)) { tiles[id].el.remove(); delete tiles[id]; }
+  for (const id of S.ids) if (!tiles[id]) makeTile(id);
+  if (!S.ids.includes(S.focus)) S.focus = S.ids[0] || '';
+  const n = S.ids.length;
+  const layout = S.layout || (n <= 1 ? 'auto' : n <= 3 ? 'side' : 'auto');
+  const st = $('stage');
+  st.className = layout + ' n' + n;
+  st.style.setProperty('--cols', Math.max(1, Math.ceil(Math.sqrt(n))));
+  st.style.setProperty('--rest', Math.max(1, n - 1));
+  // ordre : le live en grand d'abord
+  S.ids.forEach((id, i) => {
+    const t = tiles[id];
+    t.el.classList.toggle('focus', id === S.focus);
+    t.el.style.order = id === S.focus ? -1 : i;
+    const c = chInfo(id);
+    t.el.querySelector('.name').innerHTML = `<span class="dot ${c.live ? 'live' : ''}"></span>${esc(displayName(c))}${c.live && c.viewers ? ' · ' + c.viewers.toLocaleString('fr-FR') : ''}`;
+  });
+  let empty = document.querySelector('#stage > .empty');
+  if (!n && !empty) {
+    empty = document.createElement('div'); empty.className = 'empty';
+    empty.innerHTML = '<b>Aucun live pour l\'instant.</b><br>Ajoute une chaîne en haut (nom Twitch, ou lien Twitch / Kick / YouTube),<br>ou clique sur « Regarder » depuis la page d\'accueil.';
+    st.appendChild(empty);
+  } else if (n && empty) empty.remove();
+
+  // pastilles
+  $('chips').innerHTML = S.ids.map((id, i) => {
+    const c = chInfo(id);
+    return `<div class="chip ${id === S.focus ? 'on' : ''}" data-id="${esc(id)}" title="${esc(c.title || '')}">
+      <span class="dot ${c.live ? 'live' : ''}"></span><span class="n">${i + 1}. ${esc(displayName(c))}</span>
+      <button class="x" data-rm="${esc(id)}" title="Retirer">✕</button></div>`;
+  }).join('');
+  $('lay').textContent = (LAYOUTS.find(l => l[0] === layout) || LAYOUTS[0])[1];
+  $('chatBtn').classList.toggle('on', S.chat);
+  $('cin').classList.toggle('on', S.cinema);
+  document.body.classList.toggle('chat', S.chat);
+  document.body.classList.toggle('cinema', S.cinema);
+  renderChat();
+  applyAudio();
+  document.title = n ? 'Multistream · ' + S.ids.map(id => displayName(chInfo(id))).join(', ') : 'Multistream';
+}
+
+function renderChat() {
+  const withChat = S.ids.filter(id => chInfo(id).chat);
+  if (!withChat.includes(S.chatTab)) S.chatTab = withChat.includes(S.focus) ? S.focus : (withChat[0] || '');
+  $('ctabs').innerHTML = withChat.map(id => `<button class="ct ${id === S.chatTab ? 'on' : ''}" data-tab="${esc(id)}">${esc(displayName(chInfo(id)))}</button>`).join('');
+  const box = $('cframe');
+  for (const id of Object.keys(chats)) if (!withChat.includes(id)) { chats[id].remove(); delete chats[id]; }
+  if (!S.chat) return;
+  if (!S.chatTab) { box.innerHTML = '<div class="empty">Pas de chat disponible pour ces lives.</div>'; return; }
+  const e = box.querySelector('.empty'); if (e) e.remove();
+  if (!chats[S.chatTab]) {
+    const c = chInfo(S.chatTab);
+    const f = document.createElement('iframe');
+    f.src = c.chat;
+    chats[S.chatTab] = f; box.appendChild(f);
+  }
+  for (const [id, f] of Object.entries(chats)) f.style.display = id === S.chatTab ? 'block' : 'none';
+}
+
+// ---------- Actions ----------
+function setFocus(id) { if (S.ids.includes(id)) { S.focus = id; S.chatTab = id; render(); } }
+function removeId(id) { S.ids = S.ids.filter(x => x !== id); saveHash(); render(); }
+function addId(id) {
+  if (!id || S.ids.includes(id)) return;
+  if (S.ids.length >= 9) { showErr('9 lives maximum.'); return; }
+  S.ids.push(id); if (!S.focus) S.focus = id; saveHash(); render();
+}
+function cycleLayout() {
+  const n = S.ids.length, cur = S.layout || (n <= 1 ? 'auto' : n <= 3 ? 'side' : 'auto');
+  const i = LAYOUTS.findIndex(l => l[0] === cur);
+  S.layout = LAYOUTS[(i + 1) % LAYOUTS.length][0]; saveHash(); render();
+}
+function showErr(t) { const e = $('err'); e.textContent = t; e.style.display = 'block'; clearTimeout(showErr.t); showErr.t = setTimeout(() => e.style.display = 'none', 4000); }
+
+$('chips').addEventListener('click', e => {
+  const rm = e.target.closest('[data-rm]'); if (rm) { removeId(rm.dataset.rm); return; }
+  const chip = e.target.closest('.chip'); if (chip) setFocus(chip.dataset.id);
+});
+$('ctabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) { S.chatTab = b.dataset.tab; renderChat(); } });
+$('lay').onclick = cycleLayout;
+$('snd').onclick = () => { if (S.muted) S.muted = false; else S.audio = S.audio === 'focus' ? 'mix' : 'focus'; applyAudio(); };
+$('chatBtn').onclick = () => { S.chat = !S.chat; saveHash(); render(); };
+$('cin').onclick = () => { S.cinema = !S.cinema; render(); };
+$('add').addEventListener('submit', e => {
+  e.preventDefault();
+  const v = $('addIn').value.trim(); if (!v) return;
+  const fav = Object.values(info).find(c => displayName(c).toLowerCase() === v.toLowerCase() || c.key === v.toLowerCase());
+  if (fav) addId(fav.id); else post({ type: 'addChannel', input: v });
+  $('addIn').value = '';
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.ctrlKey || e.altKey || e.metaKey) return;
+  const k = e.key.toLowerCase();
+  if (/^[1-9]$/.test(k)) { setFocus(S.ids[+k - 1]); }
+  else if (k === '[' || k === ']') { const i = S.ids.indexOf(S.focus); if (S.ids.length) setFocus(S.ids[(i + (k === ']' ? 1 : -1) + S.ids.length) % S.ids.length]); }
+  else if (k === 'm') { S.muted = !S.muted; applyAudio(); }
+  else if (k === 'g') cycleLayout();
+  else if (k === 'c') { S.chat = !S.chat; saveHash(); render(); }
+  else if (k === 't') { S.cinema = !S.cinema; render(); }
+  else if (k === 'f') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
+  else if (k === 'escape' && S.cinema) { S.cinema = false; render(); }
+  else return;
+  e.preventDefault();
+});
+window.addEventListener('hashchange', () => {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const ids = (h.get('c') || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 9);
+  if (ids.join(',') !== S.ids.join(',')) { S.ids = ids; S.focus = ids[0] || ''; S.chat = h.get('chat') !== '0'; render(); post({ type: 'multiIds', ids: S.ids }); }
+});
+
+// ---------- Messages du navigateur ----------
+function onData(d) {
+  if (d.type === 'multi') {
+    parent = d.parent || parent;
+    document.body.classList.remove('m8', 'dark', 'light');
+    document.body.classList.add(d.theme || 'm8');
+    info = {}; for (const c of d.channels || []) info[c.id] = c;
+    $('favs').innerHTML = (d.channels || []).filter(c => !S.ids.includes(c.id))
+      .map(c => `<option value="${esc(displayName(c))}">${c.live ? 'En live' : ''}</option>`).join('');
+    render();
+  } else if (d.type === 'added') addId(d.id);
+  else if (d.type === 'error') showErr(d.text);
+}
+if (window.chrome && chrome.webview) {
+  chrome.webview.addEventListener('message', e => onData(e.data));
+  post({ type: 'ready' });
+  post({ type: 'multiIds', ids: S.ids });
+}
+render();
+</script>
+</body>
+</html>

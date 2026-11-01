@@ -30,7 +30,8 @@ static class Program
         Urls();
         Updates();
         Extensions();
-        MatchParsing();
+        M8Tests();
+        ChannelTests();
         PrayerParsing();
         YouTube();
         if (online) await Online();
@@ -141,35 +142,148 @@ static class Program
     }
 
     // ------------------------------------------------------------------
-    static void MatchParsing()
+    static void M8Tests()
     {
-        Section("Matchs Gentle Mates (Liquipedia)");
-        var html = File.ReadAllText(Path.Combine(Fixtures, "liquipedia_valorant.html"));
-        var list = Matches.Parse(html, "VALORANT", "valorant");
-        Check("1 match de Gentle Mates trouvé (les autres équipes ignorées)", list.Count == 1, list.Count.ToString());
-        Check("l'onglet « terminés » est ignoré", list.All(m => m.Ts < 10_000_000_000));
-        if (list.Count > 0)
+        Section("Matchs Gentle Mates – mêmes résultats que Nur Live (7 pages réelles du 01/11/2026)");
+        const long now = 1793550720000; // 01/11/2026 16:32 UTC, heure de récupération des pages
+        var all = new List<M8Match>();
+        var tours = new List<M8Tournament>();
+        foreach (var p in M8.Pages)
         {
-            var m = list[0];
-            Check("équipe M8 reconnue", m.Team1.Contains("Gentle Mates") || m.Team2.Contains("Gentle Mates"), m.Team1 + " / " + m.Team2);
-            Check("adversaire trouvé", !string.IsNullOrWhiteSpace(m.Short1) && !string.IsNullOrWhiteSpace(m.Short2), m.Short1 + " vs " + m.Short2);
-            Check("horaire trouvé", m.Ts > 1_700_000_000);
-            Check("format (Bo3/Bo5…)", m.Format != null && m.Format.StartsWith("Bo"), m.Format);
-            Check("tournoi trouvé", !string.IsNullOrWhiteSpace(m.Tournament), m.Tournament);
-            Check("lien vers Liquipedia", m.Url != null && m.Url.StartsWith("https://liquipedia.net/valorant/"), m.Url);
-            Console.WriteLine($"         {DateTimeOffset.FromUnixTimeSeconds(m.Ts).ToOffset(TimeSpan.FromHours(1)):dd/MM HH:mm}  {m.Short1} vs {m.Short2}  ({m.Format}) – {m.Tournament}");
+            var html = File.ReadAllText(Path.Combine(Fixtures, "m8", p.Game + ".html"));
+            all.AddRange(M8.ParseTeamPage(html, p.Game, p.Wiki, p.Page, now));
+            tours.AddRange(M8.ParseUpcomingTournaments(html, p.Game, p.Wiki));
         }
-        Check("page vide : aucun plantage", Matches.Parse("", "X", "x").Count == 0);
-
-        var now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
-        var cleaned = Matches.Clean(new[]
+        // Référence : sortie du parseur JavaScript de Nur Live sur les mêmes pages
+        Check("1 match trouvé (comme Nur Live)", all.Count == 1, all.Count.ToString());
+        if (all.Count == 1)
         {
-            new Match { Game = "A", Ts = 1_800_003_600, Team1 = "Gentle Mates", Team2 = "B" },
-            new Match { Game = "A", Ts = 1_800_003_600, Team1 = "Gentle Mates", Team2 = "B" },   // doublon
-            new Match { Game = "A", Ts = 1_799_990_000, Team1 = "Gentle Mates", Team2 = "C" },   // en cours
-            new Match { Game = "A", Ts = 1_799_900_000, Team1 = "Gentle Mates", Team2 = "D" },   // fini depuis longtemps
-        }, now);
-        Check("doublons et vieux matchs retirés, tri par date", cleaned.Count == 2 && cleaned[0].Team2 == "C");
+            var m = all[0];
+            Check("id identique", m.Id == "valorantgc:1793556000:krblaze", m.Id);
+            Check("heure identique", m.Ts == 1793556000);
+            Check("statut « à venir »", m.Status == "upcoming", m.Status);
+            Check("adversaire KRÜ Blaze / KRÜ.B", m.Opponent == "KRÜ Blaze" && m.OpponentShort == "KRÜ.B", m.Opponent + " / " + m.OpponentShort);
+            Check("tournoi + phase (GF)", m.Tournament == "Game Changers Championship 2026" && m.Stage == "GF", m.Tournament + " / " + m.Stage);
+            Check("aucun score, aucun stream", m.Score == "" && m.Streams.Count == 0);
+            Check("lien Liquipedia", m.Url == "https://liquipedia.net/valorant/Gentle_Mates_GC", m.Url);
+        }
+        Check("2 tournois à venir (comme Nur Live)",
+            tours.Count == 2 && tours[0].Name == "VCT EMEA Kickoff" && tours[0].When == "Jan – Feb" &&
+            tours[1].Name == "Game Changers Championship 2026" && tours[1].When == "Oct 22 – Nov 01",
+            string.Join(" ; ", tours.Select(t => $"{t.Game}:{t.Name}:{t.When}")));
+        Check("hors période (2 mois avant) : aucun match",
+            M8.ParseTeamPage(File.ReadAllText(Path.Combine(Fixtures, "m8", "valorantgc.html")), "valorantgc", "valorant", "Gentle_Mates_GC", 1780000000000).Count == 0);
+
+        Section("Matchs – cas repris des tests de Nur Live");
+        var synthRow = "<table><tr class=\"table2&#95;&#95;row--body\"><td data-sort-value=\"2000000000\"><span class=\"timer-object\" data-timestamp=\"2000000000\">x</span></td><td><a href=\"/valorant/S-Tier_Tournaments\" title=\"S-Tier Tournaments\">S-Tier</a></td><td><a href=\"/valorant/VCT/2033\" title=\"VCT/2033\">VCT 2033 Masters</a></td><td></td><td>vs</td><td data-sort-value=\"Team Heretics\"><div class=\"block-team\"><span class=\"name\"><a href=\"/valorant/Team_Heretics\" title=\"Team Heretics\">TH</a></span></div></td><td><a href=\"/valorant/Special:Stream/twitch/Valorant_EMEA\">tw</a></td></tr></table>";
+        var sr = M8.ParseTeamPage(synthRow, "valorant", "valorant", null, 1999990000L * 1000);
+        Check("ligne de tableau : 1 match", sr.Count == 1);
+        if (sr.Count == 1)
+        {
+            Check("à venir", sr[0].Status == "upcoming");
+            Check("adversaire Team Heretics", sr[0].Opponent == "Team Heretics", sr[0].Opponent);
+            Check("tournoi VCT 2033 Masters", sr[0].Tournament == "VCT 2033 Masters", sr[0].Tournament);
+            Check("stream twitch/valorant_emea", sr[0].Streams.Count == 1 && sr[0].Streams[0].Key == "valorant_emea");
+        }
+        Check("commencé il y a 30 min → en cours", M8.ParseTeamPage(synthRow, "valorant", "valorant", null, (2000000000L + 1800) * 1000)[0].Status == "live");
+        var legacy = "<table class=\"infobox_matches_content\"><tr><td class=\"team-left\"><span><a href=\"/valorant/Gentle_Mates\" title=\"Gentle Mates\">M8</a></span></td><td class=\"match-filler\">vs<span class=\"timer-object\" data-timestamp=\"2000000000\"></span></td><td class=\"team-right\"><a href=\"/valorant/Fnatic\" title=\"Fnatic\">FNC</a></td></tr><tr><td colspan=\"3\"><div class=\"tournament-text\"><a href=\"/valorant/X\" title=\"X\">Masters Test</a></div></td></tr></table>";
+        Check("ancien format d'encart : 1 match", M8.ParseTeamPage(legacy, "valorant", "valorant", null, 1999990000L * 1000).Count == 1);
+
+        Section("Alertes de match");
+        var games = new Dictionary<string, bool> { ["valorant"] = true, ["valorantgc"] = true };
+        var fired = new HashSet<string>();
+        var due = M8.DueAlerts(sr, true, 15, games, null, fired, (2000000000L - 600) * 1000);
+        Check("10 min avant : rappel", due.Select(d => d.Kind).SequenceEqual(new[] { "reminder" }));
+        foreach (var d in due) fired.Add(d.Key);
+        Check("pas de doublon", M8.DueAlerts(sr, true, 15, games, null, fired, (2000000000L - 300) * 1000).Count == 0);
+        due = M8.DueAlerts(sr, true, 15, games, null, fired, (2000000000L + 60) * 1000);
+        Check("coup d'envoi", due.Select(d => d.Kind).SequenceEqual(new[] { "start" }));
+        Check("match en sourdine", M8.DueAlerts(sr, true, 15, games, new HashSet<string> { sr[0].Id }, new HashSet<string>(), (2000000000L + 60) * 1000).Count == 0);
+        Check("jeu désactivé", M8.DueAlerts(sr, true, 15, new Dictionary<string, bool> { ["valorant"] = false }, null, new HashSet<string>(), (2000000000L + 60) * 1000).Count == 0);
+        Check("trop tard (1 h après)", M8.DueAlerts(sr, true, 15, games, null, new HashSet<string>(), (2000000000L + 3600) * 1000).Count == 0);
+        Check("alertes coupées", M8.DueAlerts(sr, false, 15, games, null, new HashSet<string>(), (2000000000L + 60) * 1000).Count == 0);
+
+        Section("« Regarder » : chaînes choisies");
+        Check("streams du match + gentlemates", M8.WatchSources(sr[0]).Select(s => s.Key).SequenceEqual(new[] { "valorant_emea", "gentlemates" }));
+        Check("sinon diffuseur officiel + gentlemates",
+            M8.WatchSources(new M8Match { Game = "rocketleague" }).Select(s => s.Key).SequenceEqual(new[] { "rocketleague", "gentlemates" }));
+        var st = new Dictionary<string, LiveInfo>
+        {
+            ["twitch:squeezie"] = new() { Live = true, Title = "M8 en finale !", Game = "VALORANT" },
+            ["twitch:gentlemates"] = new() { Live = false },
+            ["twitch:gotaga"] = new() { Live = true, Title = "Watchparty Gentle Mates", Game = "Call of Duty" },
+        };
+        Check("co-stream en live choisi (squeezie)",
+            LiveStatus.PickStreams("valorant", new[] { "valorant_emea" }, M8.CoStreams["valorant"], new[] { "gotaga" }, st).SequenceEqual(new[] { "squeezie" }));
+        Check("aucun co-stream → une chaîne suivie qui parle de M8 sur ce jeu",
+            LiveStatus.PickStreams("callofduty", new[] { "callofduty" }, "brawks", new[] { "gotaga" }, st).SequenceEqual(new[] { "gotaga" }));
+        Check("personne en live → diffusion officielle",
+            LiveStatus.PickStreams("rocketleague", new[] { "rocketleague" }, "gentlemates", new string[0], st).SequenceEqual(new[] { "rocketleague" }));
+
+        Section("Cache Nur Live et récupération");
+        var cache = Path.Combine(Path.GetTempPath(), "lb-nl-cache.json");
+        File.WriteAllText(cache, "{\"matches\":[{\"id\":\"valorant:x\",\"game\":\"valorant\",\"ts\":2000000000,\"opponent\":\"Fnatic\",\"opponentShort\":\"FNC\",\"tournament\":\"T\",\"stage\":\"\",\"status\":\"upcoming\",\"score\":\"\",\"url\":\"u\",\"streams\":[{\"platform\":\"twitch\",\"key\":\"valorant_emea\"}]}],\"tournaments\":[],\"events\":[],\"fetchedAt\":1999999000000}");
+        var c = M8.ReadNurLiveCache(cache);
+        Check("cache Nur Live relu", c != null && c.Value.Matches.Count == 1 && c.Value.Matches[0].Streams[0].Key == "valorant_emea" && c.Value.FetchedAt == 1999999000000);
+
+        var svcCache = Path.Combine(Path.GetTempPath(), "lb-m8-own.json");
+        File.Delete(svcCache);
+        int calls = 0;
+        var svc = new M8Service(svcCache) { GapMs = 0 };
+        svc.Fetch = _ => { calls++; return Task.FromResult(new System.Net.Http.HttpResponseMessage((System.Net.HttpStatusCode)429)); };
+        svc.RefreshAsync().Wait();
+        Check("429 de Liquipedia : arrêt au 1er appel, rien de cassé", calls == 1 && svc.Matches.Count == 0 && !svc.Loading, "appels : " + calls);
+
+        int pageIdx = 0;
+        svc.Fetch = _ =>
+        {
+            var p = M8.Pages[pageIdx++];
+            var html = File.ReadAllText(Path.Combine(Fixtures, "m8", p.Game + ".html"));
+            var json = System.Text.Json.JsonSerializer.Serialize(new { parse = new Dictionary<string, object> { ["text"] = new Dictionary<string, string> { ["*"] = html } } });
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(json) });
+        };
+        svc.RefreshAsync().Wait();
+        Check("7 pages lues et cache enregistré", pageIdx == 7 && File.Exists(svcCache) && svc.Tournaments.Count == 2, $"pages {pageIdx}, tournois {svc.Tournaments.Count}");
+        var again = new M8Service(svcCache);
+        Check("cache relu au démarrage suivant", again.Tournaments.Count == 2 && again.FetchedAtMs > 0);
+    }
+
+    // ------------------------------------------------------------------
+    static void ChannelTests()
+    {
+        Section("Chaînes (Twitch, Kick, YouTube)");
+        (string In, string Id)[] cases =
+        {
+            ("gotaga", "twitch:gotaga"), ("https://www.twitch.tv/Squeezie", "twitch:squeezie"), ("@ZeratoR", "twitch:zerator"),
+            ("twitch: kamet0", "twitch:kamet0"), ("https://kick.com/amouranth", "kick:amouranth"), ("kick:xqc", "kick:xqc"),
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youtube:v_dQw4w9WgXcQ"),
+            ("https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx", "youtube:c_UCxxxxxxxxxxxxxxxxxxxxxx"),
+            ("a", null), ("twitch.tv/directory", null), ("", null),
+        };
+        foreach (var (i, id) in cases)
+        {
+            var c = Channels.Parse(i);
+            Check($"« {i} » → {id ?? "refusé"}", c?.Id == id, c?.Id);
+        }
+        Check("lecteur Twitch avec parent", Channels.PlayerUrl(new Channel { Key = "gentlemates" }, "litebrowser.home", true)
+            == "https://player.twitch.tv/?channel=gentlemates&parent=litebrowser.home&muted=true&autoplay=true");
+        Check("chat Twitch sombre", Channels.ChatUrl(new Channel { Key = "gentlemates" }, "litebrowser.home", true)
+            == "https://www.twitch.tv/embed/gentlemates/chat?parent=litebrowser.home&darkpopout");
+        Check("6 chaînes par défaut (comme Nur Live)", Channels.DefaultList().Count == 6 && Channels.DefaultList()[0].Notify);
+
+        var nl = Path.Combine(Path.GetTempPath(), "lb-nl-state.json");
+        File.WriteAllText(nl, "{\"version\":3,\"sources\":[{\"platform\":\"twitch\",\"key\":\"gentlemates\",\"label\":\"Gentle Mates\",\"fav\":true,\"notify\":true},{\"platform\":\"kick\",\"key\":\"xqc\",\"label\":\"xQc\"},{\"platform\":\"twitch\",\"key\":\"gentlemates\"},{\"platform\":\"bad\",\"key\":\"x\"}]}");
+        var imported = Channels.ReadNurLive(nl);
+        Check("chaînes de Nur Live reprises (doublons et inconnues retirés)", imported.Count == 2 && imported[0].Fav && imported[0].Notify && imported[1].Id == "kick:xqc");
+
+        Section("Statut en live (DecAPI)");
+        Check("« x is offline » → hors ligne", LiveStatus.ParseUptime("gentlemates is offline") == false);
+        Check("« 2 hours, 3 minutes » → en live", LiveStatus.ParseUptime("2 hours, 3 minutes, 10 seconds") == true);
+        Check("« User not found » → hors ligne", LiveStatus.ParseUptime("User not found: zzzz") == false);
+        Check("erreur inconnue → statut inconnu", LiveStatus.ParseUptime("Rate limit exceeded") == null);
+        var prev = new Dictionary<string, LiveInfo> { ["twitch:a"] = new() { Live = false }, ["twitch:b"] = new() { Live = true }, ["twitch:c"] = new() { Live = null } };
+        var next = new Dictionary<string, LiveInfo> { ["twitch:a"] = new() { Live = true }, ["twitch:b"] = new() { Live = true }, ["twitch:c"] = new() { Live = true } };
+        Check("alerte seulement quand on passe de hors ligne à en live", LiveStatus.WentLive(prev, next).SequenceEqual(new[] { "twitch:a" }));
     }
 
     // ------------------------------------------------------------------
@@ -257,17 +371,15 @@ static class Program
         }
         catch (Exception e) { Check("localisation par IP", false, e.Message); }
 
-        Section("En ligne : matchs (Liquipedia, VALORANT)");
+        Section("En ligne : lives Twitch (DecAPI)");
         try
         {
-            using var http = Net.Client(TimeSpan.FromSeconds(30));
-            var json = await http.GetStringAsync(Matches.ApiUrl("valorant"));
-            var list = Matches.Parse(Matches.HtmlFromApi(json), "VALORANT", "valorant");
-            Check($"page lue, {list.Count} match(s) M8 à venir", true);
-            foreach (var m in list)
-                Console.WriteLine($"         {DateTimeOffset.FromUnixTimeSeconds(m.Ts).ToOffset(TimeSpan.FromHours(1)):dd/MM HH:mm}  {m.Short1} vs {m.Short2}  ({m.Format}) – {m.Tournament}");
+            var st = await LiveStatus.FetchAsync(Channels.DefaultList());
+            Check($"statut de {st.Count} chaînes : " + string.Join(", ", st.Select(kv => kv.Key.Split(':')[1] + (kv.Value.Live == true ? " LIVE" : kv.Value.Live == false ? " off" : " ?"))),
+                st.Count == 6 && st.Values.All(v => v.Live != null));
+            Check("avatars récupérés", st.Values.Count(v => !string.IsNullOrEmpty(v.Avatar)) >= 5);
         }
-        catch (Exception e) { Check("Liquipedia", false, e.Message); }
+        catch (Exception e) { Check("DecAPI", false, e.Message); }
 
         Section("En ligne : mises à jour GitHub");
         try
