@@ -6,9 +6,9 @@ jobs:
     steps:
       - run: |
           mkdir out; UA="LiteBrowser/3.1 (https://github.com/Atlantaas/LiteBrowser)"
-          for p in "rocketleague/Gentle_Mates" "rocketleague/NEO/Coupe_de_France_Slash/2026" "rocketleague/Liquipedia:Matches"; do
-            f=out/$(echo "$p" | tr '/:' '__').html
-            curl -s --compressed -A "$UA" "https://liquipedia.net/$p" -o "$f" -w "$p %{http_code} %{size_download}\n"
+          for p in "Gentle_Mates" "NEO/Coupe_de_France_Slash/2026"; do
+            f=out/$(echo "$p" | tr '/:' '__').json
+            curl -s --compressed -A "$UA" "https://liquipedia.net/rocketleague/api.php?action=parse&format=json&prop=text&page=$p" -o "$f" -w "$p %{http_code} %{size_download}\n"
             sleep 35
           done
       - uses: actions/upload-artifact@v4
