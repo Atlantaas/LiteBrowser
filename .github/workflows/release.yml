@@ -24,7 +24,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           [xml]$proj = Get-Content LiteBrowser.csproj
-          $version = ($proj.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
+          $version = @($proj.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
           "version=$version" >> $env:GITHUB_OUTPUT
           gh release view "v$version" --repo "${{ github.repository }}" *> $null
           if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT; Write-Host "v$version déjà publiée, rien à faire." }
