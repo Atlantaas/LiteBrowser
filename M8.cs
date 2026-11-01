@@ -145,6 +145,7 @@ namespace LiteCore
                 string key;
                 try { key = Uri.UnescapeDataString(Decode(m.Groups[2].Value)).ToLowerInvariant(); }
                 catch { key = Decode(m.Groups[2].Value).ToLowerInvariant(); }
+                key = key.Trim().Replace(' ', '_');
                 if (!outp.Any(s => s.Platform == platform && s.Key == key)) outp.Add(new StreamRef(platform, key));
             }
             foreach (Match m in Regex.Matches(fragment, "twitch\\.tv/([a-z0-9_]{3,25})", RegexOptions.IgnoreCase))
@@ -263,6 +264,137 @@ namespace LiteCore
         }
 
         /// Encart « Upcoming Tournaments ».
+        // ---------- Tournois hors page d'équipe (Coupe de France, ligues nationales…) ----------
+        // Liquipedia n'affiche sur la page de l'équipe que les matchs des grosses compétitions.
+        // On demande donc à l'API la liste des pages qui citent l'équipe, on garde les tournois de
+        // l'année modifiés récemment, puis on lit ces pages pour en extraire les matchs de M8.
+
+        public static string BacklinksUrl(M8Page p) =>
+            $"https://liquipedia.net/{p.Wiki}/api.php?action=query&format=json&generator=backlinks&gbltitle={Uri.EscapeDataString(p.Page).Replace("%2F", "/")}" +
+            "&gblnamespace=0&gbllimit=500&prop=revisions&rvprop=timestamp";
+
+        public static string ParseUrl(string wiki, string title) =>
+            $"https://liquipedia.net/{wiki}/api.php?action=parse&page={Uri.EscapeDataString(title.Replace(' ', '_')).Replace("%2F", "/")}&format=json&prop=text&redirects=1";
+
+        static readonly Regex NotTournament = new(
+            @"Transfers|Rumou?rs|News|Statistics|Player|Portal|Earnings|Ranking|Roster|Broadcast|Participants$|/Results|Head2head|Main Page|Liquipedia:",
+            RegexOptions.IgnoreCase);
+
+        /// Tournois de l'année (ou de la suivante) modifiés ces derniers jours, les plus récents d'abord.
+        public static List<string> TournamentCandidates(string backlinksJson, DateTime nowUtc, int days = 3)
+        {
+            var outp = new List<(string Title, DateTime At)>();
+            using var doc = JsonDocument.Parse(backlinksJson ?? "{}");
+            if (!doc.RootElement.TryGetProperty("query", out var q) || !q.TryGetProperty("pages", out var pages)) return new List<string>();
+            var years = new[] { nowUtc.Year, nowUtc.Year + 1, nowUtc.Month == 1 ? nowUtc.Year - 1 : nowUtc.Year }
+                .Select(y => y.ToString(CultureInfo.InvariantCulture)).ToArray();
+            foreach (var pg in pages.EnumerateObject())
+            {
+                var title = pg.Value.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+                if (title.Length == 0 || NotTournament.IsMatch(title) || !years.Any(y => Regex.IsMatch(title, $@"(^|[^0-9]){y}([^0-9]|$)"))) continue;
+                DateTime at = DateTime.MinValue;
+                if (pg.Value.TryGetProperty("revisions", out var revs) && revs.ValueKind == JsonValueKind.Array && revs.GetArrayLength() > 0 &&
+                    revs[0].TryGetProperty("timestamp", out var ts))
+                    DateTime.TryParse(ts.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out at);
+                if (nowUtc - at > TimeSpan.FromDays(days)) continue;
+                outp.Add((title, at));
+            }
+            return outp.OrderByDescending(x => x.At).Select(x => x.Title).ToList();
+        }
+
+        /// Phase en français : « Day 1 » → « Jour 1 », « Semifinals » → « Demi-finales »…
+        public static string StageFr(string stage)
+        {
+            var s = (stage ?? "").Trim();
+            var d = Regex.Match(s, @"^(Day|Week|Round|Match ?day)\s*(\d+)$", RegexOptions.IgnoreCase);
+            if (d.Success)
+                return (d.Groups[1].Value.ToLowerInvariant() switch { "week" => "Semaine ", "round" => "Ronde ", _ => "Jour " }) + d.Groups[2].Value;
+            return s.ToLowerInvariant() switch
+            {
+                "grand final" or "grand finals" or "final" or "finals" => "Finale",
+                "semifinals" or "semifinal" or "semi-finals" => "Demi-finales",
+                "quarterfinals" or "quarterfinal" or "quarter-finals" => "Quarts de finale",
+                "upper bracket" => "Tableau haut", "lower bracket" => "Tableau bas",
+                "group stage" => "Phase de groupes", "playoffs" => "Phase finale",
+                _ => s,
+            };
+        }
+
+        /// « NEO/Coupe de France Slash/2026 » → « Coupe de France Slash 2026 ».
+        public static string TournamentName(string title)
+        {
+            var parts = (title ?? "").Replace('_', ' ').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 3 && !Regex.IsMatch(parts[0], @"\d{4}")) parts = parts.Skip(1).ToArray();
+            return string.Join(" ", parts);
+        }
+
+        /// Matchs de M8 sur une page de tournoi (listes de matchs et tableaux).
+        public static List<M8Match> ParseTournamentPage(string html, string game, string wiki, string title, long nowMs)
+        {
+            html ??= "";
+            long now = nowMs / 1000;
+            var outp = new List<M8Match>();
+            var seen = new HashSet<string>();
+            string tournament = TournamentName(title);
+            var starts = Regex.Matches(html, "<div class=\"brkts-(?:matchlist-)?match [^\"]*brkts-match-popup-wrapper").Select(m => m.Index).ToList();
+            for (int i = 0; i < starts.Count; i++)
+            {
+                int a = starts[i], b = i + 1 < starts.Count ? starts[i + 1] : Math.Min(html.Length, a + 20000);
+                var blk = html[a..b];
+                var tsM = Regex.Match(blk, "class=\"timer-object[^\"]*\"[^>]*data-timestamp=\"(\\d+)\"");
+                if (!tsM.Success) continue;
+                long ts = long.Parse(tsM.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (ts == 0 || ts < now - LiveWindowS || ts > now + 60 * 86400) continue;
+                var names = Regex.Matches(blk, "<div class=\"team-name\">([\\s\\S]*?)</div>").Select(x => StripTags(x.Groups[1].Value)).Take(2).ToList();
+                var shorts = Regex.Matches(blk, "<div class=\"team-shortname\">([\\s\\S]*?)</div>").Select(x => StripTags(x.Groups[1].Value)).Take(2).ToList();
+                if (names.Count < 2) continue;
+                int self = SelfRe.IsMatch(names[0]) ? 0 : SelfRe.IsMatch(names[1]) ? 1 : -1;
+                if (self < 0) continue; // match d'autres équipes
+                int other = 1 - self;
+                string opp = names[other], oppShort = shorts.Count == 2 ? shorts[other] : opp;
+                if (opp == "TBD" || opp.Length == 0) { opp = "À déterminer"; oppShort = "TBD"; }
+
+                // scores : cellules de la liste de matchs, sinon cases du tableau
+                var sc = Regex.Matches(blk, "class=\"brkts-matchlist-cell brkts-matchlist-score[^\"]*\"[^>]*>\\s*<div class=\"brkts-matchlist-cell-content\">([\\s\\S]*?)</div>")
+                    .Select(x => StripTags(x.Groups[1].Value)).ToList();
+                if (sc.Count < 2)
+                    sc = Regex.Matches(blk, "class=\"brkts-opponent-score-inner\">([\\s\\S]*?)</div>").Select(x => StripTags(x.Groups[1].Value)).ToList();
+                string score = "";
+                bool finished = false;
+                if (sc.Count >= 2 && Regex.IsMatch(sc[0], "^\\d+$") && Regex.IsMatch(sc[1], "^\\d+$"))
+                {
+                    score = self == 0 ? $"{sc[0]} : {sc[1]}" : $"{sc[1]} : {sc[0]}";
+                    finished = Regex.IsMatch(blk, "brkts-matchlist-slot-winner|brkts-opponent-win|font-weight:bold");
+                }
+
+                // phase : titre de la liste (« Day 1 ») ou du tour (« Semifinals ») le plus proche
+                string stage = "";
+                int lt = LastIndexJs(html, "general-collapsible-default-title\">", a);
+                int rh = LastIndexJs(html, "class=\"brkts-round-header", a);
+                if (lt >= 0 && lt > rh)
+                    stage = StripTags(html.Substring(lt + 35, Math.Min(200, html.Length - lt - 35)).Split('<')[0]);
+                else if (rh >= 0)
+                {
+                    var rm = Regex.Match(html.Substring(rh, Math.Min(600, html.Length - rh)), ">([^<>]{2,40})<");
+                    if (rm.Success) stage = Decode(rm.Groups[1].Value).Trim();
+                }
+
+                stage = StageFr(stage);
+                var linkM = Regex.Match(blk, "href=\"(/[a-z]+/Match:[^\"]+)\"");
+                string id = linkM.Success
+                    ? $"{game}:{Regex.Replace(Decode(linkM.Groups[1].Value), "^.*Match:", "")}"
+                    : $"{game}:{ts}:{Regex.Replace(opp.ToLowerInvariant(), "[^a-z0-9]+", "")}";
+                if (!seen.Add(id)) continue;
+                outp.Add(new M8Match
+                {
+                    Id = id, Game = game, Ts = ts, Opponent = opp, OpponentShort = oppShort, Tournament = tournament, Stage = stage,
+                    Status = finished ? "finished" : ts > now ? "upcoming" : "live", Score = score,
+                    Url = $"https://liquipedia.net/{wiki}/{title.Replace(' ', '_')}", Streams = StreamsIn(blk),
+                });
+            }
+            return outp.OrderBy(m => m.Ts).ToList();
+        }
+
         public static List<M8Tournament> ParseUpcomingTournaments(string html, string game, string wiki)
         {
             var outp = new List<M8Tournament>();
@@ -349,12 +481,23 @@ namespace LiteCore
         public event Action Updated;
         public Func<string, Task<HttpResponseMessage>> Fetch; // remplaçable dans les tests
         public int GapMs = M8.MinGapMs;
-        long lastParseAt;
+        public int QueryGapMs = 2500;          // requêtes simples (hors « parse ») : 1 toutes les 2 s max
+        public int MaxTournamentParses = 3;    // pages de tournoi lues par actualisation
+        long lastParseAt, lastQueryAt;
+        bool rateLimited;
+        // Matchs trouvés sur les pages de tournoi (Coupe de France, ligues…) : clé « jeu|titre »
+        readonly Dictionary<string, List<M8Match>> tourMatches = new();
+        readonly Dictionary<string, long> tourChecked = new();
+        string TourPath => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(cachePath)) ?? ".", Path.GetFileNameWithoutExtension(cachePath) + "-tournois.json");
+
+        /// Matchs venant des pages de tournoi.
+        public List<M8Match> Extra => tourMatches.Values.SelectMany(x => x).ToList();
 
         public M8Service(string cachePath, params string[] nurLiveCaches)
         {
             this.cachePath = cachePath;
             this.nurLiveCaches = nurLiveCaches;
+            LoadTour();
             try
             {
                 var c = M8.ReadNurLiveCache(cachePath); // même format que Nur Live
@@ -366,7 +509,22 @@ namespace LiteCore
         public bool IsStale(long nowMs) => nowMs - FetchedAtMs > 60 * 60 * 1000;
 
         /// Matchs à jour à l'instant t.
-        public List<M8Match> Current(long nowMs) => M8.RefreshStatus(Matches, nowMs).OrderBy(m => m.Ts).ToList();
+        public List<M8Match> Current(long nowMs) => M8.RefreshStatus(Merge(Matches, Extra), nowMs).OrderBy(m => m.Ts).ToList();
+
+        /// Fusion page d'équipe + pages de tournoi, sans doublon (même jeu, même heure, même adversaire).
+        public static List<M8Match> Merge(IEnumerable<M8Match> team, IEnumerable<M8Match> extra)
+        {
+            static string Key(M8Match m) => m.Game + "|" + m.Ts + "|" + System.Text.RegularExpressions.Regex.Replace((m.OpponentShort ?? m.Opponent ?? "").ToLowerInvariant(), "[^a-z0-9]", "");
+            var outp = new List<M8Match>();
+            var ids = new HashSet<string>();
+            var keys = new HashSet<string>();
+            foreach (var m in (team ?? Enumerable.Empty<M8Match>()).Concat(extra ?? Enumerable.Empty<M8Match>()))
+            {
+                if (m == null || !ids.Add(m.Id ?? "") || !keys.Add(Key(m))) continue;
+                outp.Add(m);
+            }
+            return outp;
+        }
 
         public async Task RefreshAsync(bool force = false)
         {
@@ -376,6 +534,8 @@ namespace LiteCore
             try
             {
                 long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                rateLimited = false;
+                bool fromNurLive = false;
                 // 1) Nur Live a-t-il des données récentes ?
                 foreach (var p in nurLiveCaches ?? Array.Empty<string>())
                 {
@@ -386,13 +546,20 @@ namespace LiteCore
                         {
                             Matches = c.Value.Matches; Tournaments = c.Value.Tournaments; FetchedAtMs = c.Value.FetchedAt; Source = "Nur Live";
                             Save();
-                            return;
+                            fromNurLive = true;
+                            break;
                         }
                     }
                     catch { }
                 }
                 // 2) Sinon Liquipedia
-                await FetchAllAsync();
+                if (!fromNurLive) await FetchAllAsync();
+                // 3) Tournois absents de la page d'équipe (Coupe de France…)
+                if (!rateLimited)
+                {
+                    Updated?.Invoke();
+                    await RefreshTournamentsAsync();
+                }
             }
             finally { Loading = false; Updated?.Invoke(); }
         }
@@ -417,6 +584,7 @@ namespace LiteCore
                     if ((int)res.StatusCode == 429)
                     {
                         foreach (var q in M8.Pages.Skip(i)) { failed.Add(q.Game); Errors.Add(q.Game + " : limite Liquipedia (429)"); }
+                        rateLimited = true;
                         break; // on réessaiera plus tard
                     }
                     res.EnsureSuccessStatusCode();
@@ -436,6 +604,90 @@ namespace LiteCore
             FetchedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             Source = "Liquipedia";
             Save();
+        }
+
+        async Task WaitGap(bool parse)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long wait = parse ? lastParseAt + GapMs - now : lastQueryAt + QueryGapMs - now;
+            if (wait > 0 && (parse ? GapMs : QueryGapMs) > 0) await Task.Delay((int)wait);
+            now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            lastQueryAt = now;
+            if (parse) lastParseAt = now;
+        }
+
+        async Task RefreshTournamentsAsync()
+        {
+            using var http = Net.Client(TimeSpan.FromSeconds(30));
+            var fetch = Fetch ?? (u => http.GetAsync(u));
+            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var queue = new List<(M8Page Page, string Title, bool Known)>();
+            var queuedTitles = new HashSet<string>();
+            foreach (var p in M8.Pages)
+            {
+                try
+                {
+                    await WaitGap(parse: false);
+                    var res = await fetch(M8.BacklinksUrl(p));
+                    if ((int)res.StatusCode == 429) { rateLimited = true; break; }
+                    if (!res.IsSuccessStatusCode) continue;
+                    foreach (var title in M8.TournamentCandidates(await res.Content.ReadAsStringAsync(), DateTime.UtcNow))
+                    {
+                        if (!queuedTitles.Add(p.Wiki + "|" + title)) continue; // même wiki (Valorant / GC)
+                        var key = p.Game + "|" + title;
+                        bool known = tourMatches.TryGetValue(key, out var l) && l.Any(m => m.Ts * 1000 > nowMs - 4 * 3600_000L);
+                        long last = tourChecked.TryGetValue(key, out var t) ? t : 0;
+                        if (nowMs - last > (known ? 30 * 60_000L : 24 * 3600_000L)) queue.Add((p, title, known));
+                    }
+                }
+                catch { }
+            }
+            int done = 0;
+            foreach (var q in queue.OrderByDescending(x => x.Known))
+            {
+                if (rateLimited || done >= MaxTournamentParses) break;
+                var key = q.Page.Game + "|" + q.Title;
+                try
+                {
+                    await WaitGap(parse: true);
+                    done++;
+                    var res = await fetch(M8.ParseUrl(q.Page.Wiki, q.Title));
+                    if ((int)res.StatusCode == 429) { rateLimited = true; break; }
+                    res.EnsureSuccessStatusCode();
+                    using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+                    var html = doc.RootElement.GetProperty("parse").GetProperty("text").GetProperty("*").GetString() ?? "";
+                    var found = M8.ParseTournamentPage(html, q.Page.Game, q.Page.Wiki, q.Title, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    if (found.Count > 0) tourMatches[key] = found; else tourMatches.Remove(key);
+                    tourChecked[key] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    if (found.Count > 0) Updated?.Invoke();
+                }
+                catch { tourChecked[key] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); }
+            }
+            // ménage : tournois terminés, vérifications de plus de 3 jours
+            foreach (var k in tourMatches.Where(kv => !kv.Value.Any(m => m.Ts * 1000 > nowMs - 4 * 3600_000L)).Select(kv => kv.Key).ToList()) tourMatches.Remove(k);
+            foreach (var k in tourChecked.Where(kv => nowMs - kv.Value > 3 * 86400_000L).Select(kv => kv.Key).ToList()) tourChecked.Remove(k);
+            SaveTour();
+        }
+
+        void LoadTour()
+        {
+            try
+            {
+                if (!File.Exists(TourPath)) return;
+                using var doc = JsonDocument.Parse(File.ReadAllText(TourPath));
+                if (doc.RootElement.TryGetProperty("matches", out var ms))
+                    foreach (var kv in ms.EnumerateObject())
+                        tourMatches[kv.Name] = JsonSerializer.Deserialize<List<M8Match>>(kv.Value.GetRawText()) ?? new();
+                if (doc.RootElement.TryGetProperty("checked", out var ck))
+                    foreach (var kv in ck.EnumerateObject())
+                        if (kv.Value.TryGetInt64(out var v)) tourChecked[kv.Name] = v;
+            }
+            catch { }
+        }
+
+        void SaveTour()
+        {
+            try { File.WriteAllText(TourPath, JsonSerializer.Serialize(new { matches = tourMatches, @checked = tourChecked })); } catch { }
         }
 
         void Save()

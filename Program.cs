@@ -2392,7 +2392,7 @@ class BrowserForm : Form
     /// Chaînes à ouvrir pour un match : co-stream M8 en live, sinon une chaîne suivie qui en parle, sinon l'officielle.
     async Task<(List<string> Ids, bool CoStream)> PickMatchIds(string id)
     {
-        var m = m8?.Matches.FirstOrDefault(x => x.Id == id);
+        var m = m8?.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()).FirstOrDefault(x => x.Id == id);
         if (m == null) return (new List<string>(), false);
         var official = (m.Streams ?? new()).Where(x => x.Platform == "twitch").Select(x => x.Key)
             .Concat(M8.Broadcast.TryGetValue(m.Game, out var b) ? b : Array.Empty<string>()).ToList();

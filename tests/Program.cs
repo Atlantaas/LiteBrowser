@@ -237,8 +237,9 @@ static class Program
         Check("429 de Liquipedia : arrêt au 1er appel, rien de cassé", calls == 1 && svc.Matches.Count == 0 && !svc.Loading, "appels : " + calls);
 
         int pageIdx = 0;
-        svc.Fetch = _ =>
+        svc.Fetch = u =>
         {
+            if (!u.Contains("action=parse")) return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
             var p = M8.Pages[pageIdx++];
             var html = File.ReadAllText(Path.Combine(Fixtures, "m8", p.Game + ".html"));
             var json = System.Text.Json.JsonSerializer.Serialize(new { parse = new Dictionary<string, object> { ["text"] = new Dictionary<string, string> { ["*"] = html } } });
@@ -248,6 +249,58 @@ static class Program
         Check("7 pages lues et cache enregistré", pageIdx == 7 && File.Exists(svcCache) && svc.Tournaments.Count == 2, $"pages {pageIdx}, tournois {svc.Tournaments.Count}");
         var again = new M8Service(svcCache);
         Check("cache relu au démarrage suivant", again.Tournaments.Count == 2 && again.FetchedAtMs > 0);
+
+        // ---------- Tournois hors page d'équipe (Coupe de France Slash 2026, page réelle) ----------
+        Section("M8 : tournois hors page d'équipe");
+        var cdf = File.ReadAllText(Path.Combine(Fixtures, "m8", "rl_cdf_slash_2026.html"));
+        long cdfNow = DateTimeOffset.Parse("2026-11-01T19:00:00Z").ToUnixTimeMilliseconds();
+        var cm = M8.ParseTournamentPage(cdf, "rocketleague", "rocketleague", "NEO/Coupe de France Slash/2026", cdfNow);
+        Check("Coupe de France : 10 matchs de M8 (et aucun autre)", cm.Count == 10 && cm.All(m => m.Opponent != "Gentle Mates"), cm.Count.ToString());
+        var first = cm.FirstOrDefault();
+        Check("1er match : lundi 2/11 19:30 contre Karmine Corp (KC)", first != null && first.Ts == 1793644200 && first.Opponent == "Karmine Corp" && first.OpponentShort == "KC",
+            first == null ? "" : $"{first.Ts} {first.Opponent}");
+        Check("nom du tournoi lisible", first?.Tournament == "Coupe de France Slash 2026", first?.Tournament);
+        Check("phase en français (Jour 1)", first?.Stage == "Jour 1", first?.Stage);
+        Check("lien vers la page du tournoi", first?.Url == "https://liquipedia.net/rocketleague/NEO/Coupe_de_France_Slash/2026", first?.Url);
+        Check("« Regarder » : stream Slash (slash_ftv) trouvé", first != null && first.Streams.Count(x => x.Platform == "twitch") == 1 && first.Streams.Any(x => x.Key == "slash_ftv"),
+            first == null ? "" : string.Join(",", first.Streams.Select(x => x.Platform + ":" + x.Key)));
+        Check("phases traduites", M8.StageFr("Semifinals") == "Demi-finales" && M8.StageFr("Grand Final") == "Finale" && M8.StageFr("Week 3") == "Semaine 3");
+
+        var bl = File.ReadAllText(Path.Combine(Fixtures, "m8", "backlinks_rocketleague.json"));
+        var cands = M8.TournamentCandidates(bl, new DateTime(2026, 11, 1, 19, 5, 0, DateTimeKind.Utc));
+        Check("pages liées à M8 : Coupe de France en tête", cands.Count > 0 && cands[0] == "NEO/Coupe de France Slash/2026", cands.FirstOrDefault());
+        Check("transferts / rumeurs / vieux tournois écartés", !cands.Any(c => c.Contains("Transfers") || c.Contains("Rumours") || c.Contains("2024")));
+
+        var merged = M8Service.Merge(new[] { new M8Match { Id = "rocketleague:ID_1", Game = "rocketleague", Ts = 1793644200, Opponent = "Karmine Corp", OpponentShort = "KC" } }, cm);
+        Check("fusion sans doublon avec la page d'équipe", merged.Count == 10, merged.Count.ToString());
+
+        // service complet : page d'équipe vide + liens + page du tournoi
+        var tCache = Path.Combine(Path.GetTempPath(), "lb-m8-tour-" + Guid.NewGuid().ToString("N") + ".json");
+        var tsvc = new M8Service(tCache) { GapMs = 0, QueryGapMs = 0 };
+        var urls = new List<string>();
+        string Wrap(string html) => System.Text.Json.JsonSerializer.Serialize(new { parse = new Dictionary<string, object> { ["text"] = new Dictionary<string, string> { ["*"] = html } } });
+        var nowIso = DateTime.UtcNow.AddHours(-1).ToString("yyyy-MM-ddTHH:mm:ssZ");
+        var blNow = "{\"query\":{\"pages\":{\"1\":{\"title\":\"NEO/Coupe de France Slash/" + DateTime.UtcNow.Year + "\",\"revisions\":[{\"timestamp\":\"" + nowIso + "\"}]}}}}";
+        // la page du tournoi, décalée pour que les matchs soient à venir
+        long shift = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 86400 - 1793644200;
+        var cdfNowHtml = System.Text.RegularExpressions.Regex.Replace(cdf, "data-timestamp=\"(\\d+)\"", m => $"data-timestamp=\"{long.Parse(m.Groups[1].Value) + shift}\"");
+        tsvc.Fetch = u =>
+        {
+            urls.Add(u);
+            string body = u.Contains("generator=backlinks") ? (u.Contains("/rocketleague/") ? blNow : "{}")
+                : u.Contains("Coupe_de_France") ? Wrap(cdfNowHtml) : Wrap("<p>rien</p>");
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(body) });
+        };
+        tsvc.RefreshAsync().Wait();
+        var cur = tsvc.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Check("service : matchs de la Coupe de France affichés", cur.Count(m => m.Tournament.StartsWith("Coupe de France")) == 10, cur.Count.ToString());
+        Check("service : 7 recherches de liens + 1 page de tournoi lue", urls.Count(u => u.Contains("backlinks")) == 7 && urls.Count(u => u.Contains("Coupe_de_France")) == 1,
+            string.Join(" ", urls.Select(u => u.Contains("backlinks") ? "L" : u.Contains("Coupe") ? "T" : "P")));
+        var tagain = new M8Service(tCache);
+        Check("service : matchs du tournoi gardés au redémarrage", tagain.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()).Count == 10);
+        urls.Clear();
+        tsvc.RefreshAsync().Wait();
+        Check("service : tournoi déjà lu → pas relu avant 30 min", urls.Count(u => u.Contains("Coupe_de_France")) == 0);
     }
 
     // ------------------------------------------------------------------

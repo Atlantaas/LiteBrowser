@@ -16,7 +16,7 @@ puis **se met à jour automatiquement** à chaque nouvelle version publiée ici.
 ## Fonctions
 - **Édition Gentle Mates** : thème noir M8, page d'accueil fan
 - **Centre de matchs M8** (Valorant, Game Changers, Call of Duty, Warzone, Rocket League, Fortnite, Age of Empires) depuis Liquipedia,
-  alerte Windows avant le match (réglable) et au coup d'envoi, bouton **Regarder** (co-stream M8 en live, sinon diffusion officielle)
+  + les tournois absents de la page de l'équipe (Coupe de France, ligues…), alerte Windows avant le match (réglable) et au coup d'envoi, bouton **Regarder** (co-stream M8 en live, sinon diffusion officielle)
 - **Lives** : tes chaînes Twitch / Kick / YouTube, qui est en live, alerte quand un favori lance son live (reprises de Nur Live si installé)
 - **Multistream Nur Live** : si l'appli Nur Live est sur ton PC, son interface s'ouvre directement dans un onglet
   (Ctrl+Maj+M) avec tes chaînes, ton compte Twitch, les volumes par live et les matchs M8 — sinon un multistream intégré
