@@ -29,6 +29,12 @@ static class Program
         if (BrowserForm.SmokeReport == null && Installer.EnsureInstalled()) return;
         Updater.CleanupOld();
 
+        // Journal des plantages : %LOCALAPPDATA%\LiteBrowser\crash.log (et à côté du rapport en mode test)
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => CrashLog.Write("ThreadException", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => CrashLog.Write("UnhandledException", e.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, e) => { CrashLog.Write("UnobservedTask", e.Exception); e.SetObserved(); };
+
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -39,6 +45,23 @@ static class Program
             System.Threading.Thread.Sleep(800); // laisse le moteur web se fermer proprement
             Process.Start(new ProcessStartInfo(Environment.ProcessPath) { UseShellExecute = true });
         }
+    }
+}
+
+static class CrashLog
+{
+    public static void Write(string kind, Exception ex)
+    {
+        try
+        {
+            var text = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{kind}] {ex}\n\n";
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiteBrowser");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "crash.log"), text);
+            if (BrowserForm.SmokeReport != null)
+                File.AppendAllText(Path.Combine(Path.GetDirectoryName(BrowserForm.SmokeReport) ?? ".", "crash.log"), text);
+        }
+        catch { }
     }
 }
 
@@ -911,6 +934,8 @@ class BrowserForm : Form
         minuteTimer.Tick += (_, _) => MinuteTick();
         statusTimer.Tick += (_, _) => _ = RefreshStatus();
         FormClosed += (_, _) => { try { tray?.Dispose(); } catch { } };
+        if (SmokeReport != null)
+            FormClosing += (_, e) => CrashLog.Write("FormClosing " + e.CloseReason, new Exception("fermeture demandée par :\n" + Environment.StackTrace));
 
         toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, prayerChip, extBtn, menuBtn });
         toolbar.Resize += (_, _) => LayoutToolbar();
