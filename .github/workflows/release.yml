@@ -1,8 +1,12 @@
-name: Publier une version
+name: Tester et publier
 
-# À chaque envoi sur main : si le numéro <Version> du projet n'a pas encore de release,
-# compile LiteBrowser sur Windows et publie la release avec LiteBrowser.exe.
-# Tous les navigateurs installés la téléchargent ensuite automatiquement.
+# À chaque envoi sur main :
+#   1. tests de la logique (adresses, mises à jour, extensions, matchs, prières, bloqueur YouTube)
+#   2. compilation de LiteBrowser.exe
+#   3. test de bout en bout sur ce vrai Windows : l'appli se lance, charge l'accueil, NordPass et TrendTrack,
+#      ouvre YouTube (bloqueur actif), fait un vrai téléchargement, récupère les horaires de prière
+#   4. si tout est vert et que le numéro <Version> est nouveau : publication de la release
+#      (tous les navigateurs installés la récupèrent automatiquement)
 on:
   push:
     branches: [main]
@@ -27,22 +31,53 @@ jobs:
           $version = @($proj.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0]
           "version=$version" >> $env:GITHUB_OUTPUT
           gh release view "v$version" --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT; Write-Host "v$version déjà publiée, rien à faire." }
+          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT; Write-Host "v$version déjà publiée : tests seulement." }
           else { "exists=false" >> $env:GITHUB_OUTPUT }
           exit 0
 
       - uses: actions/setup-dotnet@v4
-        if: steps.ver.outputs.exists == 'false'
         with:
           dotnet-version: '8.0.x'
 
+      - name: Tests de la logique
+        shell: pwsh
+        run: dotnet run --project tests/Tests.csproj -c Release
+
       - name: Compiler
-        if: steps.ver.outputs.exists == 'false'
         shell: pwsh
         run: |
           dotnet publish LiteBrowser.csproj -c Release -r win-x64 --self-contained true `
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true -p:DebugType=none -o out
+
+      - name: Test de bout en bout sur Windows
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $report = Join-Path $dir "rapport.json"
+          $env:LITEBROWSER_SMOKE = $report
+          $p = Start-Process -FilePath "out\LiteBrowser.exe" -PassThru
+          if (-not $p.WaitForExit(420000)) { $p.Kill(); throw "LiteBrowser ne s'est pas fermé à temps" }
+          if (-not (Test-Path $report)) { throw "Aucun rapport : l'appli a planté au démarrage" }
+          Get-Content $report -Encoding UTF8
+          $r = Get-Content $report -Raw -Encoding UTF8 | ConvertFrom-Json
+          $fail = @()
+          if ($r.exception) { $fail += "exception" }
+          if (-not $r.homeReady) { $fail += "page d'accueil" }
+          if (-not $r.youtubeAdblockActive) { $fail += "bloqueur YouTube" }
+          foreach ($e in $r.extensions) { if ($e.Error) { $fail += "extension $($e.Name)" } }
+          if ($r.download -ne "terminé") { $fail += "téléchargement ($($r.download))" }
+          if ($fail.Count) { throw ("Échecs : " + ($fail -join ", ")) }
+          Write-Host "Test de bout en bout : OK"
+
+      - name: Garder le rapport et les captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-windows
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: ignore
 
       - name: Publier la release
         if: steps.ver.outputs.exists == 'false'

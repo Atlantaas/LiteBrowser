@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>LiteBrowser.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Core.cs" Link="Core.cs" />
+    <None Include="fixtures/**" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="youtube_test.js" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

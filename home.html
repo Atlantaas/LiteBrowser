@@ -4,76 +4,248 @@
 <meta charset="utf-8">
 <title>Nouvel onglet</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--text:#1f1f1f;--sub:#5f6368;--border:#dadce0;--accent:#1a73e8;--hover:#eceef1}
-body.dark{--bg:#1b1c1f;--card:#2b2c30;--text:#e8eaed;--sub:#9aa0a6;--border:#3c4043;--accent:#8ab4f8;--hover:#323337}
+:root{
+  --bg:#08080a; --bg2:#0e0e12; --card:#141418; --card2:#1a1a20; --line:#26262d; --text:#f4f2ee; --sub:#8f8d96;
+  --accent:#ffffff; --accent-text:#08080a; --live:#ff3b3b; --glow:rgba(255,255,255,.06);
+  --head:"Bahnschrift","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+}
+body.dark{ --bg:#1b1c1f; --bg2:#1f2023; --card:#2b2c30; --card2:#323337; --line:#3c4043; --text:#e8eaed; --sub:#9aa0a6;
+  --accent:#8ab4f8; --accent-text:#202124; --glow:rgba(138,180,248,.06); }
+body.light{ --bg:#f3f4f6; --bg2:#eceef1; --card:#ffffff; --card2:#f6f7f9; --line:#e2e4e8; --text:#1f1f1f; --sub:#5f6368;
+  --accent:#1a73e8; --accent-text:#ffffff; --glow:rgba(26,115,232,.05); }
+
 *{box-sizing:border-box}
-html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--text);font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;transition:background .2s,color .2s}
-.clock{font-size:72px;font-weight:300;letter-spacing:-2px;line-height:1}
-.greet{color:var(--sub);font-size:18px;margin:10px 0 34px}
-form{width:min(660px,92vw);display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);
-  border-radius:30px;height:58px;padding:0 8px 0 22px;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:box-shadow .15s,border-color .15s}
-form:focus-within{border-color:var(--accent);box-shadow:0 4px 18px rgba(0,0,0,.12)}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  background-image:radial-gradient(1200px 500px at 20% -10%,var(--glow),transparent 60%),
+                   repeating-linear-gradient(115deg,transparent 0 22px,rgba(255,255,255,.012) 22px 23px);
+  transition:background-color .2s,color .2s}
+body.light{background-image:radial-gradient(1200px 500px at 20% -10%,var(--glow),transparent 60%)}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1180px;margin:0 auto;padding:34px 28px 70px}
+
+/* ---- En-tête ---- */
+.top{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:14px}
+.badge{font-family:var(--head);font-weight:700;font-size:22px;letter-spacing:.5px;padding:6px 12px;border:2px solid var(--text);border-radius:10px;line-height:1}
+.brand-name{font-family:var(--head);font-weight:700;font-size:30px;letter-spacing:4px;text-transform:uppercase}
+.brand-sub{color:var(--sub);font-size:13px;letter-spacing:2px;text-transform:uppercase;margin-top:2px}
+.when{text-align:right}
+.clock{font-family:var(--head);font-size:64px;font-weight:300;line-height:.9;letter-spacing:-1px}
+.date{color:var(--sub);font-size:14px;margin-top:8px}
+
+/* ---- Recherche ---- */
+form{margin:28px 0 26px;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
+  border-radius:16px;height:58px;padding:0 8px 0 20px;transition:border-color .15s,box-shadow .15s}
+form:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px var(--glow)}
 .ic{font-family:"Segoe Fluent Icons","Segoe MDL2 Assets";color:var(--sub);font-size:16px}
 input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font-size:17px;font-family:inherit;height:100%;padding-left:6px}
 input::placeholder{color:var(--sub)}
-select{border:0;background:var(--hover);color:var(--text);border-radius:20px;padding:9px 14px;font-family:inherit;font-size:13px;cursor:pointer;outline:0}
+select{border:0;background:var(--card2);color:var(--text);border-radius:10px;padding:9px 12px;font-family:inherit;font-size:13px;cursor:pointer;outline:0}
 select option{background:var(--card);color:var(--text)}
-.tiles{display:grid;grid-template-columns:repeat(4,116px);gap:10px;margin-top:42px}
-.tile{display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 8px 14px;border-radius:16px;text-decoration:none;color:var(--text);font-size:13px;transition:background .12s}
-.tile:hover{background:var(--hover)}
-.fav{width:52px;height:52px;border-radius:50%;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
-  font-weight:600;font-size:20px;color:var(--accent);overflow:hidden}
-.fav img{width:26px;height:26px}
+
+/* ---- Grille ---- */
+.grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px 18px 14px}
+.card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:10px}
+.card-t{font-family:var(--head);font-weight:700;font-size:15px;letter-spacing:2.5px;text-transform:uppercase}
+.card-s{color:var(--sub);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.link{color:var(--sub);font-size:12px;cursor:pointer;border:0;background:none;font-family:inherit;padding:4px 6px;border-radius:6px}
+.link:hover{color:var(--text);background:var(--card2)}
+
+/* ---- Matchs ---- */
+.match{display:grid;grid-template-columns:92px minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px;border-radius:12px;
+  background:var(--card2);margin-bottom:8px;border:1px solid transparent;transition:border-color .12s,transform .12s}
+.match:hover{border-color:var(--line);transform:translateY(-1px)}
+.m-when .d{color:var(--sub);font-size:12px;text-transform:capitalize}
+.m-when .t{font-family:var(--head);font-size:22px;font-weight:600;letter-spacing:.5px}
+.m-vs{display:flex;align-items:center;gap:10px;font-family:var(--head);font-size:18px;font-weight:700;min-width:0}
+.m-vs .team{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-vs .gm{color:var(--text)}
+.m-vs .opp{color:var(--sub)}
+.m-vs .v{font-size:11px;color:var(--sub);letter-spacing:1px;flex:none}
+.m-meta{grid-column:2;display:flex;gap:8px;align-items:center;color:var(--sub);font-size:12px;min-width:0;margin-top:-6px}
+.m-meta .tn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game{font-family:var(--head);font-size:10px;font-weight:700;letter-spacing:1.2px;padding:3px 7px;border-radius:5px;flex:none;color:#fff}
+.g-VALORANT{background:#d6404e}.g-CS2{background:#c7861e}.g-ROCKET-LEAGUE{background:#2f6fd6}.g-CALL-OF-DUTY{background:#4c7a3a}
+.cd{grid-row:1 / span 2;grid-column:3;font-size:12px;color:var(--sub);text-align:right;white-space:nowrap}
+.cd .live{color:var(--live);font-weight:700;letter-spacing:1px;display:inline-flex;align-items:center;gap:6px}
+.cd .live::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.25}}
+.empty{color:var(--sub);font-size:14px;padding:18px 6px 10px;line-height:1.5}
+.skel{height:62px;border-radius:12px;background:linear-gradient(90deg,var(--card2),var(--line),var(--card2));background-size:200% 100%;animation:sk 1.4s infinite;margin-bottom:8px}
+@keyframes sk{to{background-position:-200% 0}}
+.credit{color:var(--sub);font-size:11px;margin-top:6px;opacity:.8}
+.credit a{text-decoration:underline}
+
+/* ---- Prières ---- */
+.next{background:var(--card2);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.next .l{color:var(--sub);font-size:12px;letter-spacing:1.5px;text-transform:uppercase}
+.next .n{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:4px}
+.next .name{font-family:var(--head);font-size:28px;font-weight:700}
+.next .time{font-family:var(--head);font-size:28px;font-weight:300}
+.next .in{color:var(--sub);font-size:13px;margin-top:2px}
+.prow{display:flex;justify-content:space-between;padding:8px 6px;border-bottom:1px solid var(--line);font-size:14px}
+.prow:last-child{border-bottom:0}
+.prow.past{color:var(--sub)}
+.prow.minor{color:var(--sub);font-size:13px}
+.prow.is-next{font-weight:700}
+.prow.is-next span:first-child::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-right:8px;vertical-align:middle}
+.prow .tm{font-family:var(--head);font-variant-numeric:tabular-nums}
+
+/* ---- Raccourcis ---- */
+.tiles{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;margin-top:18px}
+.tile{display:flex;flex-direction:column;align-items:center;gap:9px;padding:14px 6px 12px;border-radius:14px;color:var(--text);font-size:12px;transition:background .12s}
+.tile:hover{background:var(--card)}
+.fav{width:48px;height:48px;border-radius:14px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-family:var(--head);font-weight:700;font-size:19px;overflow:hidden}
+.fav img{width:24px;height:24px}
 .name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:var(--sub);font-size:12px}
-kbd{font-family:inherit;background:var(--hover);border-radius:5px;padding:1px 6px}
-@media (max-width:560px){.tiles{grid-template-columns:repeat(3,100px)}.clock{font-size:52px}}
+.hint{text-align:center;color:var(--sub);font-size:12px;margin-top:26px}
+kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+
+@media (max-width:900px){.grid{grid-template-columns:1fr}.tiles{grid-template-columns:repeat(4,minmax(0,1fr))}.clock{font-size:48px}}
+@media (max-width:520px){.wrap{padding:22px 14px 50px}.match{grid-template-columns:70px minmax(0,1fr)}.cd{grid-row:auto;grid-column:2;text-align:left}.brand-name{font-size:22px}}
 </style>
 </head>
 <body>
-<div class="clock" id="clock"></div>
-<div class="greet" id="greet"></div>
-<form id="f" autocomplete="off">
-  <span class="ic">&#xE721;</span>
-  <input id="q" placeholder="Rechercher sur le web ou saisir une adresse" autofocus>
-  <select id="eng" title="Moteur de recherche"></select>
-</form>
-<div class="tiles" id="tiles"></div>
-<div class="hint"><kbd>Ctrl+T</kbd> nouvel onglet &nbsp;·&nbsp; <kbd>Ctrl+D</kbd> ajouter aux favoris &nbsp;·&nbsp; <kbd>Ctrl+L</kbd> barre d'adresse</div>
-<script>
-const post = m => { if (window.chrome && chrome.webview) chrome.webview.postMessage(m); };
-const $ = id => document.getElementById(id);
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="badge">M8</div>
+      <div><div class="brand-name">Gentle Mates</div><div class="brand-sub">LiteBrowser · édition fan</div></div>
+    </div>
+    <div class="when"><div class="clock" id="clock"></div><div class="date" id="date"></div></div>
+  </header>
 
+  <form id="f" autocomplete="off">
+    <span class="ic">&#xE721;</span>
+    <input id="q" placeholder="Rechercher sur le web ou saisir une adresse" autofocus>
+    <select id="eng" title="Moteur de recherche"></select>
+  </form>
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-h">
+        <div class="card-t">Prochains matchs</div>
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="card-s" id="mstatus"></span>
+          <button class="link" id="mrefresh" title="Actualiser">&#x21bb;</button>
+        </div>
+      </div>
+      <div id="matches"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
+      <div class="credit">Données : <a href="https://liquipedia.net/">Liquipedia</a> (CC BY-SA) · Valorant, CS2, Rocket League, Call of Duty</div>
+    </section>
+
+    <aside class="card">
+      <div class="card-h">
+        <div class="card-t">Prières</div>
+        <button class="link" id="city" title="Changer de ville">…</button>
+      </div>
+      <div id="prayers"><div class="skel"></div><div class="skel" style="height:180px"></div></div>
+    </aside>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+  <div class="hint"><kbd>Ctrl+T</kbd> nouvel onglet &nbsp;·&nbsp; <kbd>Ctrl+D</kbd> favori &nbsp;·&nbsp; <kbd>Ctrl+L</kbd> barre d'adresse</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const post = m => { if (window.chrome && chrome.webview) chrome.webview.postMessage(m); };
+let state = null;
+
+const pad = n => String(n).padStart(2, '0');
+const hm = d => pad(d.getHours()) + ':' + pad(d.getMinutes());
+function dayLabel(d) {
+  const t = new Date(); t.setHours(0,0,0,0);
+  const x = new Date(d); x.setHours(0,0,0,0);
+  const diff = Math.round((x - t) / 86400000);
+  if (diff === 0) return "aujourd'hui";
+  if (diff === 1) return 'demain';
+  return d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+function until(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 1) return "maintenant";
+  if (m < 60) return 'dans ' + m + ' min';
+  const h = Math.floor(m / 60), r = m % 60;
+  if (h < 24) return 'dans ' + h + ' h' + (r ? ' ' + pad(r) : '');
+  const d = Math.round(h / 24);
+  return 'dans ' + d + ' jour' + (d > 1 ? 's' : '');
+}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ---------- Horloge ----------
 function tick() {
   const d = new Date();
-  $('clock').textContent = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-  const h = d.getHours();
-  $('greet').textContent = h < 5 ? 'Bonne nuit' : h < 18 ? 'Bonjour' : 'Bonsoir';
-}
-tick(); setInterval(tick, 10000);
-
-$('f').addEventListener('submit', e => {
-  e.preventDefault();
-  const v = $('q').value.trim();
-  if (v) post({ type: 'search', q: v });
-});
-$('eng').addEventListener('change', () => { post({ type: 'engine', id: $('eng').value }); updatePlaceholder(); });
-
-function updatePlaceholder() {
-  const o = $('eng').options[$('eng').selectedIndex];
-  $('q').placeholder = 'Rechercher avec ' + (o ? o.text : 'le web') + ' ou saisir une adresse';
+  $('clock').textContent = hm(d);
+  let txt = d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (state && state.prayers && state.prayers.hijri) txt += ' · ' + state.prayers.hijri;
+  $('date').textContent = txt;
+  if (state) { renderMatches(); renderPrayers(); }
 }
 
-function render(d) {
-  document.body.classList.toggle('dark', d.theme === 'dark');
-  const eng = $('eng'); eng.innerHTML = '';
-  for (const e of d.engines) { const o = new Option(e.name, e.id); o.selected = e.id === d.engine; eng.add(o); }
-  updatePlaceholder();
+// ---------- Recherche ----------
+$('f').addEventListener('submit', e => { e.preventDefault(); const v = $('q').value.trim(); if (v) post({ type: 'search', q: v }); });
+$('eng').addEventListener('change', () => { post({ type: 'engine', id: $('eng').value }); placeholder(); });
+function placeholder() { const o = $('eng').options[$('eng').selectedIndex]; $('q').placeholder = 'Rechercher avec ' + (o ? o.text : 'le web') + ' ou saisir une adresse'; }
+$('city').addEventListener('click', () => post({ type: 'city' }));
+$('mrefresh').addEventListener('click', () => post({ type: 'refreshMatches' }));
 
+// ---------- Matchs ----------
+function renderMatches() {
+  const box = $('matches'), m = state.matches || [];
+  $('mstatus').textContent = state.matchesLoading ? 'Mise à jour…' : (state.matchesUpdated ? 'Mis à jour à ' + hm(new Date(state.matchesUpdated)) : '');
+  if (!m.length) {
+    box.innerHTML = state.matchesLoading && !state.matchesUpdated
+      ? '<div class="skel"></div><div class="skel"></div><div class="skel"></div>'
+      : '<div class="empty">Aucun match de Gentle Mates annoncé pour le moment.<br>Les nouveaux matchs apparaîtront ici automatiquement.</div>';
+    return;
+  }
+  const now = Date.now();
+  box.innerHTML = m.slice(0, 7).map(x => {
+    const d = new Date(x.ts * 1000);
+    const live = d.getTime() <= now;
+    const gm1 = /gentle mates/i.test(x.t1);
+    const a = gm1 ? x.s1 : x.s2, b = gm1 ? x.s2 : x.s1, bFull = gm1 ? x.t2 : x.t1;
+    const cls = 'g-' + String(x.game).replace(/\s+/g, '-');
+    return `<a class="match" href="${esc(x.url || '#')}" title="${esc(x.t1)} vs ${esc(x.t2)}">
+      <div class="m-when"><div class="d">${esc(dayLabel(d))}</div><div class="t">${hm(d)}</div></div>
+      <div class="m-vs"><span class="team gm">${esc(a)}</span><span class="v">VS</span><span class="team opp" title="${esc(bFull)}">${esc(b)}</span></div>
+      <div class="cd">${live ? '<span class="live">EN DIRECT</span>' : until(d - now)}</div>
+      <div class="m-meta"><span class="game ${cls}">${esc(x.game)}</span><span class="tn">${esc(x.tournament || '')}${x.format ? ' · ' + esc(x.format) : ''}</span></div>
+    </a>`;
+  }).join('');
+}
+
+// ---------- Prières ----------
+function renderPrayers() {
+  const p = state.prayers, box = $('prayers');
+  if (!p || !p.times || !p.times.length) {
+    $('city').textContent = p && p.city ? p.city : 'Choisir ma ville';
+    box.innerHTML = '<div class="empty">' + (p && p.error ? esc(p.error) : 'Recherche de ta position…') + '</div>';
+    return;
+  }
+  $('city').textContent = (p.city || 'Ma ville') + ' ▾';
+  const now = new Date(), base = new Date(); base.setHours(0,0,0,0);
+  const times = p.times.map(t => { const [h, mi] = t.time.split(':').map(Number); const d = new Date(base); d.setHours(h, mi, 0, 0); return { ...t, d }; });
+  const five = times.filter(t => t.key !== 'Sunrise');
+  let next = five.find(t => t.d > now);
+  let nextAt = next ? next.d : null;
+  if (!next) { next = five[0]; nextAt = new Date(next.d.getTime() + 86400000); }
+  box.innerHTML = `
+    <div class="next"><div class="l">Prochaine prière</div>
+      <div class="n"><span class="name">${esc(next.name)}</span><span class="time">${hm(nextAt)}</span></div>
+      <div class="in">${until(nextAt - now)}</div></div>
+    ${times.map(t => `<div class="prow ${t.key === 'Sunrise' ? 'minor' : ''} ${t.key === next.key && nextAt.getDate() === now.getDate() ? 'is-next' : (t.d < now ? 'past' : '')}">
+        <span>${esc(t.name)}</span><span class="tm">${esc(t.time)}</span></div>`).join('')}
+    <div class="credit">${esc(p.methodName || '')} · <a href="https://aladhan.com/">Aladhan</a></div>`;
+}
+
+// ---------- Raccourcis ----------
+function renderTiles() {
   const tiles = $('tiles'); tiles.innerHTML = '';
-  for (const t of d.tiles) {
+  for (const t of state.tiles || []) {
     let host = ''; try { host = new URL(t.url).hostname; } catch {}
     const a = document.createElement('a'); a.className = 'tile'; a.href = t.url; a.title = t.url;
     const fv = document.createElement('div'); fv.className = 'fav';
@@ -86,6 +258,22 @@ function render(d) {
   }
 }
 
+function render(d) {
+  const first = !state;
+  state = Object.assign(state || {}, d);
+  document.body.classList.remove('dark', 'light', 'm8');
+  document.body.classList.add(state.theme || 'm8');
+  if (d.engines) {
+    const eng = $('eng'); eng.innerHTML = '';
+    for (const e of d.engines) { const o = new Option(e.name, e.id); o.selected = e.id === d.engine; eng.add(o); }
+    placeholder();
+  }
+  if (d.tiles) renderTiles();
+  tick();
+  if (first) $('q').focus();
+}
+
+tick(); setInterval(tick, 15000);
 if (window.chrome && chrome.webview) {
   chrome.webview.addEventListener('message', e => render(e.data));
   post({ type: 'ready' });

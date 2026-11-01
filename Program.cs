@@ -15,6 +15,7 @@ using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
+using LiteCore;
 
 static class Program
 {
@@ -24,7 +25,8 @@ static class Program
     static void Main()
     {
         // 1er lancement depuis le dossier Téléchargements : on s'installe et on se relance depuis l'emplacement fixe
-        if (Installer.EnsureInstalled()) return;
+        // Mode test automatique (CI Windows) : pas d'installation, rapport puis fermeture
+        if (BrowserForm.SmokeReport == null && Installer.EnsureInstalled()) return;
         Updater.CleanupOld();
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -114,32 +116,15 @@ static class Installer
 static class Updater
 {
     public const string Repo = "Atlantaas/LiteBrowser";
-    public static Version Norm(Version v) => new(v.Major, v.Minor, Math.Max(0, v.Build));
+    public static Version Norm(Version v) => VersionTools.Norm(v);
     public static Version Current => Norm(typeof(Program).Assembly.GetName().Version);
-
-    static HttpClient Http()
-    {
-        var h = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-        h.DefaultRequestHeaders.UserAgent.ParseAdd("LiteBrowser/" + Current);
-        return h;
-    }
 
     /// Renvoie la nouvelle version et le lien de l'exe, ou null si on est à jour.
     public static async Task<(Version Version, string Url)?> CheckAsync()
     {
-        using var http = Http();
+        using var http = Net.Client(TimeSpan.FromSeconds(20));
         var json = await http.GetStringAsync($"https://api.github.com/repos/{Repo}/releases/latest");
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        var tag = root.GetProperty("tag_name").GetString()?.TrimStart('v', 'V');
-        if (!Version.TryParse(tag, out var v) || Norm(v) <= Current) return null;
-        foreach (var a in root.GetProperty("assets").EnumerateArray())
-        {
-            var name = a.GetProperty("name").GetString() ?? "";
-            if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                return (Norm(v), a.GetProperty("browser_download_url").GetString());
-        }
-        return null;
+        return VersionTools.NewerRelease(json, Current);
     }
 
     /// Télécharge la nouvelle version et la met à la place de l'actuelle (prise en compte au prochain lancement).
@@ -147,7 +132,7 @@ static class Updater
     {
         var exe = Environment.ProcessPath;
         string tmp = exe + ".new", old = exe + ".old";
-        using (var http = Http())
+        using (var http = Net.Client(TimeSpan.FromMinutes(10)))
         using (var s = await http.GetStreamAsync(url))
         using (var f = File.Create(tmp))
             await s.CopyToAsync(f);
@@ -187,6 +172,12 @@ sealed class Theme
     {
         Strip = C(0x1F2023), Bar = C(0x2D2E31), Hover = C(0x3E3F43), Text = C(0xE8EAED),
         Sub = C(0x9AA0A6), Field = C(0x1F2023), FieldBorder = C(0x45474B), Accent = C(0x8AB4F8)
+    };
+    /// Thème « Gentle Mates » : noir profond, blanc cassé, accents blancs.
+    public static readonly Theme M8 = new()
+    {
+        Strip = C(0x08080A), Bar = C(0x141418), Hover = C(0x26262D), Text = C(0xF4F2EE),
+        Sub = C(0x8F8D96), Field = C(0x0E0E12), FieldBorder = C(0x26262D), Accent = C(0xFFFFFF)
     };
     static Color C(int rgb) => Color.FromArgb(255, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
 }
@@ -290,6 +281,7 @@ class PillButton : Control
 {
     bool hover;
     public Theme Theme = Theme.Light;
+    public bool Subtle; // version discrète : fond de champ, texte normal
 
     public PillButton(string text, Font font)
     {
@@ -313,9 +305,10 @@ class PillButton : Control
         g.Clear(BackColor);
         var r = new RectangleF(1, 1, Width - 2, Height - 2);
         using var p = G.Round(r, r.Height / 2);
-        var fill = hover ? G.Mix(Theme.Accent, Theme.Text, .15f) : Theme.Accent;
+        var fill = Subtle ? (hover ? Theme.Hover : Theme.Field) : hover ? G.Mix(Theme.Accent, Theme.Text, .15f) : Theme.Accent;
         using (var b = new SolidBrush(fill)) g.FillPath(b, p);
-        var fg = fill.GetBrightness() > .6f ? Color.FromArgb(32, 33, 36) : Color.White;
+        if (Subtle) { using var pen = new Pen(Theme.FieldBorder); g.DrawPath(pen, p); }
+        var fg = Subtle ? Theme.Text : fill.GetBrightness() > .6f ? Color.FromArgb(32, 33, 36) : Color.White;
         TextRenderer.DrawText(g, Text, Font, ClientRectangle, fg, G.Center);
     }
 }
@@ -340,97 +333,22 @@ static class Extensions
         ("TrendTrack", "cncdmciajmaojninbopinpijdodjgfpd"),
     };
 
-    /// Récupère l'identifiant d'extension (32 lettres a-p) dans un lien du Chrome Web Store.
-    public static string ParseStoreId(string text)
-    {
-        var m = System.Text.RegularExpressions.Regex.Match(text ?? "", "(?<![a-p])[a-p]{32}(?![a-p])");
-        return m.Success ? m.Value : null;
-    }
+    public static string ParseStoreId(string text) => Crx.ParseStoreId(text);
+    public static Task DownloadAsync(string storeId, string folder) => Crx.DownloadAsync(storeId, folder);
 
-    /// Télécharge l'extension depuis le Chrome Web Store et la décompresse dans <folder>.
-    public static async Task DownloadAsync(string storeId, string folder)
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-        var url = "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0" +
-                  "&acceptformat=crx2,crx3&x=id%3D" + storeId + "%26uc";
-        var crx = await http.GetByteArrayAsync(url);
-        if (crx.Length < 16 || crx[0] != 'C' || crx[1] != 'r' || crx[2] != '2' || crx[3] != '4')
-            throw new InvalidDataException("Extension introuvable sur le Chrome Web Store.");
-
-        int version = BitConverter.ToInt32(crx, 4);
-        int zipStart = version == 3
-            ? 12 + BitConverter.ToInt32(crx, 8)
-            : 16 + BitConverter.ToInt32(crx, 8) + BitConverter.ToInt32(crx, 12);
-
-        if (Directory.Exists(folder)) Directory.Delete(folder, true);
-        Directory.CreateDirectory(folder);
-        using (var zip = new ZipArchive(new MemoryStream(crx, zipStart, crx.Length - zipStart)))
-            zip.ExtractToDirectory(folder, true);
-
-        // Les dossiers commençant par "_metadata" empêchent le chargement d'une extension décompressée
-        var meta = Path.Combine(folder, "_metadata");
-        if (Directory.Exists(meta)) Directory.Delete(meta, true);
-    }
-
-    static readonly JsonDocumentOptions JsonOpts = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
-
-    /// Traduit "__MSG_cle__" via _locales/<langue>/messages.json (français d'abord).
-    static string ResolveMessage(string folder, string value, string defaultLocale)
-    {
-        if (value == null || !value.StartsWith("__MSG_") || !value.EndsWith("__")) return value;
-        var key = value[6..^2];
-        foreach (var loc in new[] { "fr", defaultLocale, "en" }.Where(x => x != null).Distinct())
-        {
-            var f = Path.Combine(folder, "_locales", loc, "messages.json");
-            if (!File.Exists(f)) continue;
-            try
-            {
-                using var d = JsonDocument.Parse(File.ReadAllText(f), JsonOpts);
-                foreach (var p in d.RootElement.EnumerateObject())
-                    if (p.Name.Equals(key, StringComparison.OrdinalIgnoreCase) && p.Value.TryGetProperty("message", out var msg))
-                        return msg.GetString();
-            }
-            catch { }
-        }
-        return value;
-    }
-
-    /// Lit la page popup et l'icône déclarées dans manifest.json.
+    /// Lit la page popup, le nom et l'icône déclarés dans manifest.json.
     public static void ReadManifest(ExtInfo e)
     {
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(e.Folder, "manifest.json")), JsonOpts);
-            var root = doc.RootElement;
-
-            if (e.Name == null || e.Name.StartsWith("__MSG_"))
+            var m = Crx.ReadManifest(e.Folder);
+            e.Popup = m.Popup;
+            if ((e.Name == null || e.Name.StartsWith("__MSG_")) && !string.IsNullOrWhiteSpace(m.Name) && !m.Name.StartsWith("__MSG_"))
+                e.Name = m.Name;
+            if (m.IconPath != null)
             {
-                var raw = root.TryGetProperty("name", out var n) ? n.GetString() : null;
-                var loc = root.TryGetProperty("default_locale", out var dl) ? dl.GetString() : null;
-                var resolved = ResolveMessage(e.Folder, raw, loc);
-                if (!string.IsNullOrWhiteSpace(resolved) && !resolved.StartsWith("__MSG_")) e.Name = resolved;
-            }
-            foreach (var key in new[] { "action", "browser_action", "page_action" })
-                if (root.TryGetProperty(key, out var a) && a.ValueKind == JsonValueKind.Object &&
-                    a.TryGetProperty("default_popup", out var p) && p.ValueKind == JsonValueKind.String)
-                { e.Popup = p.GetString().TrimStart('/'); break; }
-
-            if (root.TryGetProperty("icons", out var icons) && icons.ValueKind == JsonValueKind.Object)
-            {
-                var best = icons.EnumerateObject()
-                    .Select(x => (Size: int.TryParse(x.Name, out var s) ? s : 0, Path: x.Value.GetString()))
-                    .OrderBy(x => Math.Abs(x.Size - 32)).FirstOrDefault();
-                if (best.Path != null)
-                {
-                    var file = Path.Combine(e.Folder, best.Path.TrimStart('/'));
-                    if (File.Exists(file))
-                    {
-                        using var img = Image.FromFile(file);
-                        e.Icon = new Bitmap(img, 20, 20);
-                    }
-                }
+                using var img = Image.FromFile(m.IconPath);
+                e.Icon = new Bitmap(img, 20, 20);
             }
         }
         catch { }
@@ -514,7 +432,7 @@ class ExtensionPopup : Form
 /// Mini boîte de saisie.
 static class Prompt
 {
-    public static string Show(IWin32Window owner, string title, string text, Theme t)
+    public static string Show(IWin32Window owner, string title, string text, Theme t, string okText = "Ajouter")
     {
         using var f = new Form
         {
@@ -524,7 +442,7 @@ static class Prompt
         };
         var lbl = new Label { Text = text, Left = 16, Top = 14, Width = 428, Height = 40 };
         var box = new TextBox { Left = 16, Top = 60, Width = 428, BackColor = t.Field, ForeColor = t.Text };
-        var ok = new Button { Text = "Ajouter", DialogResult = DialogResult.OK, Left = 268, Top = 104, Width = 84, Height = 30, FlatStyle = FlatStyle.System };
+        var ok = new Button { Text = okText, DialogResult = DialogResult.OK, Left = 268, Top = 104, Width = 84, Height = 30, FlatStyle = FlatStyle.System };
         var cancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, Left = 360, Top = 104, Width = 84, Height = 30, FlatStyle = FlatStyle.System };
         f.Controls.AddRange(new Control[] { lbl, box, ok, cancel });
         f.AcceptButton = ok;
@@ -861,7 +779,22 @@ class BrowserForm : Form
     ContextMenuStrip lastMenu;
     Theme theme = Theme.Light;
     int sel = -1, blockedCount;
-    bool dark, forceDark, adblock = true, fullscreen, selectOnClick;
+    bool forceDark, adblock = true, fullscreen, selectOnClick;
+    string themeName = "m8";                    // m8 (Gentle Mates) | dark | light
+    bool dark => themeName != "light";
+
+    // Matchs, prières, notifications
+    MatchService matches;
+    PrayerDay prayerDay;
+    string prayerError, prayerCity, lastNotified;
+    double prayerLat = double.NaN, prayerLon = double.NaN;
+    int prayerMethod = 12;
+    DateTime lastPrayerTry;
+    bool prayerNotify = true, prayerAuto = true, prayerBusy;
+    PillButton prayerChip;
+    NotifyIcon tray;
+    Action trayClick;
+    readonly System.Windows.Forms.Timer minuteTimer = new() { Interval = 20_000 };
     FormWindowState prevState = FormWindowState.Maximized;
     string engineId = "google";
 
@@ -944,7 +877,15 @@ class BrowserForm : Form
         tip.SetToolTip(updatePill, "Une nouvelle version a été installée. Clique pour relancer LiteBrowser.");
         updatePill.Click += (_, _) => { Program.RestartRequested = true; Close(); };
 
-        toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, extBtn, menuBtn });
+        prayerChip = new PillButton("", new Font("Segoe UI", 9f)) { Subtle = true, Visible = false };
+        prayerChip.Click += (_, _) => ShowPrayerMenu();
+
+        matches = new MatchService(Path.Combine(dataDir, "matchs.json"));
+        matches.Updated += () => { if (IsHandleCreated) BeginInvoke(new Action(RefreshHomeTabs)); };
+        minuteTimer.Tick += (_, _) => MinuteTick();
+        FormClosed += (_, _) => { try { tray?.Dispose(); } catch { } };
+
+        toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, prayerChip, extBtn, menuBtn });
         toolbar.Resize += (_, _) => LayoutToolbar();
         toolbar.Paint += (_, e) =>
         {
@@ -978,7 +919,11 @@ class BrowserForm : Form
                 return;
             }
             await NewTab();
+            minuteTimer.Start();
+            _ = RefreshPrayers();
+            _ = RefreshMatches();
             await Task.Delay(3000);
+            if (SmokeReport != null) { await RunSmoke(); return; }
             await CheckUpdates(silent: true);
         };
     }
@@ -1034,6 +979,12 @@ class BrowserForm : Form
         menuBtn.SetBounds(toolbar.Width - S(8) - b, y, b, b);
         extBtn.SetBounds(menuBtn.Left - S(2) - b, y, b, b);
         int right = extBtn.Left - S(8);
+        if (prayerChip.Visible)
+        {
+            int pw = prayerChip.PreferredWidth, ph = S(30);
+            prayerChip.SetBounds(right - pw, (h - ph) / 2, pw, ph);
+            right = prayerChip.Left - S(8);
+        }
         if (updatePill.Visible)
         {
             int pw = updatePill.PreferredWidth, ph = S(30);
@@ -1093,8 +1044,17 @@ class BrowserForm : Form
         core.Profile.PreferredColorScheme = Scheme();
         core.SetVirtualHostNameToFolderMapping(HomeHost, homeDir, CoreWebView2HostResourceAccessKind.Allow);
 
-        // Bloqueur de pubs / traqueurs : la requête n'est même pas envoyée
-        core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        // Bloqueur de pubs / traqueurs : la requête n'est même pas envoyée.
+        // On ne filtre que les ressources des pages (scripts, images, requêtes…) : jamais les pages ni les
+        // téléchargements, que l'interception pouvait interrompre (« Download interrupted »).
+        foreach (var ctx in new[]
+        {
+            CoreWebView2WebResourceContext.Script, CoreWebView2WebResourceContext.Image,
+            CoreWebView2WebResourceContext.XmlHttpRequest, CoreWebView2WebResourceContext.Fetch,
+            CoreWebView2WebResourceContext.Stylesheet, CoreWebView2WebResourceContext.Font,
+            CoreWebView2WebResourceContext.Ping, CoreWebView2WebResourceContext.EventSource,
+        })
+            core.AddWebResourceRequestedFilter("*", ctx);
         core.WebResourceRequested += (_, e) =>
         {
             if (!adblock) return;
@@ -1106,6 +1066,19 @@ class BrowserForm : Form
         };
 
         core.NewWindowRequested += (_, e) => { e.Handled = true; _ = NewTab(e.Uri); };
+
+        // Bloqueur de pubs YouTube (le script ne s'active que sur youtube.com)
+        if (adblock)
+        {
+            try { await core.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script); } catch { }
+        }
+
+        // Téléchargements : on suit chaque fichier et on prévient clairement en cas de souci
+        core.DownloadStarting += (_, e) =>
+        {
+            WatchDownload(e.DownloadOperation);
+            smokeDownload?.TrySetResult(e.DownloadOperation);
+        };
 
         core.NavigationStarting += (_, _) =>
         {
@@ -1163,12 +1136,14 @@ class BrowserForm : Form
                 var root = doc.RootElement;
                 switch (root.GetProperty("type").GetString())
                 {
-                    case "ready": SendHomeData(core); break;
+                    case "ready": SendHomeData(core); homeReady.TrySetResult(true); break;
                     case "search":
                         var u = ToUrl(root.GetProperty("q").GetString());
                         if (u != null) { core.Navigate(u); t.View.Focus(); }
                         break;
                     case "engine": SetEngine(root.GetProperty("id").GetString()); break;
+                    case "city": ChangeCity(); break;
+                    case "refreshMatches": _ = RefreshMatches(force: true); break;
                 }
             }
             catch { }
@@ -1182,7 +1157,7 @@ class BrowserForm : Form
         {
             extStarted = true;
             profile = core.Profile;
-            _ = LoadExtensionsAsync();
+            extTask = LoadExtensionsAsync();
         }
     }
 
@@ -1291,7 +1266,7 @@ class BrowserForm : Form
 
     void ApplyTheme()
     {
-        theme = dark ? Theme.Dark : Theme.Light;
+        theme = themeName == "light" ? Theme.Light : themeName == "dark" ? Theme.Dark : Theme.M8;
         BackColor = theme.Strip;
         strip.Theme = theme;
         strip.Invalidate();
@@ -1306,6 +1281,9 @@ class BrowserForm : Form
         updatePill.Theme = theme;
         updatePill.BackColor = theme.Bar;
         updatePill.Invalidate();
+        prayerChip.Theme = theme;
+        prayerChip.BackColor = theme.Bar;
+        prayerChip.Invalidate();
         addr.ApplyTheme(theme, theme.Bar);
         toolbar.Invalidate();
         SetTitleBarDark(dark);
@@ -1370,6 +1348,26 @@ class BrowserForm : Form
 
     // ---------- Page d'accueil ----------
 
+    object HomePrayers()
+    {
+        var methodName = Prayers.Methods.FirstOrDefault(m => m.Id == prayerMethod).Name;
+        if (prayerDay == null)
+            return new { city = prayerCity, error = prayerError, methodName, times = Array.Empty<object>() };
+        return new
+        {
+            city = prayerDay.City,
+            hijri = prayerDay.Hijri,
+            methodName,
+            times = prayerDay.Times.Select(t => new { key = t.Key, name = t.Name, time = t.Time.ToString(@"hh\:mm") }).ToArray()
+        };
+    }
+
+    object[] HomeMatches() => (matches?.Items ?? new List<LiteCore.Match>()).Select(m => (object)new
+    {
+        game = m.Game, ts = m.Ts, t1 = m.Team1, s1 = m.Short1, t2 = m.Team2, s2 = m.Short2,
+        format = m.Format, tournament = m.Tournament, url = m.Url
+    }).ToArray();
+
     void SendHomeData(CoreWebView2 core)
     {
         var tiles = favorites.Select(f => new { title = f.Title, url = f.Url })
@@ -1377,10 +1375,14 @@ class BrowserForm : Form
             .Take(8).ToArray();
         var json = JsonSerializer.Serialize(new
         {
-            theme = dark ? "dark" : "light",
+            theme = themeName,
             engine = engineId,
             engines = Engines.Select(e => new { id = e.Id, name = e.Name }).ToArray(),
-            tiles
+            tiles,
+            matches = HomeMatches(),
+            matchesLoading = matches?.Loading ?? false,
+            matchesUpdated = matches == null || matches.FetchedAt == default ? (long?)null : matches.FetchedAt.ToUnixTimeMilliseconds(),
+            prayers = HomePrayers(),
         });
         try { core.PostWebMessageAsJson(json); } catch { }
     }
@@ -1396,32 +1398,7 @@ class BrowserForm : Form
 
     // ---------- Recherche / adresses ----------
 
-    static bool LooksLikeUrl(string s)
-    {
-        if (s.Contains(' ')) return false;
-        if (s.Contains("://")) return true;
-        var host = s.Split('/', '?', '#')[0].Split(':')[0];
-        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
-        if (host.Count(ch => ch == '.') == 3 && System.Net.IPAddress.TryParse(host, out _)) return true;
-        var parts = host.Split('.');
-        if (parts.Length < 2 || parts.Any(p => p.Length == 0)) return false;
-        var tld = parts[^1];
-        return tld.Length >= 2 && tld.All(char.IsLetter) && Uri.CheckHostName(host) == UriHostNameType.Dns;
-    }
-
-    string ToUrl(string text)
-    {
-        text = (text ?? "").Trim();
-        if (text.Length == 0) return null;
-        if (text.Contains("://")) return text;
-        if (LooksLikeUrl(text))
-        {
-            var host = text.Split('/', '?', '#')[0].Split(':')[0];
-            bool local = host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || System.Net.IPAddress.TryParse(host, out _);
-            return (local ? "http://" : "https://") + text;
-        }
-        return Engine.Url + Uri.EscapeDataString(text);
-    }
+    string ToUrl(string text) => UrlTools.ToUrl(text, Engine.Url);
 
     void SetEngine(string id)
     {
@@ -1453,14 +1430,8 @@ class BrowserForm : Form
 
     void AddSuggestion(string url)
     {
-        if (string.IsNullOrEmpty(url)) return;
-        var s = url;
-        int i = s.IndexOf("://", StringComparison.Ordinal);
-        if (i >= 0) s = s[(i + 3)..];
-        if (s.StartsWith("www.")) s = s[4..];
-        if (s.EndsWith("/")) s = s[..^1];
-        if (s.Length == 0 || s.Length > 120) return;
-        if (suggestSet.Add(s)) suggestions.Add(s);
+        var s = UrlTools.ShortForm(url);
+        if (s != null && suggestSet.Add(s)) suggestions.Add(s);
     }
 
     void AddHistory(string title, string url)
@@ -1487,6 +1458,304 @@ class BrowserForm : Form
         SaveList(favPath, favorites);
         UpdateUi();
         RefreshHomeTabs();
+    }
+
+    // ---------- Test automatique de bout en bout (lancé par la CI sur un vrai Windows) ----------
+
+    public static readonly string SmokeReport = Environment.GetEnvironmentVariable("LITEBROWSER_SMOKE");
+    readonly TaskCompletionSource<bool> homeReady = new();
+    TaskCompletionSource<CoreWebView2DownloadOperation> smokeDownload;
+    Task extTask;
+
+    static async Task<bool> NavigateAndWait(CoreWebView2 core, string url, int timeoutMs)
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        void Done(object s, CoreWebView2NavigationCompletedEventArgs e) => tcs.TrySetResult(e.IsSuccess);
+        core.NavigationCompleted += Done;
+        core.Navigate(url);
+        var first = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+        core.NavigationCompleted -= Done;
+        return first == tcs.Task && tcs.Task.Result;
+    }
+
+    static string JsString(string raw)
+    {
+        try { return JsonSerializer.Deserialize<string>(raw); } catch { return raw; }
+    }
+
+    string Screenshot(string name)
+    {
+        try
+        {
+            Activate();
+            var file = Path.Combine(Path.GetDirectoryName(SmokeReport) ?? ".", $"smoke_{name}.png");
+            using var bmp = new Bitmap(Bounds.Width, Bounds.Height);
+            using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(Bounds.Location, Point.Empty, Bounds.Size);
+            bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
+            return file;
+        }
+        catch (Exception ex) { return "échec : " + ex.Message; }
+    }
+
+    async Task RunSmoke()
+    {
+        var r = new Dictionary<string, object>();
+        try
+        {
+            r["version"] = Updater.Current.ToString();
+            r["webview2"] = env?.BrowserVersionString;
+            r["homeReady"] = await Task.WhenAny(homeReady.Task, Task.Delay(30_000)) == homeReady.Task;
+            var home = tabs[0].View.CoreWebView2;
+            await Task.Delay(1500);
+            r["homeTitle"] = JsString(await home.ExecuteScriptAsync("document.title"));
+            r["homeTheme"] = JsString(await home.ExecuteScriptAsync("document.body.className"));
+            r["screenshotHome"] = Screenshot("home");
+
+            if (extTask != null) await Task.WhenAny(extTask, Task.Delay(150_000));
+            r["extensions"] = extensions.Select(e => new { e.Name, e.RuntimeId, e.Popup, e.Error, e.Enabled }).ToList();
+
+            await NewTab("about:blank");
+            var core = Core;
+            var popups = new List<object>();
+            foreach (var e in extensions.Where(x => x.RuntimeId != null && x.Popup != null))
+            {
+                bool ok = await NavigateAndWait(core, $"chrome-extension://{e.RuntimeId}/{e.Popup}", 20_000);
+                await Task.Delay(1500);
+                var text = ok ? JsString(await core.ExecuteScriptAsync("(document.body && document.body.innerText || '').slice(0,80)")) : null;
+                popups.Add(new { e.Name, ok, text });
+            }
+            r["popups"] = popups;
+
+            r["youtubeLoaded"] = await NavigateAndWait(core, "https://www.youtube.com/", 45_000);
+            await Task.Delay(3000);
+            r["youtubeAdblockActive"] = JsString(await core.ExecuteScriptAsync("String(!!window.__lbYtAdblock)")) == "true";
+            r["screenshotYoutube"] = Screenshot("youtube");
+            r["youtubeAdStyle"] = JsString(await core.ExecuteScriptAsync("String(!!document.getElementById('lb-yt-adblock'))")) == "true";
+
+            // Vrai téléchargement (petit zip) : il doit aller au bout
+            smokeDownload = new TaskCompletionSource<CoreWebView2DownloadOperation>();
+            core.Navigate("https://github.com/Atlantaas/LiteBrowser/archive/refs/heads/main.zip");
+            var started = await Task.WhenAny(smokeDownload.Task, Task.Delay(30_000)) == smokeDownload.Task;
+            string dl = started ? "démarré" : "jamais démarré";
+            if (started)
+            {
+                var op = smokeDownload.Task.Result;
+                for (int i = 0; i < 60 && op.State == CoreWebView2DownloadState.InProgress; i++) await Task.Delay(500);
+                dl = op.State == CoreWebView2DownloadState.Completed ? "terminé" : $"{op.State} ({op.InterruptReason})";
+            }
+            r["download"] = dl;
+
+            for (int i = 0; i < 40 && prayerDay == null; i++) await Task.Delay(1000);
+            r["prayers"] = prayerDay?.Times.Count ?? 0;
+            r["prayerCity"] = prayerDay?.City;
+            r["prayerError"] = prayerError;
+            r["prayerChip"] = prayerChip.Visible ? prayerChip.Text : null;
+
+            for (int i = 0; i < 20 && (matches.Loading || matches.FetchedAt == default); i++) await Task.Delay(1000);
+            r["matches"] = matches.Items.Select(m => $"{m.Game} {m.Short1} vs {m.Short2} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u}").ToList();
+            r["homePrayerRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.prow').length)"));
+        }
+        catch (Exception ex) { r["exception"] = ex.ToString(); }
+
+        try { File.WriteAllText(SmokeReport, JsonSerializer.Serialize(r, new JsonSerializerOptions { WriteIndented = true })); } catch { }
+        Close();
+    }
+
+    // ---------- Notifications Windows ----------
+
+    void Notify(string title, string text, Action onClick = null)
+    {
+        try
+        {
+            if (tray == null)
+            {
+                tray = new NotifyIcon { Icon = Icon ?? SystemIcons.Application, Text = "LiteBrowser", Visible = true };
+                tray.BalloonTipClicked += (_, _) => trayClick?.Invoke();
+                tray.Click += (_, _) => { if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized; Activate(); };
+            }
+            trayClick = onClick;
+            tray.ShowBalloonTip(6000, title, text, ToolTipIcon.None);
+        }
+        catch { }
+    }
+
+    // ---------- Téléchargements ----------
+
+    void WatchDownload(CoreWebView2DownloadOperation op)
+    {
+        op.StateChanged += (_, _) =>
+        {
+            if (op.State == CoreWebView2DownloadState.Completed)
+            {
+                var file = op.ResultFilePath;
+                Notify("Téléchargement terminé", Path.GetFileName(file), () =>
+                {
+                    try { Process.Start("explorer.exe", "/select,\"" + file + "\""); } catch { }
+                });
+            }
+            else if (op.State == CoreWebView2DownloadState.Interrupted &&
+                     op.InterruptReason != CoreWebView2DownloadInterruptReason.UserCanceled &&
+                     op.InterruptReason != CoreWebView2DownloadInterruptReason.UserShutdown)
+            {
+                Notify("Téléchargement interrompu", Path.GetFileName(op.ResultFilePath) + " – " + DownloadReason(op.InterruptReason));
+            }
+        };
+    }
+
+    static string DownloadReason(CoreWebView2DownloadInterruptReason r) => r switch
+    {
+        CoreWebView2DownloadInterruptReason.FileNoSpace => "plus de place sur le disque",
+        CoreWebView2DownloadInterruptReason.FileAccessDenied => "accès refusé au dossier de destination",
+        CoreWebView2DownloadInterruptReason.FileBlockedByPolicy or CoreWebView2DownloadInterruptReason.FileSecurityCheckFailed
+            => "fichier bloqué par la sécurité de Windows",
+        CoreWebView2DownloadInterruptReason.FileMalicious => "fichier détecté comme dangereux",
+        CoreWebView2DownloadInterruptReason.ServerCrossOriginRedirect => "le site a redirigé le téléchargement vers un autre domaine",
+        CoreWebView2DownloadInterruptReason.NetworkDisconnected or CoreWebView2DownloadInterruptReason.NetworkFailed
+            or CoreWebView2DownloadInterruptReason.NetworkTimeout => "problème de connexion",
+        CoreWebView2DownloadInterruptReason.ServerUnauthorized or CoreWebView2DownloadInterruptReason.ServerForbidden
+            => "le site refuse le téléchargement (connexion requise ?)",
+        CoreWebView2DownloadInterruptReason.ServerBadContent or CoreWebView2DownloadInterruptReason.ServerNoRange
+            => "fichier introuvable sur le serveur",
+        _ => "raison : " + r,
+    };
+
+    // ---------- Matchs Gentle Mates ----------
+
+    async Task RefreshMatches(bool force = false)
+    {
+        if (matches == null || matches.Loading) return;
+        if (!force && !matches.IsStale) { RefreshHomeTabs(); return; }
+        var t = matches.RefreshAsync();
+        RefreshHomeTabs(); // affiche « Mise à jour… »
+        await t;
+    }
+
+    // ---------- Horaires de prière ----------
+
+    async Task RefreshPrayers(bool relocate = false)
+    {
+        if (prayerBusy) return;
+        prayerBusy = true;
+        lastPrayerTry = DateTime.Now;
+        try
+        {
+            if (relocate || double.IsNaN(prayerLat))
+            {
+                if (prayerAuto)
+                {
+                    var loc = await Prayers.LocateByIpAsync();
+                    if (loc != null) { prayerLat = loc.Value.Lat; prayerLon = loc.Value.Lon; prayerCity = loc.Value.City; SaveSettings(); }
+                }
+            }
+            if (double.IsNaN(prayerLat)) { prayerError = "Choisis ta ville pour afficher les horaires."; return; }
+            prayerDay = await Prayers.FetchAsync(DateTime.Today, prayerLat, prayerLon, prayerMethod, prayerCity);
+            prayerError = null;
+        }
+        catch { prayerError = "Impossible de récupérer les horaires (connexion ?)."; }
+        finally
+        {
+            prayerBusy = false;
+            UpdatePrayerChip();
+            RefreshHomeTabs();
+        }
+    }
+
+    void UpdatePrayerChip()
+    {
+        if (prayerDay == null || prayerDay.Times.Count == 0)
+        {
+            prayerChip.Visible = false;
+            LayoutToolbar();
+            return;
+        }
+        var (name, at) = Prayers.Next(prayerDay, DateTime.Now);
+        prayerChip.Text = $"☾  {name} {at:HH\\:mm}";
+        var left = at - DateTime.Now;
+        tip.SetToolTip(prayerChip, $"Prochaine prière : {name} à {at:HH\\:mm} (dans {(left.TotalHours >= 1 ? $"{(int)left.TotalHours} h {left.Minutes:00}" : $"{Math.Max(0, (int)left.TotalMinutes)} min")})\n{prayerDay.City}");
+        prayerChip.Visible = true;
+        prayerChip.Invalidate();
+        LayoutToolbar();
+    }
+
+    void MinuteTick()
+    {
+        // Nouveau jour → nouveaux horaires ; échec précédent → nouvel essai toutes les 10 min
+        if (prayerDay != null && prayerDay.Date != DateTime.Today) { _ = RefreshPrayers(); return; }
+        if (prayerDay == null && !prayerBusy && DateTime.Now - lastPrayerTry > TimeSpan.FromMinutes(10)) { _ = RefreshPrayers(); return; }
+        if (prayerDay != null)
+        {
+            // Notification à l'heure de la prière
+            var now = DateTime.Now;
+            foreach (var (key, name, time) in prayerDay.Times)
+            {
+                if (key == "Sunrise") continue;
+                var at = DateTime.Today + time;
+                var id = $"{DateTime.Today:yyyyMMdd}-{key}";
+                if (prayerNotify && now >= at && now < at.AddMinutes(5) && lastNotified != id)
+                {
+                    lastNotified = id;
+                    Notify($"C'est l'heure de {name}", $"{name} – {time:hh\\:mm} · {prayerDay.City}");
+                }
+            }
+            UpdatePrayerChip();
+        }
+        if (matches != null && matches.IsStale && !matches.Loading) _ = RefreshMatches();
+    }
+
+    void ShowPrayerMenu()
+    {
+        lastMenu?.Dispose();
+        var r = new MenuRenderer(theme, iconSmall);
+        var font = new Font("Segoe UI", 9.5f);
+        var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true };
+        lastMenu = m;
+
+        if (prayerDay != null)
+        {
+            var next = Prayers.Next(prayerDay, DateTime.Now).Name;
+            m.Items.Add(new ToolStripMenuItem($"{prayerDay.City}  ·  {prayerDay.Hijri}") { Enabled = false });
+            m.Items.Add(new ToolStripSeparator());
+            foreach (var (key, name, time) in prayerDay.Times)
+            {
+                var it = new ToolStripMenuItem(name) { ShortcutKeyDisplayString = time.ToString(@"hh\:mm"), Padding = new Padding(0, S(3), 0, S(3)) };
+                if (name == next) it.Font = new Font(font, FontStyle.Bold);
+                if (key == "Sunrise") it.Enabled = false;
+                m.Items.Add(it);
+            }
+            m.Items.Add(new ToolStripSeparator());
+        }
+        m.Items.Add(MI("Changer de ville…", ChangeCity));
+        m.Items.Add(MI("Détecter ma position automatiquement", () => { prayerAuto = true; SaveSettings(); _ = RefreshPrayers(relocate: true); }));
+        var meth = MI("Méthode de calcul");
+        foreach (var (id, label) in Prayers.Methods)
+            meth.DropDownItems.Add(MI(label, () => { prayerMethod = id; SaveSettings(); _ = RefreshPrayers(); }, null, id == prayerMethod));
+        m.Items.Add(meth);
+        m.Items.Add(MI("Notification à l'heure de chaque prière", () => { prayerNotify = !prayerNotify; SaveSettings(); }, null, prayerNotify));
+        StyleDropDowns(m.Items, r, font);
+        m.Show(prayerChip, new Point(prayerChip.Width, prayerChip.Height + S(4)), ToolStripDropDownDirection.BelowLeft);
+    }
+
+    async void ChangeCity()
+    {
+        var text = Prompt.Show(this, "Ville pour les horaires de prière",
+            "Tape le nom de ta ville (ex. Creutzwald, Metz, Paris…)", theme, "Valider");
+        if (string.IsNullOrWhiteSpace(text)) return;
+        try
+        {
+            var geo = await Prayers.GeocodeAsync(text.Trim());
+            if (geo == null)
+            {
+                MessageBox.Show(this, $"Ville « {text} » introuvable.", "Prières", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            prayerLat = geo.Value.Lat; prayerLon = geo.Value.Lon; prayerCity = geo.Value.City; prayerAuto = false;
+            SaveSettings();
+            await RefreshPrayers();
+        }
+        catch
+        {
+            MessageBox.Show(this, "Impossible de chercher la ville (connexion ?).", "Prières", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     // ---------- Extensions ----------
@@ -1805,9 +2074,12 @@ class BrowserForm : Form
         var eng = MI("Moteur de recherche");
         foreach (var e in Engines) { var id = e.Id; eng.DropDownItems.Add(MI(e.Name, () => SetEngine(id), null, id == engineId)); }
         m.Items.Add(eng);
-        m.Items.Add(MI("Thème sombre", () => { dark = !dark; SaveSettings(); ApplyTheme(); }, null, dark));
+        var th = MI("Thème");
+        foreach (var (id, label) in new[] { ("m8", "Gentle Mates"), ("dark", "Sombre"), ("light", "Clair") })
+            th.DropDownItems.Add(MI(label, () => { themeName = id; SaveSettings(); ApplyTheme(); }, null, themeName == id));
+        m.Items.Add(th);
         m.Items.Add(MI("Forcer le mode sombre sur tous les sites", ToggleForceDark, null, forceDark));
-        m.Items.Add(MI($"Bloquer les pubs  ({blockedCount} bloquées)", () => { adblock = !adblock; SaveSettings(); }, null, adblock));
+        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => { adblock = !adblock; SaveSettings(); }, null, adblock));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Plein écran", () => SetFullscreen(!fullscreen), "F11"));
         m.Items.Add(MI("Effacer les données de navigation…", ClearData));
@@ -1910,7 +2182,15 @@ class BrowserForm : Form
         }
         catch { }
 
-        dark = settings.TryGetValue("theme", out var th) ? th == "dark" : systemDark;
+        themeName = settings.TryGetValue("theme", out var th) && (th == "m8" || th == "dark" || th == "light") ? th : "m8";
+        if (settings.TryGetValue("themeVersion", out var tv) == false) themeName = "m8"; // passage à la v3 : thème Gentle Mates par défaut
+        _ = systemDark;
+        if (settings.TryGetValue("prayer.lat", out var la) && double.TryParse(la, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lat)) prayerLat = lat;
+        if (settings.TryGetValue("prayer.lon", out var lo) && double.TryParse(lo, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lon)) prayerLon = lon;
+        if (settings.TryGetValue("prayer.city", out var pc)) prayerCity = pc;
+        if (settings.TryGetValue("prayer.method", out var pm) && int.TryParse(pm, out var pmi) && Prayers.Methods.Any(x => x.Id == pmi)) prayerMethod = pmi;
+        prayerNotify = !settings.TryGetValue("prayer.notify", out var pn) || pn == "1";
+        prayerAuto = !settings.TryGetValue("prayer.auto", out var pa) || pa == "1";
         forceDark = settings.TryGetValue("forcedark", out var fd) && fd == "1";
         adblock = !settings.TryGetValue("adblock", out var ab) || ab == "1";
         if (settings.TryGetValue("engine", out var en) && Engines.Any(e => e.Id == en)) engineId = en;
@@ -1922,7 +2202,14 @@ class BrowserForm : Form
         {
             File.WriteAllLines(settingsPath, new[]
             {
-                "theme=" + (dark ? "dark" : "light"),
+                "theme=" + themeName,
+                "themeVersion=3",
+                "prayer.lat=" + (double.IsNaN(prayerLat) ? "" : prayerLat.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                "prayer.lon=" + (double.IsNaN(prayerLon) ? "" : prayerLon.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                "prayer.city=" + (prayerCity ?? ""),
+                "prayer.method=" + prayerMethod,
+                "prayer.notify=" + (prayerNotify ? "1" : "0"),
+                "prayer.auto=" + (prayerAuto ? "1" : "0"),
                 "forcedark=" + (forceDark ? "1" : "0"),
                 "adblock=" + (adblock ? "1" : "0"),
                 "engine=" + engineId,
@@ -1955,16 +2242,7 @@ class BrowserForm : Form
         }
     }
 
-    bool IsBlocked(string host)
-    {
-        while (true)
-        {
-            if (blocked.Contains(host)) return true;
-            int i = host.IndexOf('.');
-            if (i < 0) return false;
-            host = host[(i + 1)..];
-        }
-    }
+    bool IsBlocked(string host) => UrlTools.HostMatches(host, blocked);
 
     // ---------- Raccourcis ----------
 
