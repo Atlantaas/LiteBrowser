@@ -1292,6 +1292,8 @@ class BrowserForm : Form
     {
         if (i < 0 || i >= tabs.Count) return;
         var t = tabs[i];
+        if (SmokeReport != null)
+            CrashLog.Write($"CloseTab {i}/{tabs.Count} {t.View.CoreWebView2?.Source} script={t.OpenedByScript}", new Exception(Environment.StackTrace));
         var src = t.View.CoreWebView2?.Source;
         if (!string.IsNullOrEmpty(src) && !IsHome(src)) closedTabs.Add(src);
         StopSuspend(t);
@@ -1897,7 +1899,9 @@ class BrowserForm : Form
             r["version"] = Updater.Current.ToString();
             r["webview2"] = env?.BrowserVersionString;
             r["homeReady"] = await Task.WhenAny(homeReady.Task, Task.Delay(30_000)) == homeReady.Task;
-            var home = tabs[0].View.CoreWebView2;
+            CoreWebView2 HomeCore() => tabs.FirstOrDefault(x => x.View.CoreWebView2 != null && IsHome(x.View.CoreWebView2.Source))?.View.CoreWebView2;
+            r["tabsAtStart"] = tabs.Select(x => x.View.CoreWebView2?.Source).ToList();
+            var home = HomeCore();
             await Task.Delay(1500);
             r["homeTitle"] = JsString(await home.ExecuteScriptAsync("document.title"));
             r["homeTheme"] = JsString(await home.ExecuteScriptAsync("document.body.className"));
@@ -1949,6 +1953,7 @@ class BrowserForm : Form
             r["prayerError"] = prayerError;
             r["prayerChip"] = prayerChip.Visible ? prayerChip.Text : null;
 
+            home = HomeCore() ?? home;
             r["homePrayerRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.prow').length)"));
 
             // Lives : statut des chaînes suivies
@@ -1965,8 +1970,9 @@ class BrowserForm : Form
             r["m8Matches"] = m8.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
                 .Select(m => $"{m.Game} vs {m.OpponentShort} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u} {m.Status} – {m.Tournament}").ToList();
             r["m8Tournaments"] = m8.Tournaments.Select(t => $"{t.Game}: {t.Name} ({t.When})").ToList();
+            home = HomeCore() ?? home;
             r["homeMatchRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.match').length)"));
-            SelectTab(0);
+            SelectTab(Math.Max(0, tabs.FindIndex(x => x.View.CoreWebView2 != null && IsHome(x.View.CoreWebView2.Source))));
             await Task.Delay(1500);
             r["screenshotHomeFinal"] = Screenshot("home_final");
 
