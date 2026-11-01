@@ -6,10 +6,9 @@ jobs:
     steps:
       - run: |
           mkdir out; UA="LiteBrowser/3.1 (https://github.com/Atlantaas/LiteBrowser)"
-          for p in "Gentle_Mates" "NEO/Coupe_de_France_Slash/2026"; do
-            f=out/$(echo "$p" | tr '/:' '__').json
-            curl -s --compressed -A "$UA" "https://liquipedia.net/rocketleague/api.php?action=parse&format=json&prop=text&page=$p" -o "$f" -w "$p %{http_code} %{size_download}\n"
-            sleep 35
+          for w in rocketleague valorant callofduty fortnite; do
+            curl -s --compressed -A "$UA" "https://liquipedia.net/$w/api.php?action=query&format=json&generator=backlinks&gbltitle=Gentle_Mates&gblnamespace=0&gbllimit=500&prop=revisions&rvprop=timestamp" -o out/bl_$w.json -w "$w %{http_code} %{size_download}\n"
+            sleep 3
           done
       - uses: actions/upload-artifact@v4
         with: { name: pages, path: out }
