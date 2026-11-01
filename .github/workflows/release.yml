@@ -1,0 +1,39 @@
+name: Publier une version
+
+# Se déclenche quand on pousse un tag du type v2.1.0 :
+# compile LiteBrowser sur Windows et crée la release avec LiteBrowser.exe,
+# que tous les navigateurs installés téléchargent ensuite automatiquement.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Compiler
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          dotnet publish LiteBrowser.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true -p:DebugType=none `
+            -p:Version=$version -o out
+
+      - name: Publier la release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" out/LiteBrowser.exe `
+            --title "LiteBrowser ${{ github.ref_name }}" --generate-notes
