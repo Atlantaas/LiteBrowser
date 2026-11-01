@@ -479,7 +479,7 @@ class BrowserTab
     public WebView2 View;
     public string Title = "Nouvel onglet";
     public Image Icon;
-    public bool Loading, IsHome = true;
+    public bool Loading, IsHome = true, OpenedByScript;
     public string DarkScriptId, YtScriptId;
     public System.Windows.Forms.Timer SuspendTimer;
 }
@@ -1098,7 +1098,7 @@ class BrowserForm : Form
     async Task NewTab(string url = null, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null)
     {
         if (env == null) { deferral?.Complete(); return; }
-        var t = new BrowserTab { IsHome = url == null && popup == null };
+        var t = new BrowserTab { IsHome = url == null && popup == null, OpenedByScript = popup != null };
         t.View = new WebView2 { Dock = DockStyle.Fill, Visible = false, DefaultBackgroundColor = theme.Bar };
         content.Controls.Add(t.View);
         int idx = sel >= 0 ? sel + 1 : tabs.Count; // s'ouvre juste à droite de l'onglet actuel
@@ -1139,7 +1139,8 @@ class BrowserForm : Form
 
         // Fenêtres ouvertes par la page (connexion Google/Discord, paiement…) : un vrai onglet relié à la page d'origine
         core.NewWindowRequested += (_, e) => { var d = e.GetDeferral(); _ = NewTab(e.Uri, e, d); };
-        core.WindowCloseRequested += (_, _) => BeginInvoke(new Action(() => CloseTab(tabs.IndexOf(t))));
+        // window.close() : comme dans Chrome, seulement pour un onglet ouvert par un script (popup de connexion…)
+        core.WindowCloseRequested += (_, _) => { if (t.OpenedByScript) BeginInvoke(new Action(() => CloseTab(tabs.IndexOf(t)))); };
 
         // Cadres publicitaires (iframes) bloqués eux aussi
         core.FrameNavigationStarting += (_, e) =>
@@ -1882,6 +1883,12 @@ class BrowserForm : Form
         catch (Exception ex) { return "échec : " + ex.Message; }
     }
 
+    void SmokeStep(Dictionary<string, object> r, string step)
+    {
+        r["step"] = step;
+        try { File.WriteAllText(SmokeReport + ".partiel.json", JsonSerializer.Serialize(r, new JsonSerializerOptions { WriteIndented = true })); } catch { }
+    }
+
     async Task RunSmoke()
     {
         var r = new Dictionary<string, object>();
@@ -1896,14 +1903,17 @@ class BrowserForm : Form
             r["homeTheme"] = JsString(await home.ExecuteScriptAsync("document.body.className"));
             r["screenshotHome"] = Screenshot("home");
 
+            SmokeStep(r, "extensions");
             if (extTask != null) await Task.WhenAny(extTask, Task.Delay(150_000));
             r["extensions"] = extensions.Select(e => new { e.Name, e.RuntimeId, e.Popup, e.Error, e.Enabled }).ToList();
 
+            SmokeStep(r, "onglet de test");
             await NewTab("about:blank");
             var core = Core;
             var popups = new List<object>();
             foreach (var e in extensions.Where(x => x.RuntimeId != null && x.Popup != null))
             {
+                SmokeStep(r, "popup " + e.Name);
                 bool ok = await NavigateAndWait(core, $"chrome-extension://{e.RuntimeId}/{e.Popup}", 20_000);
                 await Task.Delay(1500);
                 var text = ok ? JsString(await core.ExecuteScriptAsync("(document.body && document.body.innerText || '').slice(0,80)")) : null;
@@ -1911,6 +1921,7 @@ class BrowserForm : Form
             }
             r["popups"] = popups;
 
+            SmokeStep(r, "youtube");
             r["youtubeLoaded"] = await NavigateAndWait(core, "https://www.youtube.com/", 45_000);
             await Task.Delay(3000);
             r["youtubeAdblockActive"] = JsString(await core.ExecuteScriptAsync("String(!!window.__lbYtAdblock)")) == "true";
@@ -1918,6 +1929,7 @@ class BrowserForm : Form
             r["youtubeAdStyle"] = JsString(await core.ExecuteScriptAsync("String(!!document.getElementById('lb-yt-adblock'))")) == "true";
 
             // Vrai téléchargement (petit zip) : il doit aller au bout
+            SmokeStep(r, "téléchargement");
             smokeDownload = new TaskCompletionSource<CoreWebView2DownloadOperation>();
             core.Navigate("https://github.com/Atlantaas/LiteBrowser/archive/refs/heads/main.zip");
             var started = await Task.WhenAny(smokeDownload.Task, Task.Delay(30_000)) == smokeDownload.Task;
@@ -1930,6 +1942,7 @@ class BrowserForm : Form
             }
             r["download"] = dl;
 
+            SmokeStep(r, "prières");
             for (int i = 0; i < 40 && prayerDay == null; i++) await Task.Delay(1000);
             r["prayers"] = prayerDay?.Times.Count ?? 0;
             r["prayerCity"] = prayerDay?.City;
@@ -1939,11 +1952,13 @@ class BrowserForm : Form
             r["homePrayerRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.prow').length)"));
 
             // Lives : statut des chaînes suivies
+            SmokeStep(r, "lives");
             for (int i = 0; i < 30 && liveStatus.Count == 0; i++) await Task.Delay(1000);
             r["lives"] = liveStatus.Select(kv => $"{kv.Key} {(kv.Value.Live == true ? "LIVE" : kv.Value.Live == false ? "off" : "?")}").ToList();
             r["homeLiveCards"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.ch').length)"));
 
             // Matchs M8 (7 jeux) : premier passage sur Liquipedia (31 s entre les pages)
+            SmokeStep(r, "matchs");
             for (int i = 0; i < 260 && (m8.Loading || m8.FetchedAtMs == 0); i++) await Task.Delay(1000);
             r["m8Source"] = m8.Source;
             r["m8Errors"] = m8.Errors.ToList();
@@ -1956,6 +1971,7 @@ class BrowserForm : Form
             r["screenshotHomeFinal"] = Screenshot("home_final");
 
             // Multistream : 2 chaînes + chat
+            SmokeStep(r, "multistream");
             multiReady = new TaskCompletionSource<bool>();
             OpenMulti(new List<string> { "twitch:gentlemates", "twitch:valorant_emea" }, chat: true);
             r["multiReady"] = await Task.WhenAny(multiReady.Task, Task.Delay(30_000)) == multiReady.Task;
