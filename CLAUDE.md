@@ -12,5 +12,5 @@
 - Le PC bloque l'ouverture de ports locaux (serveur d'aperçu impossible) : vérifier les pages dans l'app.
 
 ## Historique
-- 2026-11-03 — v4.0.0 (branche `refonte-v4`, non publiée) : page Réglages, session, onglets épinglés et privés, bouclier
+- 2026-11-03 — v4.0.0 (branche `refonte-v4`, commit d287e25, installée sur le PC de Ryan, non publiée sur GitHub ; sauvegarde v3.1.2 dans `%LOCALAPPDATA%\LiteBrowser\_backup\`) : page Réglages, session, onglets épinglés et privés, bouclier
   par site, pistage réglable, rappels de prière, thème rose M8, mode test (`LITEBROWSER_DATA`/`LITEBROWSER_SHOTS`).
