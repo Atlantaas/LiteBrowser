@@ -7,6 +7,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -80,6 +81,11 @@ namespace LiteCore
     {
         public static Version Norm(Version v) => new(v.Major, v.Minor, Math.Max(0, v.Build));
 
+        public static bool IsTrustedDownload(string url) =>
+            Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps &&
+            (u.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+             u.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase));
+
         /// "v2.3.0" → 2.3.0 ; null si le tag n'est pas une version.
         public static Version ParseTag(string tag)
         {
@@ -97,8 +103,10 @@ namespace LiteCore
             foreach (var a in root.GetProperty("assets").EnumerateArray())
             {
                 var name = a.GetProperty("name").GetString() ?? "";
-                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                    return (v, a.GetProperty("browser_download_url").GetString());
+                var url = a.GetProperty("browser_download_url").GetString();
+                // On ne télécharge un exe que depuis GitHub, jamais depuis une adresse inattendue
+                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && IsTrustedDownload(url))
+                    return (v, url);
             }
             return null;
         }
@@ -467,6 +475,71 @@ namespace LiteCore
             }
             return day;
         }
+    }
+
+    // ==================================================================
+    //  Sites sans bloqueur (exceptions choisies depuis le bouclier)
+    // ==================================================================
+    public static class SiteList
+    {
+        /// Hôte « lisible » d'une adresse : www. retiré, minuscules. null si ce n'est pas une page web.
+        public static string Host(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != "http" && u.Scheme != "https")) return null;
+            var h = u.Host.ToLowerInvariant();
+            return h.StartsWith("www.") ? h[4..] : h;
+        }
+
+        public static HashSet<string> Parse(string s) =>
+            new((s ?? "").Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Contains('.')), StringComparer.OrdinalIgnoreCase);
+
+        public static string Format(IEnumerable<string> hosts) => string.Join(",", hosts.OrderBy(x => x, StringComparer.Ordinal));
+
+        /// Vrai si la page (ou un de ses domaines parents) est dans la liste.
+        public static bool Contains(ISet<string> list, string pageUrl)
+        {
+            var h = Host(pageUrl);
+            return h != null && UrlTools.HostMatches(h, list);
+        }
+    }
+
+    // ==================================================================
+    //  Session : onglets rouverts au démarrage
+    // ==================================================================
+    public sealed record SessionTab(string Url, string Title, bool Pinned);
+
+    public static class Session
+    {
+        /// Une ligne par onglet : épinglé (0/1), adresse, titre séparés par une tabulation. Première ligne : « selected=N ».
+        public static string Serialize(IEnumerable<SessionTab> tabs, int selected)
+        {
+            var sb = new StringBuilder("selected=" + selected + "\n");
+            foreach (var t in tabs)
+                sb.Append(t.Pinned ? "1" : "0").Append('\t').Append(Clean(t.Url)).Append('\t').Append(Clean(t.Title)).Append('\n');
+            return sb.ToString();
+        }
+
+        public static (List<SessionTab> Tabs, int Selected) Parse(string text)
+        {
+            var list = new List<SessionTab>();
+            int selected = 0;
+            foreach (var raw in (text ?? "").Split('\n'))
+            {
+                var l = raw.TrimEnd('\r');
+                if (l.StartsWith("selected=")) { int.TryParse(l[9..], out selected); continue; }
+                var p = l.Split('\t');
+                if (p.Length < 2) continue;
+                var url = p[1];
+                // seulement des pages web ou la page d'accueil (vide) : jamais de script ni de fichier local
+                if (url.Length > 0 && !url.StartsWith("https://") && !url.StartsWith("http://")) continue;
+                list.Add(new SessionTab(url, p.Length > 2 ? p[2] : "", p[0] == "1"));
+            }
+            if (list.Count > 50) list = list.Take(50).ToList();
+            return (list, Math.Clamp(selected, 0, Math.Max(0, list.Count - 1)));
+        }
+
+        static string Clean(string s) => (s ?? "").Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
     }
 
     // ==================================================================

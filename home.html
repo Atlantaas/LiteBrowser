@@ -6,7 +6,7 @@
 <style>
 :root{
   --bg:#08080a; --bg2:#0e0e12; --card:#141418; --card2:#1a1a20; --line:#26262d; --text:#f4f2ee; --sub:#8f8d96;
-  --accent:#ffffff; --accent-text:#08080a; --live:#ff3b3b; --glow:rgba(255,255,255,.06);
+  --accent:#d669d2; --accent-text:#08080a; --live:#ff3b3b; --glow:rgba(214,105,210,.10);
   --head:"Bahnschrift","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
 }
 body.dark{ --bg:#1b1c1f; --bg2:#1f2023; --card:#2b2c30; --card2:#323337; --line:#3c4043; --text:#e8eaed; --sub:#9aa0a6;
@@ -33,7 +33,12 @@ a{color:inherit;text-decoration:none}
 .when{text-align:right}
 .clock{font-family:var(--head);font-size:64px;font-weight:300;line-height:.9;letter-spacing:-1px}
 .date{color:var(--sub);font-size:14px;margin-top:8px}
+.quick{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
+.qb{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--card);color:var(--sub);border-radius:10px;padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit;transition:color .12s,border-color .12s}
+.qb:hover{color:var(--text);border-color:var(--sub)}
+.qb .ic{font-size:12px}
 
+body.m8 .badge{border-color:var(--accent);color:var(--accent)}
 /* ---- Recherche ---- */
 #f{margin:28px 0 26px;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
   border-radius:16px;height:58px;padding:0 8px 0 20px;transition:border-color .15s,box-shadow .15s}
@@ -131,7 +136,15 @@ select option{background:var(--card);color:var(--text)}
 .next .n{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:4px}
 .next .name{font-family:var(--head);font-size:28px;font-weight:700}
 .next .time{font-family:var(--head);font-size:28px;font-weight:300}
-.next .in{color:var(--sub);font-size:13px;margin-top:2px}
+.next .in{color:var(--sub);font-size:13px;margin-top:2px;display:flex;justify-content:space-between;gap:8px}
+.next .in b{color:var(--text);font-weight:600}
+.next.soon{background:var(--accent);color:var(--accent-text)}
+.next.soon .l,.next.soon .in,.next.soon .in b{color:var(--accent-text)}
+.next.soon .bar{background:rgba(0,0,0,.18)}.next.soon .bar i{background:var(--accent-text)}
+.bar{height:4px;border-radius:4px;background:var(--line);margin-top:10px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:4px;transition:width .4s}
+.pfoot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px}
+.pfoot .credit{margin:0}
 .prow{display:flex;justify-content:space-between;padding:8px 6px;border-bottom:1px solid var(--line);font-size:14px}
 .prow:last-child{border-bottom:0}
 .prow.past{color:var(--sub)}
@@ -141,16 +154,17 @@ select option{background:var(--card);color:var(--text)}
 .prow .tm{font-family:var(--head);font-variant-numeric:tabular-nums}
 
 /* ---- Raccourcis ---- */
-.tiles{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;margin-top:18px}
-.tile{display:flex;flex-direction:column;align-items:center;gap:9px;padding:14px 6px 12px;border-radius:14px;color:var(--text);font-size:12px;transition:background .12s}
-.tile:hover{background:var(--card)}
+.side{display:flex;flex-direction:column;gap:18px;min-width:0}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}
+.tile{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 4px 9px;border-radius:12px;color:var(--text);font-size:12px;transition:background .12s;min-width:0}
+.tile:hover{background:var(--card2)}
 .fav{width:48px;height:48px;border-radius:14px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-family:var(--head);font-weight:700;font-size:19px;overflow:hidden}
 .fav img{width:24px;height:24px}
 .name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hint{text-align:center;color:var(--sub);font-size:12px;margin-top:26px}
 kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
 
-@media (max-width:900px){.grid{grid-template-columns:1fr}.tiles{grid-template-columns:repeat(4,minmax(0,1fr))}.clock{font-size:48px}}
+@media (max-width:900px){.grid{grid-template-columns:1fr}.clock{font-size:48px}}
 @media (max-width:520px){.wrap{padding:22px 14px 50px}.match{grid-template-columns:70px minmax(0,1fr)}.cd{grid-row:auto;grid-column:2;text-align:left}.brand-name{font-size:22px}}
 </style>
 </head>
@@ -161,7 +175,11 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
       <div class="badge">M8</div>
       <div><div class="brand-name">Gentle Mates</div><div class="brand-sub">LiteBrowser · édition fan</div></div>
     </div>
-    <div class="when"><div class="clock" id="clock"></div><div class="date" id="date"></div></div>
+    <div class="when"><div class="clock" id="clock"></div><div class="date" id="date"></div>
+      <div class="quick">
+        <button class="qb" data-open="historique" title="Historique (Ctrl+H)"><span class="ic">&#xE81C;</span>Historique</button>
+        <button class="qb" data-open="" title="Réglages (Ctrl+,)"><span class="ic">&#xE713;</span>Réglages</button>
+      </div></div>
   </header>
 
   <form id="f" autocomplete="off">
@@ -192,13 +210,19 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
       <div class="credit">Données : <a href="https://liquipedia.net/">Liquipedia</a> (CC BY-SA)</div>
     </section>
 
-    <aside class="card">
-      <div class="card-h">
-        <div class="card-t">Prières</div>
-        <button class="link" id="city" title="Ville, mosquée, ajustements…">…</button>
-      </div>
-      <div id="prayers"><div class="skel"></div><div class="skel" style="height:180px"></div></div>
-    </aside>
+    <div class="side">
+      <aside class="card">
+        <div class="card-h">
+          <div class="card-t">Prières</div>
+          <button class="link" id="city" title="Ville, mosquée, ajustements…">…</button>
+        </div>
+        <div id="prayers"><div class="skel"></div><div class="skel" style="height:180px"></div></div>
+      </aside>
+      <section class="card">
+        <div class="card-h"><div class="card-t">Raccourcis</div><button class="link" data-open="favoris" title="Gérer les favoris">Gérer</button></div>
+        <div class="tiles" id="tiles"></div>
+      </section>
+    </div>
   </div>
 
   <section class="card lives">
@@ -214,8 +238,7 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
     <div class="err" id="lverr"></div>
   </section>
 
-  <div class="tiles" id="tiles"></div>
-  <div class="hint"><kbd>Ctrl+T</kbd> nouvel onglet &nbsp;·&nbsp; <kbd>Ctrl+D</kbd> favori &nbsp;·&nbsp; <kbd>Ctrl+L</kbd> barre d'adresse</div>
+  <div class="hint"><kbd>Ctrl+T</kbd> nouvel onglet &nbsp;·&nbsp; <kbd>Ctrl+Maj+N</kbd> onglet privé &nbsp;·&nbsp; <kbd>Ctrl+D</kbd> favori &nbsp;·&nbsp; <kbd>Ctrl+H</kbd> historique &nbsp;·&nbsp; <kbd>Ctrl+,</kbd> réglages</div>
 </div>
 
 <script>
@@ -259,6 +282,10 @@ $('f').addEventListener('submit', e => { e.preventDefault(); const v = $('q').va
 $('eng').addEventListener('change', () => { post({ type: 'engine', id: $('eng').value }); placeholder(); });
 function placeholder() { const o = $('eng').options[$('eng').selectedIndex]; $('q').placeholder = 'Rechercher avec ' + (o ? o.text : 'le web') + ' ou saisir une adresse'; }
 $('city').addEventListener('click', () => post({ type: 'city' }));
+document.addEventListener('click', e => {
+  const o = e.target.closest('[data-open]');
+  if (o) { e.preventDefault(); post({ type: 'openSettings', section: o.dataset.open || null }); }
+});
 $('mrefresh').addEventListener('click', () => post({ type: 'refreshMatches' }));
 
 // ---------- Matchs ----------
@@ -410,14 +437,23 @@ function renderPrayers() {
   let next = five.find(t => t.d > now);
   let nextAt = next ? next.d : null;
   if (!next) { next = five[0]; nextAt = new Date(next.d.getTime() + 86400000); }
+  // progression depuis la prière précédente (Isha d'hier si on est avant Fajr)
+  const prev = [...five].reverse().find(t => t.d <= now);
+  const prevAt = prev ? prev.d : new Date(five[five.length - 1].d.getTime() - 86400000);
+  const pct = Math.max(2, Math.min(100, Math.round((now - prevAt) / (nextAt - prevAt) * 100)));
+  const soon = nextAt - now < 15 * 60000;
+  const remind = [p.notify ? 'Notification à l\'heure' : '', p.reminder ? 'rappel ' + p.reminder + ' min avant' : ''].filter(Boolean).join(' · ') || 'Alertes coupées';
+  const tomorrow = nextAt.getDate() !== now.getDate();
   box.innerHTML = `
-    <div class="next"><div class="l">Prochaine prière</div>
+    <div class="next ${soon ? 'soon' : ''}"><div class="l">Prochaine prière${tomorrow ? ' · demain' : ''}</div>
       <div class="n"><span class="name">${esc(next.name)}</span><span class="time">${hm(nextAt)}</span></div>
-      <div class="in">${until(nextAt - now)}</div></div>
-    ${times.map(t => `<div class="prow ${t.key === 'Sunrise' ? 'minor' : ''} ${t.key === next.key && nextAt.getDate() === now.getDate() ? 'is-next' : (t.d < now ? 'past' : '')}">
+      <div class="in"><b>${until(nextAt - now)}</b><span>${prev ? 'depuis ' + esc(prev.name) : ''}</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>
+    ${times.map(t => `<div class="prow ${t.key === 'Sunrise' ? 'minor' : ''} ${t.key === next.key && !tomorrow ? 'is-next' : (t.d < now ? 'past' : '')}">
         <span>${esc(t.name)}</span><span class="tm">${esc(t.time)}</span></div>`).join('')}
     ${p.jumua ? `<div class="prow minor"><span>Jumu'a (vendredi)</span><span class="tm">${esc(p.jumua)}</span></div>` : ''}
-    <div class="credit">${esc(p.methodName || '')} · <a href="https://aladhan.com/">Aladhan</a></div>`;
+    <div class="pfoot"><div class="credit">${esc(p.methodName || '')}</div>
+      <button class="link" data-open="prieres" title="Notifications et rappels des prières">${esc(remind)}</button></div>`;
 }
 
 // ---------- Raccourcis ----------

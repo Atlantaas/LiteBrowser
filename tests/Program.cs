@@ -29,6 +29,7 @@ static class Program
 
         Urls();
         Updates();
+        SessionAndSites();
         Extensions();
         M8Tests();
         ChannelTests();
@@ -79,7 +80,7 @@ static class Program
     static void Updates()
     {
         Section("Mises à jour");
-        string Rel(string tag) => "{\"tag_name\":\"" + tag + "\",\"assets\":[{\"name\":\"LiteBrowser.exe\",\"browser_download_url\":\"https://x/LiteBrowser.exe\"}]}";
+        string Rel(string tag) => "{\"tag_name\":\"" + tag + "\",\"assets\":[{\"name\":\"LiteBrowser.exe\",\"browser_download_url\":\"https://github.com/Atlantaas/LiteBrowser/releases/download/" + tag + "/LiteBrowser.exe\"}]}";
         var cur = new Version(2, 2, 0, 0);
         Check("v3.0.0 > 2.2.0 : mise à jour proposée", VersionTools.NewerRelease(Rel("v3.0.0"), cur)?.Version == new Version(3, 0, 0));
         Check("même version : rien", VersionTools.NewerRelease(Rel("v2.2.0"), cur) == null);
@@ -87,6 +88,42 @@ static class Program
         Check("tag invalide « v2 » : ignoré", VersionTools.NewerRelease(Rel("v2"), cur) == null);
         Check("pas d'exe dans la release : rien",
             VersionTools.NewerRelease("{\"tag_name\":\"v9.0.0\",\"assets\":[]}", cur) == null);
+        Check("exe hébergé ailleurs que sur GitHub : refusé",
+            VersionTools.NewerRelease("{\"tag_name\":\"v9.0.0\",\"assets\":[{\"name\":\"LiteBrowser.exe\",\"browser_download_url\":\"https://evil.example/LiteBrowser.exe\"}]}", cur) == null);
+        Check("exe en http (non chiffré) : refusé", !VersionTools.IsTrustedDownload("http://github.com/a/b.exe"));
+        Check("faux domaine github.com.evil : refusé", !VersionTools.IsTrustedDownload("https://github.com.evil.net/a.exe"));
+        Check("stockage GitHub accepté", VersionTools.IsTrustedDownload("https://objects.githubusercontent.com/x/LiteBrowser.exe"));
+    }
+
+    // ------------------------------------------------------------------
+    static void SessionAndSites()
+    {
+        Section("Session (onglets rouverts au démarrage)");
+        var tabs = new[]
+        {
+            new SessionTab("https://www.youtube.com/watch?v=1", "Vidéo\tavec tab", true),
+            new SessionTab("", "Nouvel onglet", false),
+            new SessionTab("https://liquipedia.net/valorant/Gentle_Mates", "M8", false),
+        };
+        var (back, sel) = Session.Parse(Session.Serialize(tabs, 2));
+        Check("3 onglets relus", back.Count == 3);
+        Check("onglet épinglé conservé", back[0].Pinned && !back[2].Pinned);
+        Check("onglet sélectionné conservé", sel == 2);
+        Check("titre nettoyé (pas de tabulation)", back[0].Title == "Vidéo avec tab");
+        Check("page d'accueil = adresse vide", back[1].Url == "");
+        var (bad, _) = Session.Parse("selected=9\n0\tjavascript:alert(1)\tx\n0\tfile:///C:/secret.txt\tx\n0\thttps://ok.fr\tok\n");
+        Check("adresses javascript: et file: ignorées", bad.Count == 1 && bad[0].Url == "https://ok.fr");
+        Check("sélection hors limites ramenée", Session.Parse("selected=9\n0\thttps://a.fr\ta\n").Selected == 0);
+        Check("fichier vide : aucune session", Session.Parse("").Tabs.Count == 0);
+
+        Section("Sites sans bloqueur");
+        var set = SiteList.Parse("Twitch.tv, lequipe.fr;;  pasunsite");
+        Check("liste lue (minuscules, éléments invalides ignorés)", set.Count == 2 && set.Contains("twitch.tv"));
+        Check("sous-domaine couvert", SiteList.Contains(set, "https://www.twitch.tv/gentlemates"));
+        Check("autre site non couvert", !SiteList.Contains(set, "https://www.youtube.com/"));
+        Check("hôte sans www.", SiteList.Host("https://www.LEQUIPE.fr/a") == "lequipe.fr");
+        Check("page interne ignorée", SiteList.Host("chrome-extension://abc/popup.html") == null);
+        Check("liste réécrite triée", SiteList.Format(set) == "lequipe.fr,twitch.tv");
     }
 
     // ------------------------------------------------------------------

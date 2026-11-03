@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Réglages</title>
+<style>
+:root{
+  --bg:#08080a; --bg2:#0e0e12; --card:#141418; --card2:#1a1a20; --line:#26262d; --text:#f4f2ee; --sub:#8f8d96;
+  --accent:#d669d2; --accent-text:#08080a; --live:#ff3b3b; --ok:#3ecf8e; --glow:rgba(214,105,210,.10);
+  --head:"Bahnschrift","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --icon:"Segoe Fluent Icons","Segoe MDL2 Assets";
+}
+body.dark{ --bg:#1b1c1f; --bg2:#1f2023; --card:#2b2c30; --card2:#323337; --line:#3c4043; --text:#e8eaed; --sub:#9aa0a6;
+  --accent:#8ab4f8; --accent-text:#202124; --glow:rgba(138,180,248,.08); }
+body.light{ --bg:#f3f4f6; --bg2:#eceef1; --card:#ffffff; --card2:#f6f7f9; --line:#e2e4e8; --text:#1f1f1f; --sub:#5f6368;
+  --accent:#1a73e8; --accent-text:#ffffff; --glow:rgba(26,115,232,.08); }
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:24px}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  background-image:radial-gradient(1100px 480px at 85% -10%,var(--glow),transparent 60%),
+                   repeating-linear-gradient(115deg,transparent 0 22px,rgba(255,255,255,.012) 22px 23px);
+  background-attachment:fixed}
+body.light{background-image:radial-gradient(1100px 480px at 85% -10%,var(--glow),transparent 60%)}
+a{color:inherit}
+button,input,select{font:inherit;color:inherit}
+
+.layout{display:grid;grid-template-columns:250px minmax(0,1fr);max-width:1180px;margin:0 auto;gap:34px;padding:34px 28px 80px}
+
+/* ---- Navigation ---- */
+nav{position:sticky;top:24px;align-self:start}
+.brand{display:flex;align-items:center;gap:12px;margin:0 0 26px 6px}
+.badge{font-family:var(--head);font-weight:700;font-size:17px;padding:5px 9px;border:2px solid var(--text);border-radius:9px;line-height:1}
+body.m8 .badge,body.m8 .about .big{border-color:var(--accent);color:var(--accent)}
+.brand b{display:block;font-family:var(--head);font-size:20px;letter-spacing:3px;text-transform:uppercase}
+.brand span{display:block;color:var(--sub);font-size:11px;letter-spacing:2px;text-transform:uppercase}
+.find{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:0 12px;height:40px;margin-bottom:14px}
+.find:focus-within{border-color:var(--accent)}
+.find input{flex:1;min-width:0;border:0;outline:0;background:none}
+.find input::placeholder{color:var(--sub)}
+.ic{font-family:var(--icon);font-style:normal;color:var(--sub);font-size:15px;line-height:1}
+nav a.n{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:10px;text-decoration:none;color:var(--sub);position:relative;transition:background .12s,color .12s}
+nav a.n:hover{background:var(--card);color:var(--text)}
+nav a.n.on{background:var(--card);color:var(--text);font-weight:600}
+nav a.n.on::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:3px;background:var(--accent)}
+nav a.n .ic{width:18px;text-align:center}
+nav a.n.on .ic{color:var(--text)}
+
+/* ---- Contenu ---- */
+h1{font-family:var(--head);font-weight:700;font-size:30px;letter-spacing:4px;text-transform:uppercase;margin:6px 0 4px}
+.lead{color:var(--sub);margin:0 0 26px}
+section{margin-bottom:30px}
+section[hidden]{display:none}
+h2{display:flex;align-items:center;gap:12px;font-family:var(--head);font-weight:700;font-size:15px;letter-spacing:2.5px;text-transform:uppercase;margin:0 0 12px}
+h2 .ic{color:var(--text);font-size:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.row{display:flex;align-items:center;gap:18px;padding:15px 18px;border-top:1px solid var(--line);min-height:62px}
+.row:first-child{border-top:0}
+.row .t{flex:1;min-width:0}
+.row .t b{display:block;font-weight:600}
+.row .t small{display:block;color:var(--sub);font-size:12.5px;margin-top:2px}
+.row .t small.mono{font-family:Consolas,monospace;font-size:12px;word-break:break-all}
+.row.col{flex-direction:column;align-items:stretch;gap:10px}
+.hint{color:var(--sub);font-size:12.5px;padding:12px 18px;border-top:1px solid var(--line);background:var(--bg2)}
+
+/* interrupteur */
+.sw{position:relative;width:44px;height:24px;flex:none;cursor:pointer}
+.sw input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.sw span{position:absolute;inset:0;border-radius:24px;background:var(--card2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.sw span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--sub);transition:transform .18s,background .15s}
+.sw input:checked+span{background:var(--accent);border-color:var(--accent)}
+.sw input:checked+span::after{transform:translateX(20px);background:var(--accent-text)}
+.sw input:focus-visible+span{box-shadow:0 0 0 3px var(--glow)}
+
+select{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 30px 8px 12px;outline:0;cursor:pointer;
+  appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--sub) 50%),linear-gradient(135deg,var(--sub) 50%,transparent 50%);
+  background-position:calc(100% - 15px) 52%,calc(100% - 10px) 52%;background-size:5px 5px;background-repeat:no-repeat;max-width:100%}
+select:focus{border-color:var(--accent)}
+select option{background:var(--card);color:var(--text)}
+.btn{border:1px solid var(--line);background:var(--card2);border-radius:10px;padding:8px 14px;cursor:pointer;white-space:nowrap;transition:border-color .12s,background .12s}
+.btn:hover{border-color:var(--sub)}
+.btn.main{background:var(--accent);color:var(--accent-text);border-color:var(--accent);font-weight:600}
+.btn.danger{color:var(--live)}
+.btn.danger:hover{border-color:var(--live)}
+.btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
+.btn[disabled]{opacity:.45;cursor:default}
+.btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+
+/* segmenté */
+.seg{display:inline-flex;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px;flex-wrap:wrap}
+.seg button{border:0;background:none;padding:7px 14px;border-radius:9px;cursor:pointer;color:var(--sub)}
+.seg button.on{background:var(--accent);color:var(--accent-text);font-weight:600}
+
+/* thèmes */
+.themes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.th{border:2px solid var(--line);border-radius:14px;padding:10px;cursor:pointer;background:var(--card2);text-align:left;transition:border-color .12s,transform .12s}
+.th:hover{transform:translateY(-1px)}
+.th.on{border-color:var(--accent)}
+.th .pv{height:74px;border-radius:9px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(128,128,128,.25)}
+.th .pv i{display:block;font-style:normal}
+.th .pv .s{height:14px}.th .pv .b{height:14px}.th .pv .c{flex:1;display:flex;align-items:center;justify-content:center;font-family:var(--head);font-weight:700;letter-spacing:2px;font-size:12px}
+.th b{display:block;margin-top:8px;font-weight:600}
+.th small{color:var(--sub);font-size:12px}
+
+/* prières */
+.ptoday{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+.pt{background:var(--card2);border-radius:12px;padding:10px 8px;text-align:center;border:1px solid transparent}
+.pt.next{border-color:var(--accent)}
+.pt small{display:block;color:var(--sub);font-size:11.5px}
+.pt b{font-family:var(--head);font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
+.pt.minor b{color:var(--sub)}
+.offs{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chip{border:1px solid var(--line);background:var(--card2);border-radius:14px;padding:4px 10px;font-size:12px;cursor:pointer}
+.chip.on{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+.chip.static{cursor:default}
+
+/* listes (favoris, historique, sites, extensions) */
+.list{max-height:520px;overflow:auto}
+.it{display:flex;align-items:center;gap:12px;padding:10px 18px;border-top:1px solid var(--line)}
+.it:first-child{border-top:0}
+.it .fv{width:28px;height:28px;border-radius:8px;background:var(--card2);display:flex;align-items:center;justify-content:center;flex:none;overflow:hidden;font-family:var(--head);font-weight:700;font-size:13px}
+.it .fv img{width:16px;height:16px}
+.it .tx{flex:1;min-width:0}
+.it .tx b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.it .tx a{display:block;color:var(--sub);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none}
+.it .tx a:hover{text-decoration:underline}
+.it .tx input{width:100%;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:5px 8px;outline:0}
+.it .ac{display:flex;gap:4px;opacity:.55;transition:opacity .12s}
+.it:hover .ac,.it:focus-within .ac{opacity:1}
+.ib{border:0;background:none;cursor:pointer;width:30px;height:30px;border-radius:8px;color:var(--sub);font-family:var(--icon);font-size:13px}
+.ib:hover{background:var(--card2);color:var(--text)}
+.ib.del:hover{color:var(--live)}
+.ib[disabled]{opacity:.3;cursor:default}
+.empty{color:var(--sub);padding:22px 18px;text-align:center}
+.st{font-size:11px;font-weight:700;letter-spacing:.5px;border-radius:6px;padding:3px 7px;flex:none}
+.st.ok{background:rgba(62,207,142,.14);color:var(--ok)}
+.st.off{background:var(--card2);color:var(--sub)}
+.st.err{background:rgba(255,59,59,.12);color:var(--live)}
+.hsearch{display:flex;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line);align-items:center}
+.hsearch .find{flex:1;margin:0;background:var(--card2)}
+.hday{padding:8px 18px;font-size:11.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--sub);background:var(--bg2);border-top:1px solid var(--line)}
+
+/* raccourcis */
+.keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.key{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 18px;border-top:1px solid var(--line)}
+.key:nth-child(-n+2){border-top:0}
+.key:nth-child(odd){border-right:1px solid var(--line)}
+kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:2px 7px;white-space:nowrap}
+
+.about{display:flex;align-items:center;gap:18px}
+.about .big{font-family:var(--head);font-weight:700;font-size:40px;letter-spacing:2px;border:3px solid var(--text);border-radius:14px;padding:8px 14px;line-height:1}
+.toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);background:var(--accent);color:var(--accent-text);padding:10px 18px;border-radius:12px;font-weight:600;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.nores{color:var(--sub);text-align:center;padding:40px 0}
+
+@media (max-width:860px){
+  .layout{grid-template-columns:1fr;gap:10px;padding:20px 14px 60px}
+  nav{position:static}
+  nav .links{display:flex;gap:4px;overflow-x:auto;padding-bottom:6px}
+  nav a.n{white-space:nowrap}
+  nav a.n.on::before{display:none}
+  .brand{margin-bottom:14px}
+  .themes{grid-template-columns:1fr}
+  .ptoday{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .keys{grid-template-columns:1fr}
+  .key:nth-child(odd){border-right:0}
+  .key:nth-child(2){border-top:1px solid var(--line)}
+  .row{flex-wrap:wrap}
+}
+</style>
+</head>
+<body class="m8">
+<div class="layout">
+  <nav>
+    <div class="brand"><div class="badge">M8</div><div><b>Réglages</b><span>LiteBrowser</span></div></div>
+    <label class="find"><i class="ic">&#xE721;</i><input id="find" placeholder="Chercher un réglage" autocomplete="off"></label>
+    <div class="links" id="links">
+      <a class="n" href="#general"><i class="ic">&#xE713;</i>Général</a>
+      <a class="n" href="#apparence"><i class="ic">&#xE790;</i>Apparence</a>
+      <a class="n" href="#confidentialite"><i class="ic">&#xEA18;</i>Confidentialité</a>
+      <a class="n" href="#onglets"><i class="ic">&#xE8A7;</i>Onglets et performances</a>
+      <a class="n" href="#telechargements"><i class="ic">&#xE896;</i>Téléchargements</a>
+      <a class="n" href="#prieres"><i class="ic">&#xE708;</i>Prières</a>
+      <a class="n" href="#matchs"><i class="ic">&#xE7FC;</i>Matchs M8 et lives</a>
+      <a class="n" href="#favoris"><i class="ic">&#xE734;</i>Favoris</a>
+      <a class="n" href="#historique"><i class="ic">&#xE81C;</i>Historique</a>
+      <a class="n" href="#extensions"><i class="ic">&#xEA86;</i>Extensions</a>
+      <a class="n" href="#raccourcis"><i class="ic">&#xE765;</i>Raccourcis</a>
+      <a class="n" href="#apropos"><i class="ic">&#xE946;</i>À propos</a>
+    </div>
+  </nav>
+
+  <main id="main">
+    <h1>Réglages</h1>
+    <p class="lead">Tout ton navigateur, au même endroit. Chaque changement est enregistré tout de suite.</p>
+
+    <section id="general" data-k="général démarrage moteur recherche google duckduckgo bing qwant ecosia session onglets">
+      <h2><i class="ic">&#xE713;</i>Général</h2>
+      <div class="card">
+        <div class="row"><div class="t"><b>Au démarrage</b><small>Rouvre tes onglets de la dernière fois (chargés seulement quand tu cliques dessus).</small></div>
+          <div class="seg" id="startup"><button data-v="session">Reprendre mes onglets</button><button data-v="home">Page d'accueil</button></div></div>
+        <div class="row"><div class="t"><b>Moteur de recherche</b><small>Utilisé par la barre d'adresse et la page d'accueil.</small></div>
+          <select id="engine"></select></div>
+      </div>
+    </section>
+
+    <section id="apparence" data-k="apparence thème gentle mates m8 sombre clair barre favoris mode sombre forcé">
+      <h2><i class="ic">&#xE790;</i>Apparence</h2>
+      <div class="card">
+        <div class="row col"><div class="t"><b>Thème</b><small>Gentle Mates est le thème maison : noir profond et rose M8.</small></div>
+          <div class="themes" id="themes">
+            <button class="th" data-v="m8"><div class="pv" style="background:#08080a"><i class="s" style="background:#08080a"></i><i class="b" style="background:#141418;border-top:2px solid #d669d2"></i><i class="c" style="background:#0e0e12;color:#d669d2">M8</i></div><b>Gentle Mates</b><small>Le thème de l'équipe</small></button>
+            <button class="th" data-v="dark"><div class="pv"><i class="s" style="background:#1f2023"></i><i class="b" style="background:#2d2e31;border-top:2px solid #8ab4f8"></i><i class="c" style="background:#1b1c1f;color:#e8eaed">Aa</i></div><b>Sombre</b><small>Gris doux</small></button>
+            <button class="th" data-v="light"><div class="pv"><i class="s" style="background:#dee1e6"></i><i class="b" style="background:#fff;border-top:2px solid #1a73e8"></i><i class="c" style="background:#f3f4f6;color:#1f1f1f">Aa</i></div><b>Clair</b><small>Lumineux</small></button>
+          </div></div>
+        <div class="row"><div class="t"><b>Barre de favoris</b><small>Sous la barre d'adresse. Raccourci : <kbd>Ctrl+Maj+B</kbd></small></div>
+          <label class="sw"><input type="checkbox" data-set="favbar"><span></span></label></div>
+        <div class="row"><div class="t"><b>Forcer le mode sombre sur tous les sites</b><small>Inverse les couleurs des sites clairs (les images et vidéos restent normales).</small></div>
+          <label class="sw"><input type="checkbox" data-set="forceDark"><span></span></label></div>
+      </div>
+    </section>
+
+    <section id="confidentialite" data-k="confidentialité vie privée bloqueur pubs publicité traqueurs pistage cookies cache effacer historique youtube exceptions sites">
+      <h2><i class="ic">&#xEA18;</i>Confidentialité</h2>
+      <div class="card">
+        <div class="row"><div class="t"><b>Bloquer les pubs et les traqueurs</b><small id="blockedInfo">Sur tous les sites, y compris les pubs YouTube.</small></div>
+          <label class="sw"><input type="checkbox" data-set="adblock"><span></span></label></div>
+        <div class="row col"><div class="t"><b>Sites où le bloqueur est coupé</b><small>Ajoute un site depuis le bouclier <i class="ic">&#xEA18;</i> de la barre d'adresse s'il fonctionne mal avec le bloqueur.</small></div>
+          <div id="allow"></div></div>
+        <div class="row col"><div class="t"><b>Protection contre le pistage</b><small>Bloque les traqueurs intégrés par les sites (en plus de la liste de pubs).</small></div>
+          <div class="seg" id="tracking"><button data-v="basic">De base</button><button data-v="balanced">Équilibrée</button><button data-v="strict">Stricte</button></div>
+          <small id="trackingInfo" style="color:var(--sub);font-size:12.5px"></small></div>
+        <div class="row"><div class="t"><b>Enregistrer l'historique</b><small>Les onglets privés ne laissent jamais de trace, quel que soit ce réglage.</small></div>
+          <label class="sw"><input type="checkbox" data-set="historySave"><span></span></label></div>
+        <div class="row"><div class="t"><b>Tout effacer en quittant</b><small>Cookies, cache et historique supprimés à chaque fermeture (tu seras déconnecté des sites).</small></div>
+          <label class="sw"><input type="checkbox" data-set="clearOnExit"><span></span></label></div>
+        <div class="row"><div class="t"><b>Effacer les données de navigation</b><small>Historique, cookies et cache. Tes favoris sont conservés. <kbd>Ctrl+Maj+Suppr</kbd></small></div>
+          <button class="btn danger" data-act="clearData">Effacer…</button></div>
+        <div class="hint">Navigation privée : <kbd>Ctrl+Maj+N</kbd> ou clic droit sur le <b>+</b> des onglets. Les mots de passe restent dans NordPass : le navigateur ne propose jamais de les enregistrer.</div>
+      </div>
+    </section>
+
+    <section id="onglets" data-k="onglets performances mémoire ram gel veille épingler privé économie">
+      <h2><i class="ic">&#xE8A7;</i>Onglets et performances</h2>
+      <div class="card">
+        <div class="row"><div class="t"><b>Mettre en veille les onglets inactifs</b><small>Un onglet en arrière-plan est gelé pour libérer la mémoire (sauf s'il joue du son).</small></div>
+          <select data-set="tabSleep" data-num>
+            <option value="30">après 30 secondes</option><option value="60">après 1 minute</option><option value="300">après 5 minutes</option>
+            <option value="900">après 15 minutes</option><option value="3600">après 1 heure</option><option value="0">jamais</option></select></div>
+        <div class="hint">Clic droit sur un onglet : <b>Épingler</b> (compact, toujours à gauche, rouvert au démarrage), <b>Dupliquer</b>, <b>Couper le son</b>, <b>Rouvrir en onglet privé</b>.</div>
+      </div>
+    </section>
+
+    <section id="telechargements" data-k="téléchargements dossier enregistrer fichiers">
+      <h2><i class="ic">&#xE896;</i>Téléchargements</h2>
+      <div class="card">
+        <div class="row"><div class="t"><b>Dossier</b><small class="mono" id="dlDir"></small></div>
+          <div class="btns"><button class="btn" data-act="openDownloads">Ouvrir</button><button class="btn" data-act="chooseDownloadDir">Changer…</button><button class="btn" data-act="resetDownloadDir" id="dlReset">Par défaut</button></div></div>
+        <div class="row"><div class="t"><b>Demander où enregistrer chaque fichier</b><small>Sinon, les fichiers vont directement dans le dossier ci-dessus. <kbd>Ctrl+J</kbd> pour voir les téléchargements.</small></div>
+          <label class="sw"><input type="checkbox" data-set="downloadAsk"><span></span></label></div>
+      </div>
+    </section>
+
+    <section id="prieres" data-k="prières salat horaires ville mosquée mawaqit méthode calcul rappel notification adhan fajr dhuhr asr maghrib isha jumua">
+      <h2><i class="ic">&#xE708;</i>Prières</h2>
+      <div class="card">
+        <div class="row col"><div class="t"><b id="pCity">Horaires du jour</b><small id="pMeta"></small></div>
+          <div class="ptoday" id="pToday"></div></div>
+        <div class="row"><div class="t"><b>Source des horaires</b><small>Calcul selon ta ville, ou horaires exacts de ta mosquée (Mawaqit).</small></div>
+          <div class="seg" id="pSource"><button data-v="calc">Ma ville</button><button data-v="mosque">Ma mosquée</button></div></div>
+        <div class="row" id="pCalcRow"><div class="t"><b>Ville</b><small id="pCityInfo"></small></div>
+          <div class="btns"><button class="btn" data-act="prayerLocate">Détecter</button><button class="btn" data-act="prayerCity">Changer…</button></div></div>
+        <div class="row" id="pMethodRow"><div class="t"><b>Méthode de calcul</b><small>France : UOIF (12°) est la plus utilisée.</small></div>
+          <select id="pMethod"></select></div>
+        <div class="row"><div class="t"><b>Mosquée</b><small id="pMosque">Aucune mosquée choisie.</small></div>
+          <button class="btn" data-act="prayerMosque">Choisir…</button></div>
+        <div class="row"><div class="t"><b>Ajuster les horaires</b><small>Décale une prière de quelques minutes pour coller à ta mosquée.</small><div class="offs" id="pOffs"></div></div>
+          <button class="btn" data-act="prayerAdjust">Ajuster…</button></div>
+        <div class="row"><div class="t"><b>Notification à l'heure de la prière</b><small>Une alerte Windows à chaque prière (sauf le lever du soleil).</small></div>
+          <label class="sw"><input type="checkbox" data-set="prayerNotify"><span></span></label></div>
+        <div class="row"><div class="t"><b>Rappel avant la prière</b><small>Pour avoir le temps de faire tes ablutions.</small></div>
+          <select data-set="prayerReminder" data-num><option value="0">pas de rappel</option><option value="5">5 min avant</option><option value="10">10 min avant</option>
+            <option value="15">15 min avant</option><option value="20">20 min avant</option><option value="30">30 min avant</option></select></div>
+        <div class="hint">La prochaine prière s'affiche dans la barre d'outils, avec un compte à rebours dans la dernière heure. <button class="btn sm" data-act="testNotify" style="margin-left:6px">Tester une notification</button></div>
+      </div>
+    </section>
+
+    <section id="matchs" data-k="matchs gentle mates m8 esport alertes lives twitch kick youtube jeux valorant rocket league call of duty fortnite">
+      <h2><i class="ic">&#xE7FC;</i>Matchs M8 et lives</h2>
+      <div class="card">
+        <div class="row"><div class="t"><b>Alerte avant chaque match</b><small>Notification Windows, puis une autre au coup d'envoi.</small></div>
+          <label class="sw"><input type="checkbox" data-set="m8Notify"><span></span></label></div>
+        <div class="row"><div class="t"><b>Prévenir</b></div>
+          <select data-set="m8Reminder" data-num><option value="0">au coup d'envoi</option><option value="5">5 min avant</option><option value="15">15 min avant</option>
+            <option value="30">30 min avant</option><option value="60">1 h avant</option></select></div>
+        <div class="row col"><div class="t"><b>Jeux suivis</b><small>Les matchs des jeux décochés n'apparaissent plus et ne sonnent plus.</small></div>
+          <div class="offs" id="games"></div></div>
+        <div class="row"><div class="t"><b>Alerte quand une chaîne lance son live</b><small>Pour les chaînes marquées d'une cloche sur la page d'accueil.</small></div>
+          <label class="sw"><input type="checkbox" data-set="liveNotify"><span></span></label></div>
+      </div>
+    </section>
+
+    <section id="favoris" data-k="favoris marque-pages renommer déplacer supprimer">
+      <h2><i class="ic">&#xE734;</i>Favoris</h2>
+      <div class="card"><div class="list" id="favs"></div>
+        <div class="hint">Ajoute la page affichée avec l'étoile de la barre d'adresse ou <kbd>Ctrl+D</kbd>. Les 8 premiers apparaissent sur la page d'accueil.</div></div>
+    </section>
+
+    <section id="historique" data-k="historique pages visitées rechercher supprimer effacer">
+      <h2><i class="ic">&#xE81C;</i>Historique</h2>
+      <div class="card">
+        <div class="hsearch"><label class="find"><i class="ic">&#xE721;</i><input id="hq" placeholder="Rechercher dans l'historique" autocomplete="off"></label>
+          <button class="btn danger" data-act="clearHistory" id="hClear">Tout effacer</button></div>
+        <div class="list" id="hist"></div>
+      </div>
+    </section>
+
+    <section id="extensions" data-k="extensions nordpass trendtrack chrome web store ajouter">
+      <h2><i class="ic">&#xEA86;</i>Extensions</h2>
+      <div class="card"><div id="exts"></div>
+        <div class="row"><div class="t"><b>Ajouter une extension</b><small>Depuis le Chrome Web Store : ouvre la page de l'extension puis clique ici, ou colle son lien.</small></div>
+          <button class="btn main" data-act="addExtension">Ajouter…</button></div></div>
+    </section>
+
+    <section id="raccourcis" data-k="raccourcis clavier touches ctrl">
+      <h2><i class="ic">&#xE765;</i>Raccourcis clavier</h2>
+      <div class="card keys" id="keys"></div>
+    </section>
+
+    <section id="apropos" data-k="à propos version mise à jour dossier données webview2">
+      <h2><i class="ic">&#xE946;</i>À propos</h2>
+      <div class="card">
+        <div class="row about"><div class="big">M8</div><div class="t"><b id="ver">LiteBrowser</b><small id="wv"></small><small>Édition fan Gentle Mates · moteur WebView2 de Windows</small></div>
+          <button class="btn main" data-act="checkUpdates" id="upd">Rechercher des mises à jour</button></div>
+        <div class="row"><div class="t"><b>Dossier des données</b><small>Réglages, favoris, historique, journal des plantages.</small></div>
+          <button class="btn" data-act="openDataDir">Ouvrir</button></div>
+      </div>
+    </section>
+    <p class="nores" id="nores" hidden>Aucun réglage ne correspond à ta recherche.</p>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const post = m => { if (window.chrome && chrome.webview) chrome.webview.postMessage(m); };
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let S = null;
+
+function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 1600); }
+const set = (key, value, msg) => { post({ type: 'set', key, value }); if (msg) toast(msg); };
+const act = (name, arg) => post({ type: 'action', name, arg });
+
+// ---------- Raccourcis (statiques) ----------
+const KEYS = [
+  ['Nouvel onglet', 'Ctrl+T'], ['Nouvel onglet privé', 'Ctrl+Maj+N'], ['Fermer l\'onglet', 'Ctrl+W'], ['Rouvrir l\'onglet fermé', 'Ctrl+Maj+T'],
+  ['Onglet suivant / précédent', 'Ctrl+Tab'], ['Aller à l\'onglet n°', 'Ctrl+1…9'], ['Barre d\'adresse', 'Ctrl+L'], ['Ajouter aux favoris', 'Ctrl+D'],
+  ['Barre de favoris', 'Ctrl+Maj+B'], ['Historique', 'Ctrl+H'], ['Téléchargements', 'Ctrl+J'], ['Réglages', 'Ctrl+,'],
+  ['Effacer les données', 'Ctrl+Maj+Suppr'], ['Couper le son de l\'onglet', 'Ctrl+M'], ['Multistream', 'Ctrl+Maj+M'], ['Actualiser', 'F5'],
+  ['Page précédente / suivante', 'Alt+← / →'], ['Plein écran', 'F11'], ['Rechercher dans la page', 'Ctrl+F'], ['Zoom', 'Ctrl+molette'],
+];
+$('keys').innerHTML = KEYS.map(([l, k]) => `<div class="key"><span>${esc(l)}</span><kbd>${esc(k)}</kbd></div>`).join('');
+
+// ---------- Interactions génériques ----------
+document.addEventListener('change', e => {
+  const el = e.target.closest('[data-set]'); if (!el) return;
+  const v = el.type === 'checkbox' ? el.checked : el.hasAttribute('data-num') ? +el.value : el.value;
+  set(el.dataset.set, v, 'Enregistré');
+});
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-act]');
+  if (a) { act(a.dataset.act, a.dataset.arg); if (a.dataset.act === 'testNotify') toast('Notification envoyée'); return; }
+});
+function seg(id, key, cb) {
+  $(id).addEventListener('click', e => { const b = e.target.closest('button[data-v]'); if (!b) return; (cb || (v => set(key, v, 'Enregistré')))(b.dataset.v); });
+}
+seg('startup', 'startup');
+seg('tracking', 'tracking');
+seg('pSource', 'prayerSource', v => { if (v === 'mosque' && !S.prayer.hasMosque) { act('prayerMosque'); return; } set('prayerSource', v, 'Enregistré'); });
+$('themes').addEventListener('click', e => { const b = e.target.closest('.th'); if (b) set('theme', b.dataset.v, 'Thème appliqué'); });
+$('engine').addEventListener('change', () => set('engine', $('engine').value, 'Moteur changé'));
+$('pMethod').addEventListener('change', () => set('prayerMethod', +$('pMethod').value, 'Méthode changée'));
+$('games').addEventListener('click', e => { const g = e.target.closest('[data-game]'); if (g) set('m8Game', g.dataset.game); });
+$('allow').addEventListener('click', e => { const b = e.target.closest('[data-host]'); if (b) { act('allowRemove', b.dataset.host); toast('Bloqueur réactivé sur ' + b.dataset.host); } });
+$('exts').addEventListener('click', e => { const b = e.target.closest('[data-ext]'); if (b) act(b.dataset.ext, b.dataset.id); });
+
+// ---------- Rendu ----------
+const segOn = (id, v) => $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+const TRACK = {
+  basic: 'De base : bloque seulement les traqueurs dangereux. Recommandé si tu utilises le chat Twitch connecté.',
+  balanced: 'Équilibrée : bloque aussi les traqueurs des sites que tu ne visites pas. Peut gêner certaines connexions intégrées.',
+  strict: 'Stricte : bloque la plupart des traqueurs. Certains sites (connexions, paiements, chats) peuvent mal fonctionner.',
+};
+function fav(url, title) {
+  let host = ''; try { host = new URL(url).hostname; } catch {}
+  const l = esc((title || host || '?').charAt(0).toUpperCase());
+  return host ? `<span class="fv"><img src="https://icons.duckduckgo.com/ip3/${esc(host)}.ico" alt="" onerror="this.parentNode.textContent='${l}'"></span>` : `<span class="fv">${l}</span>`;
+}
+
+function render() {
+  document.body.className = S.theme || 'm8';
+  document.querySelectorAll('[data-set]').forEach(el => {
+    const v = el.dataset.set.startsWith('prayer') ? S.prayer[{ prayerNotify: 'notify', prayerReminder: 'reminder' }[el.dataset.set]]
+      : el.dataset.set.startsWith('m8') || el.dataset.set === 'liveNotify' ? S.m8[{ m8Notify: 'notify', m8Reminder: 'reminder', liveNotify: 'liveNotify' }[el.dataset.set]]
+      : S[el.dataset.set];
+    if (el.type === 'checkbox') el.checked = !!v; else if (v !== undefined) el.value = String(v);
+  });
+  segOn('startup', S.startup);
+  segOn('tracking', S.tracking);
+  $('trackingInfo').textContent = TRACK[S.tracking] || '';
+  document.querySelectorAll('.th').forEach(b => b.classList.toggle('on', b.dataset.v === S.theme));
+  $('engine').innerHTML = S.engines.map(e => `<option value="${esc(e.id)}" ${e.id === S.engine ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
+  $('blockedInfo').textContent = S.adblock
+    ? `Sur tous les sites, y compris les pubs YouTube · ${S.blockedCount.toLocaleString('fr-FR')} élément${S.blockedCount > 1 ? 's' : ''} bloqué${S.blockedCount > 1 ? 's' : ''} depuis le lancement.`
+    : 'Coupé : les pubs et traqueurs ne sont plus bloqués.';
+  $('allow').innerHTML = S.allow.length
+    ? '<div class="offs">' + S.allow.map(h => `<span class="chip on">${esc(h)} <button class="ib" style="width:18px;height:18px;color:inherit" data-host="${esc(h)}" title="Réactiver le bloqueur sur ce site">&#xE711;</button></span>`).join('') + '</div>'
+    : '<small style="color:var(--sub)">Aucun : le bloqueur est actif partout.</small>';
+
+  // téléchargements
+  $('dlDir').textContent = S.downloadDir || 'Dossier Téléchargements de Windows';
+  $('dlReset').disabled = !S.downloadCustom;
+
+  // prières
+  const p = S.prayer, t = p.today || {};
+  $('pCity').textContent = t.city ? 'Aujourd\'hui à ' + t.city : 'Horaires du jour';
+  $('pMeta').textContent = [t.hijri, t.methodName].filter(Boolean).join(' · ') || (t.error || 'Recherche des horaires…');
+  const times = t.times || [];
+  const now = new Date(), base = new Date(); base.setHours(0, 0, 0, 0);
+  const at = x => { const [h, m] = x.time.split(':').map(Number); const d = new Date(base); d.setHours(h, m); return d; };
+  const five = times.filter(x => x.key !== 'Sunrise');
+  // après Isha : la prochaine est le Fajr de demain
+  const next = five.find(x => at(x) > now) || five[0], tomorrow = next && at(next) <= now;
+  $('pToday').innerHTML = times.length ? times.map(x => `<div class="pt ${x.key === 'Sunrise' ? 'minor' : ''} ${next && x.key === next.key ? 'next' : ''}"><small>${esc(x.name)}${next && x.key === next.key ? (tomorrow ? ' · demain' : ' · prochaine') : ''}</small><b>${esc(x.time)}</b></div>`).join('')
+    : `<div class="empty" style="grid-column:1/-1">${esc(t.error || 'Horaires pas encore chargés.')}</div>`;
+  segOn('pSource', p.source);
+  const mosque = p.source === 'mosque';
+  $('pCalcRow').style.display = mosque ? 'none' : '';
+  $('pMethodRow').style.display = mosque ? 'none' : '';
+  $('pCityInfo').textContent = (p.city || 'Pas encore choisie') + (p.auto ? ' · détectée automatiquement' : '');
+  $('pMethod').innerHTML = p.methods.map(m => `<option value="${m.id}" ${m.id === p.method ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
+  $('pMosque').textContent = p.hasMosque ? p.mosqueName : 'Aucune mosquée choisie.';
+  const offs = Object.entries(p.offsets || {}).filter(([, v]) => v);
+  $('pOffs').innerHTML = offs.map(([k, v]) => `<span class="chip static">${esc(k)} ${v > 0 ? '+' : ''}${v} min</span>`).join('');
+
+  // matchs
+  $('games').innerHTML = S.m8.games.map(g => `<button class="chip ${g.on ? 'on' : ''}" data-game="${esc(g.id)}">${esc(g.label)}</button>`).join('');
+
+  // favoris
+  $('favs').innerHTML = S.favorites.length ? S.favorites.map((f, i) => `<div class="it" data-url="${esc(f.url)}">${fav(f.url, f.title)}
+      <div class="tx"><b>${esc(f.title)}</b><a href="${esc(f.url)}">${esc(f.url)}</a></div>
+      <div class="ac"><button class="ib" data-fav="up" title="Monter" ${i === 0 ? 'disabled' : ''}>&#xE70E;</button>
+        <button class="ib" data-fav="down" title="Descendre" ${i === S.favorites.length - 1 ? 'disabled' : ''}>&#xE70D;</button>
+        <button class="ib" data-fav="rename" title="Renommer">&#xE70F;</button>
+        <button class="ib del" data-fav="del" title="Supprimer">&#xE74D;</button></div></div>`).join('')
+    : '<div class="empty">Aucun favori pour l\'instant.</div>';
+
+  // extensions
+  $('exts').innerHTML = S.extensions.length ? S.extensions.map(x => `<div class="row"><div class="t"><b>${esc(x.name || x.id)}</b><small>${x.error ? esc(x.error) : x.enabled ? 'Active' : 'Désactivée'}</small></div>
+      <span class="st ${x.error ? 'err' : x.enabled ? 'ok' : 'off'}">${x.error ? 'ERREUR' : x.enabled ? 'ACTIVE' : 'COUPÉE'}</span>
+      <div class="btns">${x.error ? '' : `<button class="btn sm" data-ext="extToggle" data-id="${esc(x.id)}">${x.enabled ? 'Désactiver' : 'Activer'}</button>`}
+        <button class="btn sm" data-ext="extReinstall" data-id="${esc(x.id)}">Réinstaller</button>
+        <button class="btn sm danger" data-ext="extRemove" data-id="${esc(x.id)}">Retirer</button></div></div>`).join('')
+    : `<div class="empty">${S.extBusy ? 'Installation des extensions en cours…' : 'Aucune extension.'}</div>`;
+
+  // à propos
+  $('ver').textContent = 'LiteBrowser v' + S.version + (S.dev ? ' (version de test)' : '');
+  $('wv').textContent = S.webview ? 'Moteur WebView2 ' + S.webview : '';
+  $('upd').textContent = S.updateReady ? 'Redémarrer pour mettre à jour' : 'Rechercher des mises à jour';
+  $('hClear').disabled = !S.historyCount;
+}
+
+// favoris : actions
+$('favs').addEventListener('click', e => {
+  const b = e.target.closest('[data-fav]'); if (!b) return;
+  const row = b.closest('.it'), url = row.dataset.url;
+  if (b.dataset.fav === 'del') { post({ type: 'favRemove', url }); toast('Favori supprimé'); }
+  else if (b.dataset.fav === 'up' || b.dataset.fav === 'down') post({ type: 'favMove', url, dir: b.dataset.fav === 'up' ? -1 : 1 });
+  else if (b.dataset.fav === 'rename') {
+    const tx = row.querySelector('.tx b'), old = tx.textContent;
+    tx.innerHTML = `<input value="${esc(old)}" maxlength="120">`;
+    const inp = tx.querySelector('input'); inp.focus(); inp.select();
+    const done = ok => { if (ok && inp.value.trim() && inp.value.trim() !== old) { post({ type: 'favRename', url, title: inp.value.trim() }); toast('Favori renommé'); } else tx.textContent = old; };
+    inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') done(false); });
+    inp.addEventListener('blur', () => done(true));
+  }
+});
+
+// ---------- Historique ----------
+let hTimer = 0;
+$('hq').addEventListener('input', () => { clearTimeout(hTimer); hTimer = setTimeout(() => post({ type: 'history', q: $('hq').value }), 200); });
+function renderHistory(d) {
+  if (d.q !== $('hq').value.trim()) return;
+  if (!d.items.length) {
+    $('hist').innerHTML = `<div class="empty">${d.q ? 'Rien ne correspond à « ' + esc(d.q) + ' ».' : S && !S.historySave ? 'L\'historique est désactivé (voir Confidentialité).' : 'Ton historique est vide.'}</div>`;
+    return;
+  }
+  // regroupé par site consécutif pour rester lisible
+  $('hist').innerHTML = d.items.map(h => `<div class="it" data-url="${esc(h.url)}">${fav(h.url, h.title)}
+      <div class="tx"><b>${esc(h.title)}</b><a href="${esc(h.url)}">${esc(h.url)}</a></div>
+      <div class="ac"><button class="ib del" data-hdel title="Supprimer de l'historique">&#xE74D;</button></div></div>`).join('')
+    + (d.total > d.items.length && !d.q ? `<div class="hint">${d.items.length} pages les plus récentes sur ${d.total}. Utilise la recherche pour retrouver les plus anciennes.</div>` : '');
+}
+$('hist').addEventListener('click', e => {
+  const b = e.target.closest('[data-hdel]'); if (!b) return;
+  post({ type: 'historyDelete', url: b.closest('.it').dataset.url, q: $('hq').value.trim() });
+});
+
+// ---------- Navigation et recherche dans les réglages ----------
+const links = [...document.querySelectorAll('nav a.n')];
+const secs = [...document.querySelectorAll('main section')];
+function mark(id) { links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + id)); }
+const io = new IntersectionObserver(es => {
+  const vis = es.filter(x => x.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+  if (vis) mark(vis.target.id);
+}, { rootMargin: '-10% 0px -70% 0px' });
+secs.forEach(s => io.observe(s));
+$('find').addEventListener('input', () => {
+  const q = $('find').value.trim().toLowerCase();
+  let n = 0;
+  secs.forEach(s => { const hit = !q || (s.dataset.k + ' ' + s.textContent).toLowerCase().includes(q); s.hidden = !hit; if (hit) n++; });
+  $('nores').hidden = n > 0;
+});
+function goHash() { const id = location.hash.slice(1); if (id && $(id)) { $(id).scrollIntoView(); mark(id); if (id === 'historique') $('hq').focus(); } }
+window.addEventListener('hashchange', goHash);
+
+if (window.chrome && chrome.webview) {
+  chrome.webview.addEventListener('message', e => {
+    const d = e.data;
+    if (d.type === 'settings') { const first = !S; S = d; render(); if (first) { post({ type: 'history', q: '' }); goHash(); } }
+    else if (d.type === 'history') renderHistory(d);
+  });
+  post({ type: 'ready' });
+}
+</script>
+</body>
+</html>

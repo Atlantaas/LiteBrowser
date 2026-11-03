@@ -27,7 +27,8 @@ static class Program
     {
         // 1er lancement depuis le dossier Téléchargements : on s'installe et on se relance depuis l'emplacement fixe
         // Mode test automatique (CI Windows) : pas d'installation, rapport puis fermeture
-        if (BrowserForm.SmokeReport == null && Installer.EnsureInstalled()) return;
+        // Mode développement (LITEBROWSER_DATA) : pas d'installation, données à part
+        if (BrowserForm.SmokeReport == null && !AppPaths.Dev && Installer.EnsureInstalled()) return;
         Updater.CleanupOld();
 
         // Journal des plantages : %LOCALAPPDATA%\LiteBrowser\crash.log (et à côté du rapport en mode test)
@@ -49,6 +50,15 @@ static class Program
     }
 }
 
+/// Dossier des données. LITEBROWSER_DATA permet de lancer une version de test sans toucher au navigateur installé.
+static class AppPaths
+{
+    static readonly string devData = Environment.GetEnvironmentVariable("LITEBROWSER_DATA");
+    public static bool Dev => !string.IsNullOrWhiteSpace(devData);
+    public static string Data => Dev ? Path.GetFullPath(devData)
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiteBrowser");
+}
+
 static class CrashLog
 {
     public static void Write(string kind, Exception ex)
@@ -56,7 +66,7 @@ static class CrashLog
         try
         {
             var text = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{kind}] {ex}\n\n";
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiteBrowser");
+            var dir = AppPaths.Data;
             Directory.CreateDirectory(dir);
             File.AppendAllText(Path.Combine(dir, "crash.log"), text);
             if (BrowserForm.SmokeReport != null)
@@ -197,17 +207,19 @@ sealed class Theme
         Strip = C(0x1F2023), Bar = C(0x2D2E31), Hover = C(0x3E3F43), Text = C(0xE8EAED),
         Sub = C(0x9AA0A6), Field = C(0x1F2023), FieldBorder = C(0x45474B), Accent = C(0x8AB4F8)
     };
-    /// Thème « Gentle Mates » : noir profond, blanc cassé, accents blancs.
+    /// Thème « Gentle Mates » : noir profond, blanc cassé, accent rose M8 (#D669D2).
     public static readonly Theme M8 = new()
     {
         Strip = C(0x08080A), Bar = C(0x141418), Hover = C(0x26262D), Text = C(0xF4F2EE),
-        Sub = C(0x8F8D96), Field = C(0x0E0E12), FieldBorder = C(0x26262D), Accent = C(0xFFFFFF)
+        Sub = C(0x8F8D96), Field = C(0x0E0E12), FieldBorder = C(0x26262D), Accent = C(0xD669D2)
     };
     static Color C(int rgb) => Color.FromArgb(255, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
 }
 
 static class Glyphs
 {
+    public const string Settings = "", Pin = "", History = "", Download = "", Shield = "",
+        Private = "", Folder = "";
     public const string Back = "", Forward = "", Refresh = "", Stop = "",
         Home = "", More = "", Star = "", StarFill = "", Add = "",
         Close = "", Lock = "", Search = "", Globe = "", Warning = "",
@@ -264,9 +276,12 @@ class IconButton : Control
     string glyph;
     bool hover, down;
     public Theme Theme = Theme.Light;
-    public bool Highlight;
+    public bool Highlight, Dim;
+    string badge;
 
     public string Glyph { get => glyph; set { if (glyph != value) { glyph = value; Invalidate(); } } }
+    /// Petit compteur en bas à droite (ex. nombre de pubs bloquées sur la page).
+    public string Badge { get => badge; set { if (badge != value) { badge = value; Invalidate(); } } }
 
     public IconButton(string glyph, Font font)
     {
@@ -295,8 +310,19 @@ class IconButton : Control
             using var b = new SolidBrush(down ? G.Mix(Theme.Hover, Theme.Text, .08f) : Theme.Hover);
             g.FillEllipse(b, 1, 1, Width - 3, Height - 3);
         }
-        var col = !Enabled ? G.Mix(BackColor, Theme.Sub, .45f) : Highlight ? Theme.Accent : Theme.Text;
+        var col = !Enabled || Dim ? G.Mix(BackColor, Theme.Sub, .45f) : Highlight ? Theme.Accent : Theme.Text;
         TextRenderer.DrawText(g, glyph, Font, ClientRectangle, col, G.Center);
+        if (!string.IsNullOrEmpty(badge))
+        {
+            using var f = new Font("Segoe UI", 6.5f, FontStyle.Bold);
+            var sz = TextRenderer.MeasureText(badge, f, Size.Empty, TextFormatFlags.NoPadding);
+            int h = sz.Height, w = Math.Max(h, sz.Width + LogicalToDeviceUnits(4));
+            var r = new RectangleF(Width - w, Height - h, w, h);
+            using var p = G.Round(r, h / 2f);
+            using (var b = new SolidBrush(Theme.Accent)) g.FillPath(b, p);
+            var fg = Theme.Accent.GetBrightness() > .6f ? Color.FromArgb(10, 10, 12) : Color.White;
+            TextRenderer.DrawText(g, badge, f, Rectangle.Round(r), fg, G.Center);
+        }
     }
 }
 
@@ -516,6 +542,13 @@ class BrowserTab
     public string Title = "Nouvel onglet";
     public Image Icon;
     public bool Loading, IsHome = true, OpenedByScript, Audio, Muted;
+    public bool Pinned, Private, AdsAllowed;
+    public string LocalGlyph;   // icône des pages intégrées (ex. engrenage pour les réglages)
+    public BrowserTab Opener;   // onglet d'origine d'une fenêtre ouverte par un site : on y revient à sa fermeture
+    /// Onglet restauré pas encore chargé : il ne démarre son moteur qu'au premier clic (démarrage rapide, peu de RAM).
+    public bool Lazy;
+    public string PendingUrl;
+    public int Blocked;
     public string DarkScriptId, YtScriptId;
     public System.Windows.Forms.Timer SuspendTimer;
 }
@@ -528,7 +561,7 @@ class TabStrip : Control
     public Theme Theme = Theme.Light;
     public event Action<int> TabSelect, TabClose, TabMute;
     public event Action<int, Point> TabMenu;
-    public event Action NewTabRequested;
+    public event Action NewTabRequested, PrivateTabRequested;
 
     readonly Font icons;
     readonly ToolTip tip = new();
@@ -545,23 +578,37 @@ class TabStrip : Control
     }
 
     int Sc(int v) => LogicalToDeviceUnits(v);
+    // Les onglets épinglés sont toujours regroupés à gauche, en version compacte (icône seule)
+    int PinW => Sc(44);
+    int PinnedCount() { int n = 0; while (n < Tabs.Count && Tabs[n].Pinned) n++; return n; }
     int TabWidth()
     {
-        int n = Math.Max(1, Tabs.Count);
-        int avail = Width - Sc(8) - Sc(48);
+        int p = PinnedCount();
+        int n = Math.Max(1, Tabs.Count - p);
+        int avail = Width - Sc(8) - Sc(48) - p * PinW;
         return Math.Max(Sc(56), Math.Min(Sc(240), avail / n));
     }
-    Rectangle TabRect(int i) { int w = TabWidth(); return new Rectangle(Sc(8) + i * w, Sc(7), w, Height - Sc(7)); }
+    Rectangle TabRect(int i)
+    {
+        int p = PinnedCount();
+        if (i < p) return new Rectangle(Sc(8) + i * PinW, Sc(7), PinW, Height - Sc(7));
+        int w = TabWidth();
+        return new Rectangle(Sc(8) + p * PinW + (i - p) * w, Sc(7), w, Height - Sc(7));
+    }
+    bool HasClose(int i) => !Tabs[i].Pinned && (i == Selected || i == hover);
     Rectangle CloseRect(Rectangle r) { int s = Sc(20); return new Rectangle(r.Right - s - Sc(8), r.Top + (r.Height - s) / 2, s, s); }
     /// Le haut-parleur se place juste avant la croix (ou au bord si la croix est masquée).
     Rectangle AudioRect(int i, Rectangle r)
     {
         var c = CloseRect(r);
-        bool closeShown = i == Selected || i == hover;
-        return closeShown ? new Rectangle(c.Left - c.Width - Sc(2), c.Top, c.Width, c.Height) : c;
+        return HasClose(i) ? new Rectangle(c.Left - c.Width - Sc(2), c.Top, c.Width, c.Height) : c;
     }
     static bool HasAudio(BrowserTab t) => t.Audio || t.Muted;
-    Rectangle PlusRect() { int s = Sc(28); return new Rectangle(Sc(8) + Tabs.Count * TabWidth() + Sc(6), Sc(7) + (Height - Sc(7) - s) / 2, s, s); }
+    Rectangle PlusRect()
+    {
+        int s = Sc(28), p = PinnedCount();
+        return new Rectangle(Sc(8) + p * PinW + (Tabs.Count - p) * TabWidth() + Sc(6), Sc(7) + (Height - Sc(7) - s) / 2, s, s);
+    }
     int Hit(Point p) { for (int i = 0; i < Tabs.Count; i++) if (TabRect(i).Contains(p)) return i; return -1; }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -580,8 +627,17 @@ class TabStrip : Control
             if (sel || hov)
             {
                 using var p = G.TopRound(new RectangleF(r.X, r.Y, r.Width, r.Height + 2), Sc(8));
-                using var b = new SolidBrush(sel ? Theme.Bar : G.Mix(Theme.Strip, Theme.Bar, .5f));
+                var fill = sel ? Theme.Bar : G.Mix(Theme.Strip, Theme.Bar, .5f);
+                if (t.Private) fill = G.Mix(fill, Theme.Accent, .07f);
+                using var b = new SolidBrush(fill);
                 g.FillPath(b, p);
+                if (sel)
+                {
+                    // trait d'accent sur l'onglet actif (signature M8)
+                    using var ab = new SolidBrush(t.Private ? Theme.Sub : Theme.Accent);
+                    using var ap = G.Round(new RectangleF(r.X + Sc(12), r.Y, r.Width - Sc(24), Sc(2)), Sc(1));
+                    g.FillPath(ab, ap);
+                }
             }
             else if (i + 1 < Tabs.Count && i + 1 != Selected && i + 1 != hover)
             {
@@ -589,16 +645,34 @@ class TabStrip : Control
                 g.DrawLine(pen, r.Right, r.Top + Sc(9), r.Right, r.Bottom - Sc(9));
             }
 
-            int x = r.X + Sc(12), cy = r.Top + r.Height / 2;
+            int x = t.Pinned ? r.X + (r.Width - isz) / 2 : r.X + Sc(12), cy = r.Top + r.Height / 2;
             var ir = new Rectangle(x, cy - isz / 2, isz, isz);
             if (t.Loading)
             {
                 using var pen = new Pen(Theme.Accent, Math.Max(2, Sc(2))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
                 g.DrawArc(pen, Rectangle.Inflate(ir, -1, -1), SpinAngle, 270);
             }
+            else if (t.Private) TextRenderer.DrawText(g, Glyphs.Private, icons, ir, Theme.Text, G.Center);
             else if (t.IsHome) TextRenderer.DrawText(g, Glyphs.Home, icons, ir, Theme.Sub, G.Center);
+            else if (t.LocalGlyph != null) TextRenderer.DrawText(g, t.LocalGlyph, icons, ir, sel ? Theme.Text : Theme.Sub, G.Center);
             else if (t.Icon != null) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(t.Icon, ir); }
             else TextRenderer.DrawText(g, Glyphs.Globe, icons, ir, Theme.Sub, G.Center);
+            if (t.Lazy && !sel)
+            {
+                // onglet restauré pas encore chargé : petit point discret
+                using var db = new SolidBrush(Theme.Sub);
+                g.FillEllipse(db, ir.Right - Sc(3), ir.Bottom - Sc(3), Sc(5), Sc(5));
+            }
+
+            if (t.Pinned)
+            {
+                if (HasAudio(t))
+                {
+                    using var db = new SolidBrush(t.Muted ? Theme.Sub : Theme.Accent);
+                    g.FillEllipse(db, ir.Right - Sc(2), ir.Top - Sc(3), Sc(6), Sc(6));
+                }
+                continue;
+            }
 
             var cr = CloseRect(r);
             int textRight = sel || hov ? cr.Left - Sc(4) : r.Right - Sc(10);
@@ -632,9 +706,9 @@ class TabStrip : Control
     {
         base.OnMouseMove(e);
         int h = Hit(e.Location);
-        bool hc = h >= 0 && CloseRect(TabRect(h)).Contains(e.Location);
+        bool hc = h >= 0 && !Tabs[h].Pinned && CloseRect(TabRect(h)).Contains(e.Location);
         bool hp = PlusRect().Contains(e.Location);
-        bool ha = h >= 0 && HasAudio(Tabs[h]) && !hc && AudioRect(h, TabRect(h)).Contains(e.Location);
+        bool ha = h >= 0 && !Tabs[h].Pinned && HasAudio(Tabs[h]) && !hc && AudioRect(h, TabRect(h)).Contains(e.Location);
         if (h != hover || hc != hoverClose || hp != hoverPlus || ha != hoverAudio)
         {
             bool tipChange = h != hover || hp != hoverPlus || ha != hoverAudio;
@@ -642,7 +716,7 @@ class TabStrip : Control
             Invalidate();
             if (tipChange)
                 tip.SetToolTip(this, ha ? (Tabs[h].Muted ? "Réactiver le son de cet onglet" : "Couper le son de cet onglet")
-                    : h >= 0 ? Tabs[h].Title : hp ? "Nouvel onglet (Ctrl+T)" : null);
+                    : h >= 0 ? (Tabs[h].Private ? "Onglet privé · " : "") + Tabs[h].Title : hp ? "Nouvel onglet (Ctrl+T) · clic droit : onglet privé" : null);
         }
     }
 
@@ -658,12 +732,18 @@ class TabStrip : Control
         base.OnMouseDown(e);
         int h = Hit(e.Location);
         if (e.Button == MouseButtons.Middle) { if (h >= 0) TabClose?.Invoke(h); return; }
-        if (e.Button == MouseButtons.Right) { if (h >= 0) TabMenu?.Invoke(h, e.Location); return; }
+        if (e.Button == MouseButtons.Right)
+        {
+            if (h >= 0) TabMenu?.Invoke(h, e.Location);
+            else if (PlusRect().Contains(e.Location)) PrivateTabRequested?.Invoke();
+            return;
+        }
         if (e.Button != MouseButtons.Left) return;
         if (PlusRect().Contains(e.Location)) { NewTabRequested?.Invoke(); return; }
         if (h < 0) return;
         var r = TabRect(h);
-        if (CloseRect(r).Contains(e.Location)) TabClose?.Invoke(h);
+        if (Tabs[h].Pinned) TabSelect?.Invoke(h);
+        else if (CloseRect(r).Contains(e.Location)) TabClose?.Invoke(h);
         else if (HasAudio(Tabs[h]) && AudioRect(h, r).Contains(e.Location)) TabMute?.Invoke(h);
         else TabSelect?.Invoke(h);
     }
@@ -791,7 +871,7 @@ class FavBar : Control
 class AddressBox : Panel
 {
     public readonly TextBox Box = new() { BorderStyle = BorderStyle.None };
-    public readonly IconButton Star;
+    public readonly IconButton Star, Shield;
     readonly Font badgeFont;
     string badge = Glyphs.Search;
     Theme theme = Theme.Light;
@@ -806,18 +886,22 @@ class AddressBox : Panel
         Box.Font = textFont;
         badgeFont = iconSmall;
         Star = new IconButton(Glyphs.Star, iconFont);
+        Shield = new IconButton(Glyphs.Shield, iconSmall);
         Controls.Add(Box);
         Controls.Add(Star);
+        Controls.Add(Shield);
         Box.GotFocus += (_, _) => Recolor();
         Box.LostFocus += (_, _) => Recolor();
         Click += (_, _) => Box.Focus();
-        Star.Resize += (_, _) =>
-        {
-            // L'étoile est ronde : rien n'est dessiné hors du cercle (pas d'angle sur la bordure)
-            using var path = new GraphicsPath();
-            path.AddEllipse(0, 0, Star.Width, Star.Height);
-            Star.Region = new Region(path);
-        };
+        Star.Resize += (_, _) => RoundRegion(Star);
+    }
+
+    // Les boutons du champ ont des coins arrondis : rien n'est dessiné hors du cadre (pas d'angle sur la bordure)
+    static void RoundRegion(Control c)
+    {
+        using var path = new GraphicsPath();
+        path.AddEllipse(0, 0, c.Width, c.Height);
+        c.Region = new Region(path);
     }
 
     int Sc(int v) => LogicalToDeviceUnits(v);
@@ -828,9 +912,12 @@ class AddressBox : Panel
         base.OnLayout(e);
         int h = Height, s = h - Sc(8);
         Star.SetBounds(Width - h / 2 - s / 2 - Sc(2), (h - s) / 2, s, s);
+        int sw = s + Sc(8);
+        int shieldRight = Star.Visible ? Star.Left - Sc(2) : Width - h / 2;
+        Shield.SetBounds(shieldRight - sw, (h - s) / 2, sw, s);
         int bh = Box.PreferredHeight;
         int left = BadgeRect.Right + Sc(8);
-        int right = Star.Visible ? Star.Left - Sc(4) : Width - h / 2;
+        int right = Shield.Visible ? Shield.Left - Sc(4) : Star.Visible ? Star.Left - Sc(4) : Width - h / 2;
         Box.SetBounds(left, (h - bh) / 2, Math.Max(10, right - left), bh);
     }
 
@@ -844,7 +931,8 @@ class AddressBox : Panel
         var r = new RectangleF(inset, inset, Width - 1 - inset * 2, Height - 1 - inset * 2);
         using var p = G.Round(r, r.Height / 2);
         using (var b = new SolidBrush(f ? theme.Bar : theme.Field)) g.FillPath(b, p);
-        using (var pen = new Pen(f ? theme.Accent : theme.FieldBorder, f ? Sc(2) : 1)) g.DrawPath(pen, p);
+        // champ actif : contour plus doux qu'un trait blanc plein (thème M8), mais bien visible
+        using (var pen = new Pen(f ? G.Mix(theme.Accent, theme.Bar, .35f) : theme.FieldBorder, f ? Sc(2) : 1)) g.DrawPath(pen, p);
         TextRenderer.DrawText(g, badge, badgeFont, BadgeRect, theme.Sub, G.Center);
     }
 
@@ -855,6 +943,7 @@ class AddressBox : Panel
         theme = t;
         BackColor = parentBack;
         Star.Theme = t;
+        Shield.Theme = t;
         Recolor();
     }
 
@@ -864,8 +953,10 @@ class AddressBox : Panel
         Box.BackColor = fill;
         Box.ForeColor = theme.Text;
         Star.BackColor = fill;
+        Shield.BackColor = fill;
         Invalidate();
         Star.Invalidate();
+        Shield.Invalidate();
     }
 }
 
@@ -922,7 +1013,18 @@ class BrowserForm : Form
 {
     const string HomeHost = "litebrowser.home";
     const string HomeUrl = "https://litebrowser.home/index.html";
-    const int SuspendDelayMs = 30_000; // un onglet inactif est gelé après 30 s
+    const string SettingsUrl = "https://litebrowser.home/settings.html";
+
+    // Réglages ajoutés en v4 (tous modifiables depuis la page Réglages)
+    string startupMode = "session";             // session (rouvrir mes onglets) | home
+    int tabSleepSec = 30;                        // un onglet inactif est gelé après ce délai (0 = jamais)
+    string trackingLevel = "basic";              // basic | balanced | strict
+    HashSet<string> adblockAllow = new(StringComparer.OrdinalIgnoreCase);   // sites où le bloqueur est coupé
+    bool historySave = true, clearOnExit, downloadAsk, closingDone;
+    string downloadDir;
+    int prayerReminder;                          // rappel X min avant chaque prière (0 = non)
+    string lastReminded;
+    string sessionPath;
 
     static readonly (string Id, string Name, string Url)[] Engines =
     {
@@ -1031,10 +1133,11 @@ class BrowserForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(wa.Width * 4 / 5, wa.Height * 4 / 5);
         WindowState = FormWindowState.Maximized;
+        if (ShotsDir != null) { WindowState = FormWindowState.Normal; Size = new Size(1600, 900); } // captures : fenêtre discrète
         MinimumSize = new Size(S(520), S(320));
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-        dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiteBrowser");
+        dataDir = AppPaths.Data;
         Directory.CreateDirectory(dataDir);
         favPath = Path.Combine(dataDir, "favoris.txt");
         histPath = Path.Combine(dataDir, "historique.txt");
@@ -1042,6 +1145,7 @@ class BrowserForm : Form
         homeDir = Path.Combine(dataDir, "accueil");
         extDir = Path.Combine(dataDir, "extensions");
         extListPath = Path.Combine(dataDir, "extensions.txt");
+        sessionPath = Path.Combine(dataDir, "session.txt");
 
         LoadSettings();
         favorites.AddRange(ReadPairs(favPath));
@@ -1059,6 +1163,7 @@ class BrowserForm : Form
         strip.TabSelect += SelectTab;
         strip.TabClose += CloseTab;
         strip.NewTabRequested += () => _ = NewTab();
+        strip.PrivateTabRequested += () => _ = NewTab(priv: true);
         strip.TabMute += i => ToggleMute(i);
         strip.TabMenu += (i, pt) => ShowTabMenu(i, pt);
 
@@ -1074,12 +1179,13 @@ class BrowserForm : Form
         fwdBtn = Btn(Glyphs.Forward, "Page suivante (Alt+→)", () => Core?.GoForward());
         reloadBtn = Btn(Glyphs.Refresh, "Actualiser (F5)", () => { if (Cur?.Loading == true) Core?.Stop(); else Core?.Reload(); });
         homeBtn = Btn(Glyphs.Home, "Page d'accueil", () => Core?.Navigate(HomeUrl));
-        menuBtn = Btn(Glyphs.More, "Menu : favoris, historique, moteur de recherche, thème…", ShowMenu);
+        menuBtn = Btn(Glyphs.More, "Menu : onglet privé, favoris, historique, réglages…", ShowMenu);
         extBtn = Btn("", "Extensions (NordPass, TrendTrack…)", ShowExtensionsMenu);
 
         addr = new AddressBox(iconFont, iconSmall, new Font("Segoe UI", 10.5f));
         addr.Star.Click += (_, _) => ToggleFavorite();
         tip.SetToolTip(addr.Star, "Ajouter / retirer des favoris (Ctrl+D)");
+        addr.Shield.Click += (_, _) => ShowShieldMenu();
         addr.Box.AutoCompleteMode = AutoCompleteMode.Suggest;
         addr.Box.AutoCompleteSource = AutoCompleteSource.CustomSource;
         addr.Box.AutoCompleteCustomSource = suggestions;
@@ -1090,7 +1196,7 @@ class BrowserForm : Form
             {
                 e.SuppressKeyPress = true;
                 addrEdited = false;
-                var url = ToUrl(addr.Box.Text);
+                var url = FromAlias(addr.Box.Text) ?? ToUrl(addr.Box.Text);
                 if (url != null && Core != null) { Core.Navigate(url); Cur.View.Focus(); }
             }
             else if (e.KeyCode == Keys.Escape)
@@ -1129,6 +1235,18 @@ class BrowserForm : Form
         minuteTimer.Tick += (_, _) => MinuteTick();
         statusTimer.Tick += (_, _) => _ = RefreshStatus();
         FormClosed += (_, _) => { try { tray?.Dispose(); } catch { } };
+        FormClosing += async (_, e) =>
+        {
+            if (closingDone) return;
+            SaveSession();
+            if (!clearOnExit || SmokeReport != null) return;
+            // « Tout effacer en quittant » : cookies, cache et historique, avant la vraie fermeture
+            e.Cancel = true;
+            closingDone = true;
+            Hide();
+            await ClearBrowsingData();
+            Close();
+        };
         if (SmokeReport != null)
             FormClosing += (_, e) => CrashLog.Write("FormClosing " + e.CloseReason, new Exception("fermeture demandée par :\n" + Environment.StackTrace));
 
@@ -1170,7 +1288,7 @@ class BrowserForm : Form
             }
             try
             {
-                await NewTab();
+                if (!RestoreSession()) await NewTab();
                 minuteTimer.Start();
                 statusTimer.Start();
                 _ = RefreshPrayers();
@@ -1178,6 +1296,7 @@ class BrowserForm : Form
                 _ = RefreshStatus();
                 await Task.Delay(3000);
                 if (SmokeReport != null) { await RunSmoke(); return; }
+                if (ShotsDir != null) { await RunShots(); return; }
                 await CheckUpdates(silent: true);
             }
             catch (Exception ex) { Debug.WriteLine(ex); }
@@ -1193,7 +1312,7 @@ class BrowserForm : Form
             if (!silent) { Program.RestartRequested = true; Close(); }
             return;
         }
-        if (SmokeReport != null) return;
+        if (SmokeReport != null || AppPaths.Dev) return;
         if (updateBusy) return;
         updateBusy = true;
         try
@@ -1270,7 +1389,7 @@ class BrowserForm : Form
 
         // Page d'accueil intégrée à l'exe, recopiée à chaque démarrage
         Directory.CreateDirectory(homeDir);
-        foreach (var (res, file) in new[] { ("home.html", "index.html"), ("multi.html", "multi.html") })
+        foreach (var (res, file) in new[] { ("home.html", "index.html"), ("multi.html", "multi.html"), ("settings.html", "settings.html") })
         {
             try
             {
@@ -1293,29 +1412,116 @@ class BrowserForm : Form
         PrepareNurLive();
     }
 
+    // ---------- Session : rouvrir les onglets de la dernière fois ----------
+
+    void SaveSession()
+    {
+        if (SmokeReport != null || ShotsDir != null || tabs.Count == 0) return;
+        try
+        {
+            var keep = tabs.Where(t => !t.Private).ToList();
+            var list = keep.Select(t =>
+            {
+                var src = t.View.CoreWebView2?.Source ?? t.PendingUrl ?? "";
+                bool web = src.StartsWith("http://") || src.StartsWith("https://");
+                // pages intégrées (accueil, réglages…) : rouvertes comme page d'accueil
+                var url = !web || IsLocalPage(src) ? "" : src;
+                return new SessionTab(url, t.Title, t.Pinned);
+            });
+            int s = Cur != null && !Cur.Private ? keep.IndexOf(Cur) : 0;
+            File.WriteAllText(sessionPath, Session.Serialize(list, Math.Max(0, s)));
+        }
+        catch { }
+    }
+
+    /// Recrée les onglets de la dernière session, sans les charger (sauf celui affiché). false = rien à rouvrir.
+    bool RestoreSession()
+    {
+        if (SmokeReport != null || startupMode != "session" || !File.Exists(sessionPath)) return false;
+        List<SessionTab> list; int selected;
+        try { (list, selected) = Session.Parse(File.ReadAllText(sessionPath)); } catch { return false; }
+        // une seule page d'accueil vide : autant ouvrir normalement
+        if (list.Count == 0 || (list.Count == 1 && list[0].Url == "")) return false;
+        foreach (var s in list.OrderByDescending(x => x.Pinned))
+        {
+            var t = CreateTab(s.Url == "", priv: false);
+            t.Lazy = true;
+            t.PendingUrl = s.Url;
+            t.Pinned = s.Pinned;
+            if (!string.IsNullOrWhiteSpace(s.Title)) t.Title = s.Title;
+            if (s.Url != "") t.Icon = CachedIcon(s.Url);
+            tabs.Add(t);
+        }
+        var want = list[selected];
+        int idx = tabs.FindIndex(t => t.PendingUrl == want.Url && t.Pinned == want.Pinned);
+        SelectTab(Math.Max(0, idx));
+        return true;
+    }
+
+    /// Icône d'un site déjà visité, gardée sur le disque (évite de la redemander à un service externe).
+    Image CachedIcon(string url)
+    {
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : null;
+        var file = host == null ? null : Path.Combine(dataDir, "icones", host + ".png");
+        if (file == null || !File.Exists(file)) return null;
+        try { using var tmp = Image.FromFile(file); return new Bitmap(tmp); } catch { return null; }
+    }
+
     // ---------- Onglets ----------
 
-    async Task NewTab(string url = null, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null)
+    BrowserTab CreateTab(bool home, bool priv)
     {
-        if (env == null) { deferral?.Complete(); return; }
-        var t = new BrowserTab { IsHome = url == null && popup == null, OpenedByScript = popup != null };
+        var t = new BrowserTab { IsHome = home, Private = priv, Title = priv && home ? "Onglet privé" : "Nouvel onglet" };
         t.View = new WebView2 { Dock = DockStyle.Fill, Visible = false, DefaultBackgroundColor = theme.Bar };
         content.Controls.Add(t.View);
+        return t;
+    }
+
+    async Task NewTab(string url = null, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null, bool priv = false)
+    {
+        if (env == null) { deferral?.Complete(); return; }
+        var t = CreateTab(url == null && popup == null, priv);
+        t.OpenedByScript = popup != null;
+        if (popup != null) t.Opener = Cur;
         int idx = sel >= 0 ? sel + 1 : tabs.Count; // s'ouvre juste à droite de l'onglet actuel
+        idx = Math.Max(idx, tabs.TakeWhile(x => x.Pinned).Count()); // jamais au milieu des onglets épinglés
         tabs.Insert(idx, t);
         SelectTab(idx);
+        await StartTab(t, url, popup, deferral);
+    }
 
-        try { await t.View.EnsureCoreWebView2Async(env); }
+    /// Démarre le moteur web d'un onglet et branche tous ses évènements.
+    async Task StartTab(BrowserTab t, string url, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null)
+    {
+        t.Lazy = false;
+        t.PendingUrl = null;
+        try
+        {
+            if (t.Private)
+            {
+                // Navigation privée : profil en mémoire, rien n'est gardé une fois les onglets privés fermés
+                var o = env.CreateCoreWebView2ControllerOptions();
+                o.ProfileName = "Prive";
+                o.IsInPrivateModeEnabled = true;
+                await t.View.EnsureCoreWebView2Async(env, o);
+            }
+            else await t.View.EnsureCoreWebView2Async(env);
+        }
         catch { if (popup != null) popup.Handled = true; deferral?.Complete(); return; }
         if (!tabs.Contains(t)) { if (popup != null) popup.Handled = true; deferral?.Complete(); return; } // fermé entre-temps
         var core = t.View.CoreWebView2;
 
         var s = core.Settings;
         s.IsStatusBarEnabled = true; // affiche l'adresse des liens au survol
-        // « De base » : laisse fonctionner les connexions intégrées (chat Twitch connecté) ; les pubs restent bloquées par notre liste
-        core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Basic;
+        s.IsPasswordAutosaveEnabled = false;   // les mots de passe restent dans NordPass, pas dans le navigateur
+        s.IsGeneralAutofillEnabled = !t.Private;
+        // Protection contre le pistage réglable ; « De base » laisse fonctionner les connexions intégrées (chat Twitch)
+        core.Profile.PreferredTrackingPreventionLevel = TrackingLevel();
         core.Profile.PreferredColorScheme = Scheme();
-        core.SetVirtualHostNameToFolderMapping(HomeHost, homeDir, CoreWebView2HostResourceAccessKind.Allow);
+        if (!string.IsNullOrEmpty(downloadDir) && Directory.Exists(downloadDir))
+            try { core.Profile.DefaultDownloadFolderPath = downloadDir; } catch { }
+        // Pages intégrées : accessibles en navigation, mais illisibles par les autres sites (pas de CORS)
+        core.SetVirtualHostNameToFolderMapping(HomeHost, homeDir, CoreWebView2HostResourceAccessKind.DenyCors);
         if (nurLiveUi != null)
         {
             core.SetVirtualHostNameToFolderMapping(NurLive.Host, nurLiveUi, CoreWebView2HostResourceAccessKind.Allow);
@@ -1335,11 +1541,11 @@ class BrowserForm : Form
             core.AddWebResourceRequestedFilter("*", ctx);
         core.WebResourceRequested += (_, e) =>
         {
-            if (!adblock) return;
+            if (!adblock || t.AdsAllowed) return;
             if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var u) && IsBlocked(u.Host))
             {
                 e.Response = env.CreateWebResourceResponse(null, 403, "Blocked", "");
-                blockedCount++;
+                Counted(t);
             }
         };
 
@@ -1354,7 +1560,7 @@ class BrowserForm : Form
                 if (same >= 0) { e.Handled = true; BeginInvoke(new Action(() => SelectTab(same))); return; }
             }
             var d = e.GetDeferral();
-            _ = NewTab(e.Uri, e, d);
+            _ = NewTab(e.Uri, e, d, priv: t.Private); // une fenêtre ouverte depuis un onglet privé reste privée
         };
         // window.close() : comme dans Chrome, seulement pour un onglet ouvert par un script (popup de connexion…)
         core.WindowCloseRequested += (_, _) => { if (t.OpenedByScript) BeginInvoke(new Action(() => CloseTab(tabs.IndexOf(t)))); };
@@ -1362,11 +1568,11 @@ class BrowserForm : Form
         // Cadres publicitaires (iframes) bloqués eux aussi
         core.FrameNavigationStarting += (_, e) =>
         {
-            if (adblock && Uri.TryCreate(e.Uri, UriKind.Absolute, out var fu) && IsBlocked(fu.Host)) { e.Cancel = true; blockedCount++; }
+            if (adblock && !t.AdsAllowed && Uri.TryCreate(e.Uri, UriKind.Absolute, out var fu) && IsBlocked(fu.Host)) { e.Cancel = true; Counted(t); }
         };
 
         // Bloqueur de pubs YouTube (le script ne s'active que sur youtube.com)
-        if (adblock)
+        if (YouTubeBlocking)
         {
             try { t.YtScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script); } catch { }
         }
@@ -1376,10 +1582,34 @@ class BrowserForm : Form
         {
             WatchDownload(e.DownloadOperation);
             smokeDownload?.TrySetResult(e.DownloadOperation);
+            if (!downloadAsk || SmokeReport != null) return;
+            // « Demander où enregistrer » : choix du dossier et du nom, hors de l'évènement WebView2
+            var d = e.GetDeferral();
+            BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    using var dlg = new SaveFileDialog
+                    {
+                        FileName = Path.GetFileName(e.ResultFilePath),
+                        InitialDirectory = Path.GetDirectoryName(e.ResultFilePath),
+                        Title = "Enregistrer le fichier",
+                        OverwritePrompt = true,
+                    };
+                    if (dlg.ShowDialog(this) == DialogResult.OK) { e.ResultFilePath = dlg.FileName; e.Handled = true; }
+                    else e.Cancel = true;
+                }
+                catch { }
+                finally { d.Complete(); }
+            }));
         };
 
-        core.NavigationStarting += (_, _) =>
+        core.NavigationStarting += (_, e) =>
         {
+            // nouvelle page : compteur du bouclier remis à zéro, exception éventuelle du site appliquée
+            if (!e.IsRedirected) t.Blocked = 0;
+            t.AdsAllowed = SiteList.Contains(adblockAllow, e.Uri);
+            if (t == Cur) UpdateShield();
             t.Loading = true;
             if (!spin.Enabled) spin.Start();
             strip.Invalidate();
@@ -1389,7 +1619,8 @@ class BrowserForm : Form
         {
             t.Loading = false;
             strip.Invalidate();
-            if (e.IsSuccess && core.Source.StartsWith("http") && !IsHome(core.Source) && !IsNurLivePage(core.Source))
+            // onglet privé ou historique désactivé : rien n'est noté
+            if (e.IsSuccess && historySave && !t.Private && core.Source.StartsWith("http") && !IsLocalPage(core.Source))
                 AddHistory(core.DocumentTitle, core.Source);
             if (core.Source.Contains("twitch.tv", StringComparison.OrdinalIgnoreCase)) _ = RefreshTwitchAuth();
             if (t == Cur) UpdateUi();
@@ -1397,6 +1628,7 @@ class BrowserForm : Form
         core.SourceChanged += (_, _) =>
         {
             t.IsHome = IsHome(core.Source);
+            t.LocalGlyph = IsSettings(core.Source) ? Glyphs.Settings : null;
             strip.Invalidate();
             if (t == Cur) UpdateUi();
         };
@@ -1417,12 +1649,20 @@ class BrowserForm : Form
                 {
                     using var ms = new MemoryStream();
                     await st.CopyToAsync(ms);
-                    if (ms.Length > 0) { ms.Position = 0; using var img = Image.FromStream(ms); t.Icon = new Bitmap(img); }
+                    if (ms.Length > 0)
+                    {
+                        ms.Position = 0;
+                        using var img = Image.FromStream(ms);
+                        t.Icon = new Bitmap(img);
+                        if (!t.Private) SaveSiteIcon(core.Source, ms.ToArray());
+                    }
                 }
             }
             catch { }
             strip.Invalidate();
         };
+        // Plantage du moteur web : avant, tous les onglets devenaient blancs sans explication
+        core.ProcessFailed += (_, e) => BeginInvoke(new Action(() => OnProcessFailed(t, e.ProcessFailedKind, e.Reason, e.ExitCode)));
         core.IsDocumentPlayingAudioChanged += (_, _) => { t.Audio = core.IsDocumentPlayingAudio; strip.Invalidate(); };
         core.IsMutedChanged += (_, _) => { t.Muted = core.IsMuted; strip.Invalidate(); };
         core.ContainsFullScreenElementChanged += (_, _) =>
@@ -1446,10 +1686,11 @@ class BrowserForm : Form
             try { popup.NewWindow = core; } catch { core.Navigate(popup.Uri); }
             deferral?.Complete();
         }
-        else core.Navigate(url ?? HomeUrl);
+        else core.Navigate(string.IsNullOrEmpty(url) ? HomeUrl : url);
         if (t == Cur) UpdateUi();
 
-        if (!extStarted)
+        // Les extensions vivent dans le profil normal, jamais dans le profil privé
+        if (!extStarted && !t.Private)
         {
             extStarted = true;
             profile = core.Profile;
@@ -1470,6 +1711,7 @@ class BrowserForm : Form
             {
                 t.View.Visible = true;
                 StopSuspend(t);
+                if (t.Lazy && env != null) _ = StartTab(t, t.PendingUrl); // onglet restauré : chargé au premier affichage
                 if (core != null)
                 {
                     core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
@@ -1479,11 +1721,11 @@ class BrowserForm : Form
             else
             {
                 t.View.Visible = false;
-                if (core != null && t.SuspendTimer == null)
+                if (core != null) core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low; // RAM réduite tout de suite
+                if (core != null && t.SuspendTimer == null && tabSleepSec > 0)
                 {
-                    // Onglet en arrière-plan : RAM réduite tout de suite, puis gel complet
-                    core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
-                    var timer = new System.Windows.Forms.Timer { Interval = SuspendDelayMs };
+                    // puis gel complet après le délai choisi dans les réglages
+                    var timer = new System.Windows.Forms.Timer { Interval = tabSleepSec * 1000 };
                     timer.Tick += async (_, _) =>
                     {
                         StopSuspend(t);
@@ -1515,14 +1757,16 @@ class BrowserForm : Form
         var t = tabs[i];
         if (SmokeReport != null)
             CrashLog.Write($"CloseTab {i}/{tabs.Count} {t.View.CoreWebView2?.Source} script={t.OpenedByScript}", new Exception(Environment.StackTrace));
-        var src = t.View.CoreWebView2?.Source;
-        if (!string.IsNullOrEmpty(src) && !IsHome(src)) closedTabs.Add(src);
+        var src = t.View.CoreWebView2?.Source ?? t.PendingUrl;
+        if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
         StopSuspend(t);
         tabs.RemoveAt(i);
         content.Controls.Remove(t.View);
         t.View.Dispose(); // libère réellement les processus du moteur
         t.Icon?.Dispose();
         if (tabs.Count == 0) { Close(); return; }
+        // fenêtre ouverte par un site (connexion, extension…) : on revient à l'onglet qui l'a ouverte
+        if (i == sel && t.Opener != null && tabs.Contains(t.Opener)) { SelectTab(tabs.IndexOf(t.Opener)); return; }
         if (i < sel) sel--;
         SelectTab(Math.Min(sel, tabs.Count - 1));
     }
@@ -1533,6 +1777,360 @@ class BrowserForm : Form
         var u = closedTabs[^1];
         closedTabs.RemoveAt(closedTabs.Count - 1);
         _ = NewTab(u);
+    }
+
+    bool engineRestarting;
+
+    void OnProcessFailed(BrowserTab t, CoreWebView2ProcessFailedKind kind, CoreWebView2ProcessFailedReason reason, int exitCode)
+    {
+        CrashLog.Write("Moteur web", new Exception($"{kind} ({reason}, code {exitCode}) · onglet : {t.Title}"));
+        if (kind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+        {
+            // tout le moteur est tombé : on garde les onglets et on relance le navigateur proprement
+            if (engineRestarting || SmokeReport != null || ShotsDir != null) return;
+            engineRestarting = true;
+            SaveSession();
+            Notify("LiteBrowser redémarre", "Le moteur web de Windows s'est arrêté. Tes onglets vont être rouverts.");
+            Program.RestartRequested = true;
+            closingDone = true; // pas d'effacement des données pendant ce redémarrage
+            Close();
+        }
+        else if (kind is CoreWebView2ProcessFailedKind.RenderProcessExited or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
+        {
+            // un seul onglet planté : on le recharge (une fois), comme « Aïe, Snap ! » mais sans clic
+            try { if (tabs.Contains(t)) t.View.CoreWebView2?.Reload(); } catch { }
+        }
+    }
+
+    /// Épingle / détache un onglet : les épinglés restent groupés à gauche et sont rouverts au démarrage.
+    void TogglePin(BrowserTab t)
+    {
+        int i = tabs.IndexOf(t);
+        if (i < 0) return;
+        var current = Cur;
+        tabs.RemoveAt(i);
+        t.Pinned = !t.Pinned;
+        int pinned = tabs.TakeWhile(x => x.Pinned).Count();
+        tabs.Insert(pinned, t); // fin du groupe épinglé (ou juste après lui en le détachant)
+        SelectTab(tabs.IndexOf(current));
+    }
+
+    /// Premier onglet normal démarré (cookies, extensions, réglages du profil) : jamais un onglet privé.
+    CoreWebView2 MainCore() => tabs.Where(t => !t.Private).Select(t => t.View.CoreWebView2).FirstOrDefault(x => x != null);
+
+    /// Profils distincts en cours (normal et privé) : les réglages s'appliquent aux deux.
+    IEnumerable<CoreWebView2Profile> Profiles() =>
+        tabs.Select(t => t.View.CoreWebView2?.Profile).Where(p => p != null).GroupBy(p => p.ProfileName + p.IsInPrivateModeEnabled).Select(g => g.First());
+
+    CoreWebView2TrackingPreventionLevel TrackingLevel() => trackingLevel switch
+    {
+        "strict" => CoreWebView2TrackingPreventionLevel.Strict,
+        "balanced" => CoreWebView2TrackingPreventionLevel.Balanced,
+        _ => CoreWebView2TrackingPreventionLevel.Basic,
+    };
+
+    bool YouTubeBlocking => adblock && !SiteList.Contains(adblockAllow, "https://www.youtube.com/");
+
+    // ---------- Bouclier (pubs bloquées sur la page) ----------
+
+    void Counted(BrowserTab t)
+    {
+        blockedCount++;
+        t.Blocked++;
+        if (t == Cur) UpdateShield();
+    }
+
+    void UpdateShield()
+    {
+        var t = Cur;
+        var src = Core?.Source ?? "";
+        bool web = t != null && !t.IsHome && (src.StartsWith("http://") || src.StartsWith("https://")) && !IsLocalPage(src);
+        addr.Shield.Visible = web;
+        if (!web) { addr.PerformLayout(); return; }
+        bool on = adblock && !t.AdsAllowed;
+        addr.Shield.Dim = !on;
+        addr.Shield.Badge = on && t.Blocked > 0 ? (t.Blocked > 99 ? "99+" : t.Blocked.ToString()) : null;
+        tip.SetToolTip(addr.Shield, !adblock ? "Bloqueur de pubs coupé"
+            : !on ? $"Bloqueur coupé sur {SiteList.Host(src)}"
+            : $"Bloqueur actif : {t.Blocked} élément{(t.Blocked > 1 ? "s" : "")} bloqué{(t.Blocked > 1 ? "s" : "")} sur cette page");
+        addr.PerformLayout();
+    }
+
+    void ShowShieldMenu()
+    {
+        var t = Cur;
+        var host = SiteList.Host(Core?.Source);
+        if (t == null || host == null) return;
+        var m = NewMenu(out var r, out var font);
+        m.Items.Add(new ToolStripMenuItem(!adblock ? "Bloqueur de pubs coupé partout"
+            : t.AdsAllowed ? $"Bloqueur coupé sur {host}"
+            : $"{t.Blocked} pub{(t.Blocked > 1 ? "s" : "")} ou traqueur{(t.Blocked > 1 ? "s" : "")} bloqué{(t.Blocked > 1 ? "s" : "")} sur cette page") { Enabled = false });
+        m.Items.Add(new ToolStripSeparator());
+        if (adblock)
+        {
+            bool allowed = UrlTools.HostMatches(host, adblockAllow);
+            m.Items.Add(MI(allowed ? $"Réactiver le bloqueur sur {host}" : $"Couper le bloqueur sur {host}", () =>
+            {
+                // on retire aussi un domaine parent éventuel (ex. www.twitch.tv couvert par twitch.tv)
+                if (allowed) adblockAllow.RemoveWhere(x => UrlTools.HostMatches(host, new HashSet<string> { x }));
+                else adblockAllow.Add(host);
+                SaveSettings();
+                _ = ApplyYouTubeAdblock();
+                Core?.Reload();
+                RefreshSettingsPages();
+            }));
+        }
+        m.Items.Add(MI("Bloquer les pubs sur tous les sites", () => SetAdblock(!adblock), null, adblock));
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(new ToolStripMenuItem($"Total depuis le lancement : {blockedCount}") { Enabled = false });
+        m.Items.Add(MI("Réglages de confidentialité…", () => OpenSettings("confidentialite")));
+        StyleDropDowns(m.Items, r, font);
+        m.Show(addr.Shield, new Point(addr.Shield.Width, addr.Shield.Height + S(6)), ToolStripDropDownDirection.BelowLeft);
+    }
+
+    void SetAdblock(bool on)
+    {
+        adblock = on;
+        SaveSettings();
+        _ = ApplyYouTubeAdblock();
+        foreach (var t in tabs) t.AdsAllowed = SiteList.Contains(adblockAllow, t.View.CoreWebView2?.Source);
+        UpdateShield();
+        RefreshSettingsPages();
+    }
+
+    void SaveSiteIcon(string pageUrl, byte[] png)
+    {
+        try
+        {
+            if (!Uri.TryCreate(pageUrl, UriKind.Absolute, out var u) || !u.Scheme.StartsWith("http") || png.Length > 200_000) return;
+            var file = Path.Combine(dataDir, "icones", u.Host + ".png");
+            Directory.CreateDirectory(Path.GetDirectoryName(file));
+            File.WriteAllBytes(file, png);
+        }
+        catch { }
+    }
+
+    // ---------- Page Réglages ----------
+
+    static bool IsSettings(string url) => url != null && url.StartsWith(SettingsUrl, StringComparison.OrdinalIgnoreCase);
+
+    // Adresses lisibles des pages intégrées, comme chrome://settings : affichées dans la barre et tapables
+    static readonly (string Alias, string Url)[] LocalPages =
+    {
+        ("litebrowser://historique", SettingsUrl + "#historique"),
+        ("litebrowser://favoris", SettingsUrl + "#favoris"),
+        ("litebrowser://reglages", SettingsUrl),
+        ("litebrowser://accueil", HomeUrl),
+        ("litebrowser://multistream", MultiUrl),
+    };
+
+    /// Adresse interne → alias lisible (null si ce n'est pas une page intégrée connue).
+    static string LocalAlias(string url)
+    {
+        if (!IsSettings(url) && !(url ?? "").StartsWith(MultiUrl, StringComparison.OrdinalIgnoreCase)) return null;
+        var hash = url.Contains('#') ? url[(url.IndexOf('#') + 1)..] : "";
+        if (url.StartsWith(MultiUrl, StringComparison.OrdinalIgnoreCase)) return "litebrowser://multistream";
+        return hash is "historique" or "favoris" ? "litebrowser://" + hash : "litebrowser://reglages" + (hash.Length > 0 ? "#" + hash : "");
+    }
+
+    /// Alias tapé dans la barre d'adresse → vraie adresse (null si ce n'en est pas un).
+    static string FromAlias(string text)
+    {
+        text = (text ?? "").Trim().ToLowerInvariant().Replace("réglages", "reglages");
+        if (!text.StartsWith("litebrowser://")) return null;
+        var (path, hash) = text.Contains('#') ? (text[..text.IndexOf('#')], text[text.IndexOf('#')..]) : (text, "");
+        var hit = LocalPages.FirstOrDefault(p => p.Alias == path.TrimEnd('/'));
+        return hit.Url == null ? SettingsUrl : hit.Url + (hit.Url == SettingsUrl ? hash : "");
+    }
+
+    void OpenSettings(string section = null)
+    {
+        var url = SettingsUrl + (section != null ? "#" + section : "");
+        int i = tabs.FindIndex(x => IsSettings(x.View.CoreWebView2?.Source));
+        if (i >= 0) { SelectTab(i); tabs[i].View.CoreWebView2?.Navigate(url); }
+        else _ = NewTab(url);
+    }
+
+    void RefreshSettingsPages()
+    {
+        foreach (var t in tabs)
+        {
+            var c = t.View.CoreWebView2;
+            if (c != null && IsSettings(c.Source)) SendSettingsData(c);
+        }
+    }
+
+    async Task ClearBrowsingData()
+    {
+        history.Clear();
+        SaveList(histPath, history);
+        suggestions.Clear();
+        suggestSet.Clear();
+        foreach (var f in favorites) AddSuggestion(f.Url);
+        closedTabs.Clear();
+        var c = MainCore();
+        try { if (c != null) await c.Profile.ClearBrowsingDataAsync(); } catch { }
+    }
+
+    void SendSettingsData(CoreWebView2 core)
+    {
+        string dlDefault = null;
+        try { dlDefault = MainCore()?.Profile.DefaultDownloadFolderPath; } catch { }
+        var json = JsonSerializer.Serialize(new
+        {
+            type = "settings",
+            theme = themeName,
+            version = Updater.Current.ToString(),
+            webview = env?.BrowserVersionString,
+            updateReady,
+            dev = AppPaths.Dev,
+            engine = engineId,
+            engines = Engines.Select(e => new { id = e.Id, name = e.Name }).ToArray(),
+            startup = startupMode,
+            favbar = showFavBar,
+            forceDark,
+            adblock,
+            blockedCount,
+            allow = adblockAllow.OrderBy(x => x).ToArray(),
+            tracking = trackingLevel,
+            tabSleep = tabSleepSec,
+            historySave,
+            historyCount = history.Count,
+            clearOnExit,
+            downloadAsk,
+            downloadDir = downloadDir ?? dlDefault ?? "",
+            downloadCustom = downloadDir != null,
+            prayer = new
+            {
+                source = prayerSource,
+                hasMosque = !string.IsNullOrEmpty(prayerMosque),
+                mosqueName = prayerMosqueName ?? prayerMosque,
+                city = prayerCity,
+                auto = prayerAuto,
+                method = prayerMethod,
+                methods = Prayers.Methods.Select(m => new { id = m.Id, name = m.Name }).ToArray(),
+                notify = prayerNotify,
+                reminder = prayerReminder,
+                offsets = PrayerAdjust.ParseOffsets(prayerOffsets),
+                today = HomePrayers(),
+            },
+            m8 = new
+            {
+                notify = m8Notify,
+                reminder = m8Reminder,
+                liveNotify,
+                games = M8.Pages.Select(p => new { id = p.Game, label = p.Label, on = !m8Games.TryGetValue(p.Game, out var on) || on }).ToArray(),
+            },
+            favorites = favorites.Select(f => new { title = f.Title, url = f.Url }).ToArray(),
+            extensions = extensions.Select(e => new { name = e.Name, id = e.StoreId, enabled = e.Enabled, error = e.Error }).ToArray(),
+            extBusy,
+        });
+        try { core.PostWebMessageAsJson(json); } catch { }
+    }
+
+    void SendHistory(CoreWebView2 core, string q)
+    {
+        q = (q ?? "").Trim();
+        var items = new List<object>();
+        for (int i = history.Count - 1; i >= 0 && items.Count < 300; i--)
+        {
+            var h = history[i];
+            if (q.Length > 0 && h.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0 && h.Url.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            items.Add(new { title = h.Title, url = h.Url });
+        }
+        try { core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "history", q, total = history.Count, items })); } catch { }
+    }
+
+    /// Un réglage modifié depuis la page Réglages.
+    void ApplySetting(string key, JsonElement v)
+    {
+        bool B() => v.ValueKind == JsonValueKind.True;
+        int I(int def) => v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var x) ? x : def;
+        string S() => v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        switch (key)
+        {
+            case "theme": SetTheme(S()); break;
+            case "engine": SetEngine(S()); break;
+            case "startup": startupMode = S() == "home" ? "home" : "session"; break;
+            case "favbar": if (B() != showFavBar) ToggleFavBar(); break;
+            case "forceDark": if (B() != forceDark) ToggleForceDark(); break;
+            case "adblock": SetAdblock(B()); return;
+            case "tracking":
+                trackingLevel = S() is "balanced" or "strict" ? S() : "basic";
+                foreach (var p in Profiles()) try { p.PreferredTrackingPreventionLevel = TrackingLevel(); } catch { }
+                break;
+            case "tabSleep": tabSleepSec = Math.Clamp(I(30), 0, 3600); break;
+            case "historySave": historySave = B(); break;
+            case "clearOnExit": clearOnExit = B(); break;
+            case "downloadAsk": downloadAsk = B(); break;
+            case "prayerNotify": prayerNotify = B(); break;
+            case "prayerReminder": prayerReminder = Math.Clamp(I(0), 0, 60); break;
+            case "prayerMethod":
+                if (Prayers.Methods.Any(m => m.Id == I(-1))) { prayerMethod = I(12); _ = RefreshPrayers(); }
+                break;
+            case "prayerSource":
+                prayerSource = S() == "mosque" && !string.IsNullOrEmpty(prayerMosque) ? "mosque" : "calc";
+                _ = RefreshPrayers();
+                break;
+            case "m8Notify": m8Notify = B(); SaveM8Settings(); SyncNlFromHost(); break;
+            case "m8Reminder": m8Reminder = Math.Clamp(I(15), 0, 120); SaveM8Settings(); SyncNlFromHost(); break;
+            case "liveNotify": liveNotify = B(); SaveM8Settings(); SyncNlFromHost(); break;
+            case "m8Game":
+                if (S() is string g && M8.Pages.Any(p => p.Game == g)) { m8Games[g] = m8Games.TryGetValue(g, out var on) && !on; SaveM8Settings(); SyncNlFromHost(); }
+                break;
+            default: return;
+        }
+        SaveSettings();
+        RefreshLocalPages();
+        RefreshSettingsPages();
+    }
+
+    /// Un bouton de la page Réglages.
+    async void SettingsAction(string name, string arg)
+    {
+        switch (name)
+        {
+            case "clearData": ClearData(); break;
+            case "clearHistory":
+                history.Clear();
+                SaveList(histPath, history);
+                suggestions.Clear(); suggestSet.Clear();
+                foreach (var f in favorites) AddSuggestion(f.Url);
+                break;
+            case "checkUpdates": await CheckUpdates(silent: false); break;
+            case "chooseDownloadDir":
+                using (var dlg = new FolderBrowserDialog { Description = "Dossier des téléchargements", UseDescriptionForTitle = true, SelectedPath = downloadDir ?? "" })
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    downloadDir = dlg.SelectedPath;
+                }
+                foreach (var p in Profiles()) try { p.DefaultDownloadFolderPath = downloadDir; } catch { }
+                SaveSettings();
+                break;
+            case "resetDownloadDir":
+                downloadDir = null;
+                SaveSettings();
+                Notify("Téléchargements", "Le dossier par défaut de Windows sera utilisé au prochain démarrage.");
+                break;
+            case "openDownloads":
+                try { Process.Start("explorer.exe", "\"" + (downloadDir ?? MainCore()?.Profile.DefaultDownloadFolderPath ?? "") + "\""); } catch { }
+                return;
+            case "prayerCity": ChangeCity(); return;
+            case "prayerMosque": ChooseMosque(); return;
+            case "prayerAdjust": AdjustPrayers(); break;
+            case "prayerLocate": prayerAuto = true; SaveSettings(); await RefreshPrayers(relocate: true); break;
+            case "openDataDir": try { Process.Start("explorer.exe", "\"" + dataDir + "\""); } catch { } return;
+            case "allowRemove":
+                if (arg != null && adblockAllow.Remove(arg)) { SaveSettings(); _ = ApplyYouTubeAdblock(); }
+                break;
+            case "addExtension": AddExtensionPrompt(); return;
+            case "extToggle": if (extensions.FirstOrDefault(e => e.StoreId == arg) is ExtInfo et) await ToggleExtension(et); break;
+            case "extRemove": if (extensions.FirstOrDefault(e => e.StoreId == arg) is ExtInfo er) await RemoveExtension(er); break;
+            case "extReinstall": if (extensions.FirstOrDefault(e => e.StoreId == arg) is ExtInfo ei) await ReinstallExtension(ei); break;
+            case "testNotify": Notify("LiteBrowser", "Les notifications Windows fonctionnent : tu seras prévenu pour les prières et les matchs."); return;
+            default: return;
+        }
+        RefreshSettingsPages();
     }
 
     // ---------- Affichage ----------
@@ -1666,9 +2264,13 @@ class BrowserForm : Form
         var src = t.View.CoreWebView2?.Source;
         var m = NewMenu(out _, out _);
         m.Items.Add(MI("Nouvel onglet", () => _ = NewTab(), "Ctrl+T"));
+        m.Items.Add(MI("Nouvel onglet privé", () => _ = NewTab(priv: true), "Ctrl+Maj+N"));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Actualiser", () => t.View.CoreWebView2?.Reload(), "F5"));
-        m.Items.Add(MI("Dupliquer", () => { if (src != null) _ = NewTab(IsHome(src) ? null : src); }));
+        m.Items.Add(MI("Dupliquer", () => { if (src != null) _ = NewTab(IsLocalPage(src) ? null : src, priv: t.Private); }));
+        if (!t.Private) m.Items.Add(MI(t.Pinned ? "Détacher l'onglet" : "Épingler l'onglet", () => TogglePin(t)));
+        if (!t.Private && src != null && src.StartsWith("http") && !IsLocalPage(src))
+            m.Items.Add(MI("Rouvrir en onglet privé", () => _ = NewTab(src, priv: true)));
         m.Items.Add(MI(t.Muted ? "Réactiver le son de l'onglet" : "Couper le son de l'onglet", () => ToggleMute(tabs.IndexOf(t)), "Ctrl+M"));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Fermer", () => CloseTab(tabs.IndexOf(t)), "Ctrl+W"));
@@ -1705,12 +2307,14 @@ class BrowserForm : Form
         bool home = t == null || t.IsHome || src == "" || src == "about:blank";
 
         // L'adresse suit toujours l'onglet affiché, sauf si tu es en train de taper quelque chose
-        if (!addrEdited) SetAddress(home ? "" : src);
-        addr.BadgeGlyph = home ? Glyphs.Search : src.StartsWith("https://") || IsLocalPage(src) ? Glyphs.Lock : Glyphs.Warning;
-        tip.SetToolTip(addr, home ? "" : src.StartsWith("https://") ? "Connexion sécurisée" : "Connexion non sécurisée");
+        if (!addrEdited) SetAddress(home ? "" : LocalAlias(src) ?? src);
+        bool local = IsLocalPage(src);
+        addr.BadgeGlyph = home ? Glyphs.Search : local ? (IsSettings(src) ? Glyphs.Settings : Glyphs.Lock)
+            : src.StartsWith("https://") ? Glyphs.Lock : Glyphs.Warning;
+        tip.SetToolTip(addr, home ? "" : local ? "Page intégrée à LiteBrowser" : src.StartsWith("https://") ? "Connexion sécurisée" : "Connexion non sécurisée");
 
         bool fav = !home && favorites.Exists(f => f.Url == src);
-        addr.Star.Visible = !home;
+        addr.Star.Visible = !home && !local;
         addr.Star.Glyph = fav ? Glyphs.StarFill : Glyphs.Star;
         addr.Star.Highlight = fav;
         addr.Star.Invalidate();
@@ -1720,7 +2324,8 @@ class BrowserForm : Form
         reloadBtn.Glyph = t?.Loading == true ? Glyphs.Stop : Glyphs.Refresh;
         tip.SetToolTip(reloadBtn, t?.Loading == true ? "Arrêter le chargement" : "Actualiser (F5)");
 
-        Text = t == null ? "LiteBrowser" : t.Title + " – LiteBrowser";
+        Text = t == null ? "LiteBrowser" : t.Title + (t.Private ? " – LiteBrowser (privé)" : " – LiteBrowser");
+        UpdateShield();
     }
 
     void UpdatePlaceholder() => addr.Box.PlaceholderText = $"Rechercher avec {Engine.Name} ou saisir une adresse";
@@ -1767,8 +2372,7 @@ class BrowserForm : Form
 
     void ApplyScheme()
     {
-        var c = tabs.Select(t => t.View.CoreWebView2).FirstOrDefault(x => x != null);
-        if (c != null) c.Profile.PreferredColorScheme = Scheme();
+        foreach (var p in Profiles()) p.PreferredColorScheme = Scheme();
     }
 
     [DllImport("dwmapi.dll")]
@@ -1818,13 +2422,16 @@ class BrowserForm : Form
         var methodName = mosque ? "Horaires de la mosquée (Mawaqit)" : Prayers.Methods.FirstOrDefault(m => m.Id == prayerMethod).Name;
         if (PrayerAdjust.ParseOffsets(prayerOffsets).Count > 0) methodName += " · ajustés";
         if (prayerDay == null)
-            return new { city = mosque ? prayerMosqueName : prayerCity, error = prayerError, methodName, jumua = (string)null, times = Array.Empty<object>() };
+            return new { city = mosque ? prayerMosqueName : prayerCity, error = prayerError, methodName, jumua = (string)null, times = Array.Empty<object>(),
+                notify = prayerNotify, reminder = prayerReminder };
         return new
         {
             city = prayerDay.City,
             hijri = prayerDay.Hijri,
             methodName,
             jumua = prayerDay.Jumua,
+            notify = prayerNotify,
+            reminder = prayerReminder,
             times = prayerDay.Times.Select(t => new { key = t.Key, name = t.Name, time = t.Time.ToString(@"hh\:mm") }).ToArray()
         };
     }
@@ -1892,6 +2499,7 @@ class BrowserForm : Form
             var c = t.View.CoreWebView2;
             if (c == null) continue;
             if (IsHome(c.Source)) SendHomeData(c);
+            else if (IsSettings(c.Source)) SendSettingsData(c);
             else if (c.Source.StartsWith(MultiUrl, StringComparison.OrdinalIgnoreCase)) SendMultiData(c);
             else if (IsNurLivePage(c.Source)) SendNlData(c);
         }
@@ -1917,7 +2525,40 @@ class BrowserForm : Form
                     root.TryGetProperty("args", out var nargs) ? nargs.Clone() : default); break;
                 case "ready":
                     if (isHome) { SendHomeData(core); homeReady.TrySetResult(true); }
+                    else if (IsSettings(core.Source)) SendSettingsData(core);
                     else { SendMultiData(core); multiReady?.TrySetResult(true); }
+                    break;
+                case "openSettings": OpenSettings(Str("section")); break;
+                // ---- page Réglages ----
+                case "set" when IsSettings(core.Source):
+                    ApplySetting(Str("key"), root.TryGetProperty("value", out var sv) ? sv.Clone() : default);
+                    break;
+                case "action" when IsSettings(core.Source):
+                    SettingsAction(Str("name"), Str("arg"));
+                    break;
+                case "history" when IsSettings(core.Source):
+                    SendHistory(core, Str("q"));
+                    break;
+                case "historyDelete" when IsSettings(core.Source):
+                    var hu = Str("url");
+                    if (hu != null && history.RemoveAll(h => h.Url == hu) > 0) SaveList(histPath, history);
+                    SendHistory(core, Str("q"));
+                    break;
+                case "favRemove" when IsSettings(core.Source):
+                    favorites.RemoveAll(f => f.Url == Str("url"));
+                    SaveList(favPath, favorites); RefreshFavBar(); UpdateUi(); RefreshLocalPages(); RefreshSettingsPages();
+                    break;
+                case "favRename" when IsSettings(core.Source):
+                    int fk = favorites.FindIndex(f => f.Url == Str("url"));
+                    if (fk >= 0 && !string.IsNullOrWhiteSpace(Str("title")))
+                    {
+                        favorites[fk] = (Clean(Str("title")), favorites[fk].Url);
+                        SaveList(favPath, favorites); RefreshFavBar(); RefreshLocalPages(); RefreshSettingsPages();
+                    }
+                    break;
+                case "favMove" when IsSettings(core.Source):
+                    MoveFav(Str("url"), root.TryGetProperty("dir", out var fd) && fd.TryGetInt32(out var fdi) ? Math.Sign(fdi) : 0);
+                    RefreshSettingsPages();
                     break;
                 case "search":
                     var u = ToUrl(Str("q"));
@@ -2229,7 +2870,7 @@ class BrowserForm : Form
     /// Compte Twitch : lu dans les cookies du navigateur (connexion faite sur twitch.tv dans un onglet).
     async Task RefreshTwitchAuth()
     {
-        var c = tabs.Select(t => t.View.CoreWebView2).FirstOrDefault(x => x != null);
+        var c = MainCore();
         if (c == null) return;
         try
         {
@@ -2255,7 +2896,7 @@ class BrowserForm : Form
 
     async Task TwitchLogout()
     {
-        var c = tabs.Select(t => t.View.CoreWebView2).FirstOrDefault(x => x != null);
+        var c = MainCore();
         if (c == null) return;
         try
         {
@@ -2480,8 +3121,8 @@ class BrowserForm : Form
             if (c == null) continue;
             try
             {
-                if (adblock && t.YtScriptId == null) t.YtScriptId = await c.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script);
-                else if (!adblock && t.YtScriptId != null) { c.RemoveScriptToExecuteOnDocumentCreated(t.YtScriptId); t.YtScriptId = null; }
+                if (YouTubeBlocking && t.YtScriptId == null) t.YtScriptId = await c.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script);
+                else if (!YouTubeBlocking && t.YtScriptId != null) { c.RemoveScriptToExecuteOnDocumentCreated(t.YtScriptId); t.YtScriptId = null; }
             }
             catch { }
         }
@@ -2578,19 +3219,6 @@ class BrowserForm : Form
         try { return JsonSerializer.Deserialize<string>(raw); } catch { return raw; }
     }
 
-    string Screenshot(string name)
-    {
-        try
-        {
-            Activate();
-            var file = Path.Combine(Path.GetDirectoryName(SmokeReport) ?? ".", $"smoke_{name}.png");
-            using var bmp = new Bitmap(Bounds.Width, Bounds.Height);
-            using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(Bounds.Location, Point.Empty, Bounds.Size);
-            bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
-            return file;
-        }
-        catch (Exception ex) { return "échec : " + ex.Message; }
-    }
 
     void SmokeStep(Dictionary<string, object> r, string step)
     {
@@ -2607,12 +3235,12 @@ class BrowserForm : Form
             r["webview2"] = env?.BrowserVersionString;
             r["homeReady"] = await Task.WhenAny(homeReady.Task, Task.Delay(30_000)) == homeReady.Task;
             CoreWebView2 HomeCore() => tabs.FirstOrDefault(x => x.View.CoreWebView2 != null && IsHome(x.View.CoreWebView2.Source))?.View.CoreWebView2;
-            r["tabsAtStart"] = tabs.Select(x => x.View.CoreWebView2?.Source).ToList();
+            r["tabsAtStart"] = tabs.Select(x => x.View.CoreWebView2?.Source ?? $"(non démarré : {x.Title}, lazy={x.Lazy}, privé={x.Private}, disposé={x.View.IsDisposed}, init={x.View.CoreWebView2 != null})").ToList();
             var home = HomeCore();
             await Task.Delay(1500);
             r["homeTitle"] = JsString(await home.ExecuteScriptAsync("document.title"));
             r["homeTheme"] = JsString(await home.ExecuteScriptAsync("document.body.className"));
-            r["screenshotHome"] = Screenshot("home");
+            r["screenshotHome"] = await SmokeShot("home");
 
             SmokeStep(r, "extensions");
             if (extTask != null) await Task.WhenAny(extTask, Task.Delay(150_000));
@@ -2636,7 +3264,7 @@ class BrowserForm : Form
             r["youtubeLoaded"] = await NavigateAndWait(core, "https://www.youtube.com/", 45_000);
             await Task.Delay(3000);
             r["youtubeAdblockActive"] = JsString(await core.ExecuteScriptAsync("String(!!window.__lbYtAdblock)")) == "true";
-            r["screenshotYoutube"] = Screenshot("youtube");
+            r["screenshotYoutube"] = await SmokeShot("youtube");
             r["youtubeAdStyle"] = JsString(await core.ExecuteScriptAsync("String(!!document.getElementById('lb-yt-adblock'))")) == "true";
 
             // Vrai téléchargement (petit zip) : il doit aller au bout
@@ -2682,7 +3310,7 @@ class BrowserForm : Form
             await Task.Delay(2500);
             home = HomeCore() ?? home;
             r["homeMatchRows"] = JsString(await home.ExecuteScriptAsync("String(document.querySelectorAll('.match').length)"));
-            r["screenshotHomeFinal"] = Screenshot("home_final");
+            r["screenshotHomeFinal"] = await SmokeShot("home_final");
 
             // Multistream : 2 chaînes + chat
             SmokeStep(r, "multistream");
@@ -2694,13 +3322,147 @@ class BrowserForm : Form
             r["multiTiles"] = JsString(await mc.ExecuteScriptAsync("String(document.querySelectorAll('#stage .tile').length)"));
             r["multiPlayers"] = JsString(await mc.ExecuteScriptAsync("String(document.querySelectorAll('#stage iframe').length)"));
             r["multiChat"] = JsString(await mc.ExecuteScriptAsync("String(document.querySelectorAll('#chat iframe').length)"));
-            r["screenshotMulti"] = Screenshot("multi");
+            r["screenshotMulti"] = await SmokeShot("multi");
         }
         catch (Exception ex) { r["exception"] = ex.ToString(); }
 
         try { File.WriteAllText(SmokeReport, JsonSerializer.Serialize(r, new JsonSerializerOptions { WriteIndented = true })); } catch { }
         Close();
     }
+
+    // ---------- Captures d'écran automatiques (vérification visuelle en développement) ----------
+
+    public static readonly string ShotsDir = Environment.GetEnvironmentVariable("LITEBROWSER_SHOTS");
+
+    async Task RunShots()
+    {
+        try
+        {
+            Directory.CreateDirectory(ShotsDir);
+            await Task.WhenAny(homeReady.Task, Task.Delay(20_000));
+            await Task.Delay(2500);
+            await ShotAsync("1_demarrage");
+            ShotState("1_demarrage");
+            // pages à capturer : nom=adresse ; « prive: » devant l'adresse = onglet privé ; « menu » = menu ☰ ouvert
+            foreach (var page in (Environment.GetEnvironmentVariable("LITEBROWSER_SHOTS_PAGES") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = page.Split('=', 2);
+                if (parts.Length != 2) continue;
+                if (parts[1] == "menu") { ShowMenu(); await Task.Delay(800); await ShotAsync(parts[0]); lastMenu?.Close(); continue; }
+                if (parts[1] == "bouclier") { ShowShieldMenu(); await Task.Delay(800); await ShotAsync(parts[0]); lastMenu?.Close(); continue; }
+                if (parts[1] == "autotest") { await SelfTest(parts[0]); continue; }
+                bool priv = parts[1].StartsWith("prive:");
+                await NewTab(priv ? parts[1][6..] : parts[1], priv: priv);
+                await Task.Delay(7000);
+                await ShotAsync(parts[0]);
+                ShotState(parts[0]);
+            }
+        }
+        catch (Exception ex) { CrashLog.Write("Captures", ex); }
+        Close();
+    }
+
+    /// Clique réellement dans la page Réglages et vérifie que le navigateur applique chaque réglage.
+    async Task SelfTest(string name)
+    {
+        var r = new List<string>();
+        void Check(string what, bool ok) => r.Add((ok ? "OK    " : "ÉCHEC ") + what);
+        OpenSettings();
+        await Task.Delay(4000);
+        var c = Core;
+        async Task Js(string code) { await c.ExecuteScriptAsync(code); await Task.Delay(700); }
+        string Sel(string sel, string v) => $"(function(){{var e=document.querySelector('{sel}');e.value='{v}';e.dispatchEvent(new Event('change',{{bubbles:true}}));}})()";
+
+        var before = (themeName, prayerReminder, trackingLevel, tabSleepSec, historySave, startupMode);
+        await Js("document.querySelector('.th[data-v=light]').click()");
+        Check("thème Clair appliqué au navigateur", themeName == "light" && theme == Theme.Light);
+        await ShotAsync(name + "_theme_clair");
+        await Js("document.querySelector('.th[data-v=dark]').click()");
+        Check("thème Sombre appliqué", themeName == "dark");
+        await Js("document.querySelector('.th[data-v=m8]').click()");
+        Check("retour au thème Gentle Mates", themeName == "m8" && theme == Theme.M8);
+        await Js(Sel("[data-set=prayerReminder]", "10"));
+        Check("rappel 10 min avant la prière", prayerReminder == 10);
+        await Js("document.querySelector('#tracking [data-v=strict]').click()");
+        Check("protection contre le pistage stricte", trackingLevel == "strict" && MainCore()?.Profile.PreferredTrackingPreventionLevel == CoreWebView2TrackingPreventionLevel.Strict);
+        await Js(Sel("[data-set=tabSleep]", "300"));
+        Check("veille des onglets à 5 min", tabSleepSec == 300);
+        await Js("(function(){var e=document.querySelector('[data-set=historySave]');e.checked=false;e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+        Check("historique désactivé", !historySave);
+        await Js("document.querySelector('#startup [data-v=home]').click()");
+        Check("démarrage sur la page d'accueil", startupMode == "home");
+        var saved = File.ReadAllText(settingsPath);
+        Check("réglages écrits dans reglages.txt", saved.Contains("prayer.reminder=10") && saved.Contains("tracking=strict") && saved.Contains("tabs.sleep=300"));
+        adblockAllow.Add("example.com"); SaveSettings(); RefreshSettingsPages(); await Task.Delay(700);
+        await Js("document.querySelector('[data-host=\"example.com\"]').click()");
+        Check("site retiré des exceptions du bloqueur", !adblockAllow.Contains("example.com"));
+        Check("alias litebrowser://historique", FromAlias("litebrowser://historique") == SettingsUrl + "#historique" && FromAlias("litebrowser://réglages") == SettingsUrl);
+
+        // remise des réglages d'origine
+        (themeName, prayerReminder, trackingLevel, tabSleepSec, historySave, startupMode) = before;
+        SaveSettings(); ApplyTheme(); RefreshLocalPages();
+        foreach (var p in Profiles()) p.PreferredTrackingPreventionLevel = TrackingLevel();
+        File.WriteAllLines(Path.Combine(ShotsDir, name + ".txt"), r);
+    }
+
+    /// État des onglets à côté des captures, pour vérifier ce qui est réellement ouvert.
+    void ShotState(string name)
+    {
+        try
+        {
+            var st = new
+            {
+                selected = sel,
+                tabs = tabs.Select(t => new { t.Title, url = t.View.CoreWebView2?.Source ?? t.PendingUrl, t.Pinned, t.Private, t.Lazy, t.Blocked, t.AdsAllowed }),
+                blockedCount,
+            };
+            File.WriteAllText(Path.Combine(ShotsDir, name + ".json"), JsonSerializer.Serialize(st, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { }
+    }
+
+    /// Capture sans voler le focus ni lire l'écran : la fenêtre est dessinée en mémoire, puis la page web par-dessus.
+    /// Fonctionne même si une autre fenêtre (jeu, etc.) est au premier plan.
+
+    async Task<string> SmokeShot(string name)
+    {
+        var file = Path.Combine(Path.GetDirectoryName(SmokeReport) ?? ".", $"smoke_{name}.png");
+        await ShotAsync(name, file);
+        return File.Exists(file) ? file : "échec de la capture";
+    }
+
+    async Task ShotAsync(string name, string file = null)
+    {
+        try
+        {
+            using var bmp = new Bitmap(Width, Height); // DrawToBitmap dessine toute la fenêtre, barre de titre comprise
+            DrawToBitmap(bmp, new Rectangle(Point.Empty, Size));
+            var c = Core;
+            if (c != null && Cur.View.Visible)
+            {
+                using var ms = new MemoryStream();
+                await c.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, ms);
+                ms.Position = 0;
+                using var page = Image.FromStream(ms);
+                var cs = content.PointToScreen(Point.Empty); var at = new Point(cs.X - Left, cs.Y - Top);
+                using var g = Graphics.FromImage(bmp);
+                g.DrawImage(page, new Rectangle(at, content.ClientSize));
+            }
+            // menus ouverts : ce sont des fenêtres à part, dessinées à leur place
+            if (lastMenu is { Visible: true } m)
+            {
+                using var mb = new Bitmap(m.Width, m.Height);
+                m.DrawToBitmap(mb, new Rectangle(Point.Empty, m.Size));
+                using var g = Graphics.FromImage(bmp);
+                g.DrawImage(mb, new Point(m.Left - Left, m.Top - Top));
+            }
+            bmp.Save(file ?? Path.Combine(ShotsDir, name + ".png"), System.Drawing.Imaging.ImageFormat.Png);
+        }
+        catch (Exception ex) { CrashLog.Write("Capture " + name, ex); }
+    }
+
+    // En mode captures, la fenêtre s'ouvre sans prendre le focus (on ne dérange pas ce qui est en cours sur le PC)
+    protected override bool ShowWithoutActivation => ShotsDir != null || SmokeReport != null;
 
     // ---------- Notifications Windows ----------
 
@@ -2824,8 +3586,12 @@ class BrowserForm : Form
             return;
         }
         var (name, at) = Prayers.Next(prayerDay, DateTime.Now);
-        prayerChip.Text = $"☾  {name} {at:HH\\:mm}";
         var left = at - DateTime.Now;
+        // à moins d'une heure : compte à rebours visible directement dans la barre
+        prayerChip.Text = left.TotalMinutes < 60
+            ? $"☾  {name} {at:HH\\:mm} · {Math.Max(1, (int)Math.Ceiling(left.TotalMinutes))} min"
+            : $"☾  {name} {at:HH\\:mm}";
+        prayerChip.Subtle = left.TotalMinutes >= 15; // dernières minutes : pastille pleine, bien visible
         tip.SetToolTip(prayerChip, $"Prochaine prière : {name} à {at:HH\\:mm} (dans {(left.TotalHours >= 1 ? $"{(int)left.TotalHours} h {left.Minutes:00}" : $"{Math.Max(0, (int)left.TotalMinutes)} min")})\n{prayerDay.City}");
         prayerChip.Tag = "on";
         prayerChip.Invalidate();
@@ -2850,6 +3616,14 @@ class BrowserForm : Form
                 {
                     lastNotified = id;
                     Notify($"C'est l'heure de {name}", $"{name} – {time:hh\\:mm} · {prayerDay.City}");
+                }
+                // Rappel quelques minutes avant (réglable : 5, 10, 15, 20, 30 min)
+                var before = at.AddMinutes(-prayerReminder);
+                if (prayerReminder > 0 && now >= before && now < before.AddMinutes(5) && now < at && lastReminded != id)
+                {
+                    lastReminded = id;
+                    Notify($"{name} dans {Math.Max(1, (int)Math.Ceiling((at - now).TotalMinutes))} min",
+                        $"{name} à {time:hh\\:mm} · {prayerDay.City}");
                 }
             }
             UpdatePrayerChip();
@@ -2907,7 +3681,13 @@ class BrowserForm : Form
                 meth.DropDownItems.Add(MI(label, () => { prayerMethod = id; SaveSettings(); _ = RefreshPrayers(); }, null, id == prayerMethod));
             m.Items.Add(meth);
         }
-        m.Items.Add(MI("Notification à l'heure de chaque prière", () => { prayerNotify = !prayerNotify; SaveSettings(); }, null, prayerNotify));
+        m.Items.Add(MI("Notification à l'heure de chaque prière", () => { prayerNotify = !prayerNotify; SaveSettings(); RefreshSettingsPages(); }, null, prayerNotify));
+        var remind = MI("Rappel avant la prière");
+        foreach (var min in new[] { 0, 5, 10, 15, 20, 30 })
+            remind.DropDownItems.Add(MI(min == 0 ? "Pas de rappel" : $"{min} min avant", () => { prayerReminder = min; SaveSettings(); RefreshSettingsPages(); }, null, prayerReminder == min));
+        m.Items.Add(remind);
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(MI("Tous les réglages des prières…", () => OpenSettings("prieres")));
         StyleDropDowns(m.Items, r, font);
         if (at != null) m.Show(at.Value);
         else if (prayerChip.Visible) m.Show(prayerChip, new Point(prayerChip.Width, prayerChip.Height + S(4)), ToolStripDropDownDirection.BelowLeft);
@@ -3262,6 +4042,7 @@ class BrowserForm : Form
         lastMenu = m;
 
         m.Items.Add(MI("Nouvel onglet", () => _ = NewTab(), "Ctrl+T"));
+        m.Items.Add(MI("Nouvel onglet privé", () => _ = NewTab(priv: true), "Ctrl+Maj+N"));
         m.Items.Add(MI(nurLiveUi != null ? "Multistream (Nur Live)" : "Multistream", () => OpenMulti(new List<string>(), chat: true), "Ctrl+Maj+M"));
         var reopen = MI("Rouvrir l'onglet fermé", ReopenClosed, "Ctrl+Maj+T");
         reopen.Enabled = closedTabs.Count > 0;
@@ -3282,38 +4063,26 @@ class BrowserForm : Form
 
         // Historique
         var hist = MI("Historique");
-        for (int i = history.Count - 1, n = 0; i >= 0 && n < 25; i--, n++) hist.DropDownItems.Add(LinkItem(history[i]));
-        if (history.Count == 0) hist.DropDownItems.Add(new ToolStripMenuItem("(vide)") { Enabled = false });
-        else
-        {
-            hist.DropDownItems.Add(new ToolStripSeparator());
-            hist.DropDownItems.Add(MI("Effacer l'historique", () =>
-            {
-                history.Clear();
-                SaveList(histPath, history);
-                suggestions.Clear();
-                suggestSet.Clear();
-                foreach (var f in favorites) AddSuggestion(f.Url);
-            }));
-        }
+        hist.DropDownItems.Add(MI("Tout l'historique…", () => OpenSettings("historique"), "Ctrl+H"));
+        hist.DropDownItems.Add(new ToolStripSeparator());
+        for (int i = history.Count - 1, n = 0; i >= 0 && n < 20; i--, n++) hist.DropDownItems.Add(LinkItem(history[i]));
+        if (history.Count == 0) hist.DropDownItems.Add(new ToolStripMenuItem(historySave ? "(vide)" : "(historique désactivé)") { Enabled = false });
         m.Items.Add(hist);
+        m.Items.Add(MI("Téléchargements", () => Core?.OpenDefaultDownloadDialog(), "Ctrl+J"));
         m.Items.Add(new ToolStripSeparator());
 
-        // Réglages
-        var eng = MI("Moteur de recherche");
-        foreach (var e in Engines) { var id = e.Id; eng.DropDownItems.Add(MI(e.Name, () => SetEngine(id), null, id == engineId)); }
-        m.Items.Add(eng);
+        // Réglages rapides (tout le reste est dans la page Réglages)
         var th = MI("Thème");
         foreach (var (id, label) in new[] { ("m8", "Gentle Mates"), ("dark", "Sombre"), ("light", "Clair") })
-            th.DropDownItems.Add(MI(label, () => { themeName = id; SaveSettings(); ApplyTheme(); }, null, themeName == id));
+            th.DropDownItems.Add(MI(label, () => SetTheme(id), null, themeName == id));
         m.Items.Add(th);
         m.Items.Add(MI("Afficher la barre de favoris", ToggleFavBar, "Ctrl+Maj+B", showFavBar));
-        m.Items.Add(MI("Forcer le mode sombre sur tous les sites", ToggleForceDark, null, forceDark));
-        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => { adblock = !adblock; SaveSettings(); _ = ApplyYouTubeAdblock(); }, null, adblock));
-        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => SetAdblock(!adblock), null, adblock));
         m.Items.Add(MI("Plein écran", () => SetFullscreen(!fullscreen), "F11"));
-        m.Items.Add(MI("Effacer les données de navigation…", ClearData));
-        m.Items.Add(MI("Raccourcis clavier", ShowShortcuts));
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(MI("Réglages", () => OpenSettings(), "Ctrl+,"));
+        m.Items.Add(MI("Effacer les données de navigation…", ClearData, "Ctrl+Maj+Suppr"));
+        m.Items.Add(MI("Raccourcis clavier", () => OpenSettings("raccourcis")));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI(updateReady ? "Redémarrer pour installer la mise à jour" : "Rechercher des mises à jour",
             () => _ = CheckUpdates(silent: false)));
@@ -3362,31 +4131,18 @@ class BrowserForm : Form
             "Effacer l'historique, les cookies et le cache ?\nTu seras déconnecté des sites (tes favoris sont conservés).",
             "Effacer les données", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (ok != DialogResult.Yes) return;
-        history.Clear();
-        SaveList(histPath, history);
-        suggestions.Clear();
-        suggestSet.Clear();
-        foreach (var f in favorites) AddSuggestion(f.Url);
-        var c = tabs.Select(t => t.View.CoreWebView2).FirstOrDefault(x => x != null);
-        try { if (c != null) await c.Profile.ClearBrowsingDataAsync(); } catch { }
+        await ClearBrowsingData();
+        RefreshSettingsPages();
+        Notify("Données effacées", "Historique, cookies et cache ont été supprimés. Tes favoris sont conservés.");
     }
 
-    void ShowShortcuts()
+    void SetTheme(string id)
     {
-        MessageBox.Show(this,
-            "Ctrl+T\tNouvel onglet\n" +
-            "Ctrl+W\tFermer l'onglet\n" +
-            "Ctrl+Maj+T\tRouvrir l'onglet fermé\n" +
-            "Ctrl+Tab\tOnglet suivant\n" +
-            "Ctrl+1…9\tAller à l'onglet n°\n" +
-            "Ctrl+L\tAller dans la barre d'adresse\n" +
-            "Ctrl+D\tAjouter aux favoris\n" +
-            "F5\tActualiser\n" +
-            "Alt+← / →\tPage précédente / suivante\n" +
-            "F11\tPlein écran\n" +
-            "Ctrl+molette\tZoom\n" +
-            "Clic molette\tFermer un onglet / ouvrir un lien dans un onglet",
-            "Raccourcis clavier", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        if (id != "m8" && id != "dark" && id != "light") return;
+        themeName = id;
+        SaveSettings();
+        ApplyTheme();
+        RefreshLocalPages();
     }
 
     // ---------- Réglages ----------
@@ -3429,6 +4185,15 @@ class BrowserForm : Form
         adblock = !settings.TryGetValue("adblock", out var ab) || ab == "1";
         showFavBar = !settings.TryGetValue("favbar", out var fb) || fb == "1";
         if (settings.TryGetValue("engine", out var en) && Engines.Any(e => e.Id == en)) engineId = en;
+        startupMode = settings.TryGetValue("startup", out var su) && su == "home" ? "home" : "session";
+        if (settings.TryGetValue("tabs.sleep", out var ts) && int.TryParse(ts, out var tsi)) tabSleepSec = Math.Clamp(tsi, 0, 3600);
+        trackingLevel = settings.TryGetValue("tracking", out var tl) && (tl == "balanced" || tl == "strict") ? tl : "basic";
+        adblockAllow = SiteList.Parse(settings.TryGetValue("adblock.allow", out var aa) ? aa : "");
+        historySave = !settings.TryGetValue("history.save", out var hs) || hs == "1";
+        clearOnExit = settings.TryGetValue("clearOnExit", out var ce) && ce == "1";
+        downloadAsk = settings.TryGetValue("downloads.ask", out var da) && da == "1";
+        downloadDir = settings.TryGetValue("downloads.dir", out var dd) && dd.Length > 0 ? dd : null;
+        if (settings.TryGetValue("prayer.reminder", out var pr) && int.TryParse(pr, out var pri)) prayerReminder = Math.Clamp(pri, 0, 60);
     }
 
     void SaveSettings()
@@ -3453,7 +4218,17 @@ class BrowserForm : Form
                 "adblock=" + (adblock ? "1" : "0"),
                 "engine=" + engineId,
                 "favbar=" + (showFavBar ? "1" : "0"),
-            });
+                "startup=" + startupMode,
+                "tabs.sleep=" + tabSleepSec,
+                "tracking=" + trackingLevel,
+                "adblock.allow=" + SiteList.Format(adblockAllow),
+                "history.save=" + (historySave ? "1" : "0"),
+                "clearOnExit=" + (clearOnExit ? "1" : "0"),
+                "downloads.ask=" + (downloadAsk ? "1" : "0"),
+                "downloads.dir=" + (downloadDir ?? ""),
+                "prayer.reminder=" + prayerReminder,
+                // réglages d'autres versions (ex. chemin Nur Live) : conservés tels quels
+            }.Concat(settings.Where(kv => kv.Key.StartsWith("nurlive.")).Select(kv => kv.Key + "=" + kv.Value)));
         }
         catch { }
     }
@@ -3491,6 +4266,11 @@ class BrowserForm : Form
         switch (k)
         {
             case Keys.Control | Keys.T: _ = NewTab(); return true;
+            case Keys.Control | Keys.Shift | Keys.N: _ = NewTab(priv: true); return true;
+            case Keys.Control | Keys.H: OpenSettings("historique"); return true;
+            case Keys.Control | Keys.J: Core?.OpenDefaultDownloadDialog(); return true;
+            case Keys.Control | Keys.Oemcomma: OpenSettings(); return true;
+            case Keys.Control | Keys.Shift | Keys.Delete: ClearData(); return true;
             case Keys.Control | Keys.Shift | Keys.T: ReopenClosed(); return true;
             case Keys.Control | Keys.W:
             case Keys.Control | Keys.F4: BeginInvoke(new Action(() => CloseTab(sel))); return true;
