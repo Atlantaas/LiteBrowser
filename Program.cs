@@ -545,6 +545,7 @@ class BrowserTab
     public bool Pinned, Private, AdsAllowed;
     public string LocalGlyph;   // icône des pages intégrées (ex. engrenage pour les réglages)
     public BrowserTab Opener;   // onglet d'origine d'une fenêtre ouverte par un site : on y revient à sa fermeture
+    public readonly Dictionary<CoreWebView2Frame, string> PlayerFrames = new(); // lecteurs intégrés (Nur Live) et leur adresse
     /// Onglet restauré pas encore chargé : il ne démarre son moteur qu'au premier clic (démarrage rapide, peu de RAM).
     public bool Lazy;
     public string PendingUrl;
@@ -1247,7 +1248,7 @@ class BrowserForm : Form
             await ClearBrowsingData();
             Close();
         };
-        if (SmokeReport != null)
+        if (SmokeReport != null || ShotsDir != null)
             FormClosing += (_, e) => CrashLog.Write("FormClosing " + e.CloseReason, new Exception("fermeture demandée par :\n" + Environment.StackTrace));
 
         toolbar.Controls.AddRange(new Control[] { backBtn, fwdBtn, reloadBtn, homeBtn, addr, updatePill, prayerChip, extBtn, menuBtn });
@@ -1510,6 +1511,7 @@ class BrowserForm : Form
         catch { if (popup != null) popup.Handled = true; deferral?.Complete(); return; }
         if (!tabs.Contains(t)) { if (popup != null) popup.Handled = true; deferral?.Complete(); return; } // fermé entre-temps
         var core = t.View.CoreWebView2;
+        if (ShotsDir != null) core.IsMuted = true; // les tests ne font jamais de bruit sur le PC
 
         var s = core.Settings;
         s.IsStatusBarEnabled = true; // affiche l'adresse des liens au survol
@@ -1661,6 +1663,25 @@ class BrowserForm : Form
             catch { }
             strip.Invalidate();
         };
+        // Lecture sans clic pour le multistream seulement : sans « action utilisateur » sur la page (ouverture par
+        // raccourci, alerte, reprise de session), le moteur bloque les lecteurs et les pubs restent figées. L'action est
+        // déléguée aux lecteurs par allow="autoplay" ; les autres sites gardent le blocage habituel.
+        core.DOMContentLoaded += async (_, _) =>
+        {
+            if (!IsNurLivePage(core.Source) && !core.Source.StartsWith(MultiUrl, StringComparison.OrdinalIgnoreCase)) return;
+            try { await core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", "{\"expression\":\"1\",\"userGesture\":true}"); }
+            catch (Exception ex) { CrashLog.Write("Lecture automatique", ex); }
+        };
+        // Lecteurs Twitch / Kick / YouTube de la page : suivis pour détecter une pub figée (Nur Live)
+        core.FrameCreated += (_, e) =>
+        {
+            var f = e.Frame;
+            f.NavigationStarting += (_, n) =>
+            {
+                if (NurLive.PlayerKind(n.Uri) != "") t.PlayerFrames[f] = n.Uri; else t.PlayerFrames.Remove(f);
+            };
+            f.Destroyed += (_, _) => t.PlayerFrames.Remove(f);
+        };
         // Plantage du moteur web : avant, tous les onglets devenaient blancs sans explication
         core.ProcessFailed += (_, e) => BeginInvoke(new Action(() => OnProcessFailed(t, e.ProcessFailedKind, e.Reason, e.ExitCode)));
         core.IsDocumentPlayingAudioChanged += (_, _) => { t.Audio = core.IsDocumentPlayingAudio; strip.Invalidate(); };
@@ -1755,7 +1776,7 @@ class BrowserForm : Form
     {
         if (i < 0 || i >= tabs.Count) return;
         var t = tabs[i];
-        if (SmokeReport != null)
+        if (SmokeReport != null || ShotsDir != null)
             CrashLog.Write($"CloseTab {i}/{tabs.Count} {t.View.CoreWebView2?.Source} script={t.OpenedByScript}", new Exception(Environment.StackTrace));
         var src = t.View.CoreWebView2?.Source ?? t.PendingUrl;
         if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
@@ -2324,7 +2345,8 @@ class BrowserForm : Form
         reloadBtn.Glyph = t?.Loading == true ? Glyphs.Stop : Glyphs.Refresh;
         tip.SetToolTip(reloadBtn, t?.Loading == true ? "Arrêter le chargement" : "Actualiser (F5)");
 
-        Text = t == null ? "LiteBrowser" : t.Title + (t.Private ? " – LiteBrowser (privé)" : " – LiteBrowser");
+        Text = (ShotsDir != null ? "TEST – ne pas fermer (2 min) – " : "") +
+            (t == null ? "LiteBrowser" : t.Title + (t.Private ? " – LiteBrowser (privé)" : " – LiteBrowser"));
         UpdateShield();
     }
 
@@ -2452,7 +2474,7 @@ class BrowserForm : Form
             {
                 id = m.Id, game = m.Game, gameLabel = M8.Info(m.Game).Label, gameShort = M8.Info(m.Game).Short,
                 ts = m.Ts, status = m.Status, opp = m.Opponent, oppShort = m.OpponentShort,
-                tournament = m.Tournament, stage = m.Stage, score = m.Score, url = m.Url, muted = matchMutes.Contains(m.Id),
+                tournament = m.Tournament, stage = m.Stage, score = m.Score, url = m.Url, muted = matchMutes.Contains(m.Id), timeUnknown = m.TimeUnknown,
             }).ToArray(),
             tournaments = m8.Tournaments.Where(t => !m8Games.TryGetValue(t.Game, out var on) || on)
                 .Select(t => new { game = M8.Info(t.Game).Label, name = t.Name, when = t.When, url = t.Url }).ToArray(),
@@ -2785,8 +2807,8 @@ class BrowserForm : Form
         {
             ["status"] = NlStatus(),
             ["statusAt"] = now,
-            ["matches"] = m8.Current(now),
-            ["tournaments"] = m8.Tournaments,
+            ["matches"] = m8.Current(now).Where(m => !m.TimeUnknown).ToList(),
+            ["tournaments"] = M8.UndatedAsTournaments(m8.Current(now)).Concat(m8.Tournaments).ToList(),
             ["events"] = Array.Empty<object>(),
             ["matchesAt"] = m8.FetchedAtMs,
             ["matchErrors"] = m8.Errors.Select(e => { var p = e.Split(" : ", 2); return new { game = p[0], error = p.Length > 1 ? p[1] : e }; }).ToArray(),
@@ -2842,6 +2864,13 @@ class BrowserForm : Form
                 case "search":
                     result = await ChannelSearch.SearchAsync(Arg(0), channels.Where(c => c.Platform == "twitch").Select(c => c.Key));
                     break;
+                case "probe":
+                    var resume = new HashSet<string>();
+                    if (args.ValueKind == JsonValueKind.Array && args.GetArrayLength() > 0 && args[0].ValueKind == JsonValueKind.Array)
+                        foreach (var x in args[0].EnumerateArray()) if (x.GetString() is string rid) resume.Add(rid);
+                    result = await ProbePlayers(core, resume);
+                    break;
+                case "log": NlLog(Arg(0)); break;
                 case "pickEvent": result = null; break;
                 case "testAlert": Notify("LiteBrowser : test d'alerte", "Les alertes Windows fonctionnent. Tu seras prévenu avant chaque match M8."); break;
                 case "open": if (Arg(0) is string u && u.StartsWith("http")) _ = NewTab(u); break;
@@ -2865,6 +2894,42 @@ class BrowserForm : Form
         }
         catch (Exception ex) { CrashLog.Write("nlRpc " + method, ex); result = null; }
         try { core.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "nlRpcResult", id, result })); } catch { }
+    }
+
+    /// État de chaque lecteur de la page ; relance douce de ceux demandés. Un lecteur muet au-delà de 1,5 s est signalé injoignable.
+    async Task<List<JsonNode>> ProbePlayers(CoreWebView2 core, HashSet<string> resume)
+    {
+        var t = tabs.FirstOrDefault(x => x.View.CoreWebView2 == core);
+        if (t == null) return new List<JsonNode>();
+        var all = await Task.WhenAll(t.PlayerFrames.ToList().Select(async kv =>
+        {
+            var kind = NurLive.PlayerKind(kv.Value);
+            var id = NurLive.ChannelOf(kind, kv.Value);
+            JsonObject o = null;
+            try
+            {
+                var run = kv.Key.ExecuteScriptAsync(NurLive.ProbeScript(resume.Contains(id)));
+                if (await Task.WhenAny(run, Task.Delay(1500)) == run) o = JsonNode.Parse(await run) as JsonObject;
+            }
+            catch { }
+            o ??= new JsonObject { ["video"] = false, ["unreachable"] = true };
+            o["kind"] = kind;
+            o["id"] = id;
+            return (JsonNode)o;
+        }));
+        return all.ToList();
+    }
+
+    /// Journal de Nur Live dans le navigateur (relances, bilans) : nurlive.log dans le dossier des données.
+    void NlLog(string line)
+    {
+        try
+        {
+            var f = Path.Combine(dataDir, "nurlive.log");
+            if (File.Exists(f) && new FileInfo(f).Length > 500_000) File.Move(f, f + ".old", true);
+            File.AppendAllText(f, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {line}\n");
+        }
+        catch { }
     }
 
     /// Compte Twitch : lu dans les cookies du navigateur (connexion faite sur twitch.tv dans un onglet).
@@ -3351,6 +3416,19 @@ class BrowserForm : Form
                 if (parts[1] == "menu") { ShowMenu(); await Task.Delay(800); await ShotAsync(parts[0]); lastMenu?.Close(); continue; }
                 if (parts[1] == "bouclier") { ShowShieldMenu(); await Task.Delay(800); await ShotAsync(parts[0]); lastMenu?.Close(); continue; }
                 if (parts[1] == "autotest") { await SelfTest(parts[0]); continue; }
+                if (parts[1] == "pubfigee") { await StuckAdTest(parts[0]); continue; }
+                if (parts[1] == "matchs")
+                {
+                    // vrai passage sur Liquipedia (31 s entre les pages), puis accueil et liste des matchs
+                    await RefreshMatches(force: true);
+                    for (int i = 0; i < 300 && m8.Loading; i++) await Task.Delay(1000);
+                    SelectTab(Math.Max(0, tabs.FindIndex(x => IsHome(x.View.CoreWebView2?.Source))));
+                    await Task.Delay(2500);
+                    await ShotAsync(parts[0]);
+                    File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), m8.Current(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                        .Select(m => $"{m.Game} vs {m.OpponentShort} {DateTimeOffset.FromUnixTimeSeconds(m.Ts):u} {m.Status} inconnue={m.TimeUnknown} – {m.Tournament} / {m.Stage}"));
+                    continue;
+                }
                 bool priv = parts[1].StartsWith("prive:");
                 await NewTab(priv ? parts[1][6..] : parts[1], priv: priv);
                 await Task.Delay(7000);
@@ -3360,6 +3438,64 @@ class BrowserForm : Form
         }
         catch (Exception ex) { CrashLog.Write("Captures", ex); }
         Close();
+    }
+
+    /// Ouvre de vrais lives dans Nur Live, simule une pub figée dans un lecteur et vérifie qu'il est relancé.
+    async Task StuckAdTest(string name)
+    {
+        TopMost = true; // une fenêtre masquée ne rafraîchit plus son affichage et le lecteur Twitch ne démarre pas : test visible
+        Text = "TEST – ne pas fermer";
+        var r = new List<string>();
+        void Check(string what, bool ok, string detail = "") => r.Add((ok ? "OK    " : "ÉCHEC ") + what + (detail.Length > 0 ? " · " + detail : ""));
+        for (int i = 0; i < 40 && !liveStatus.Values.Any(v => v.Live == true); i++) await Task.Delay(1000);
+        var ids = liveStatus.Where(kv => kv.Value.Live == true && kv.Key.StartsWith("twitch:")).Select(kv => kv.Key).Take(2).ToList();
+        // aucune chaîne suivie en live : grosses chaînes presque toujours en direct
+        if (ids.Count == 0)
+        {
+            var big = new[] { "slash_ftv", "otplol_", "kamet0", "valorant", "zerator", "riotgames" }.Select(k => new Channel { Platform = "twitch", Key = k, Label = k }).ToList();
+            ids = (await LiveStatus.FetchAsync(big)).Where(kv => kv.Value.Live == true).Select(kv => kv.Key).Take(2).ToList();
+        }
+        Check("au moins un live Twitch en cours", ids.Count > 0, string.Join(", ", ids));
+        if (ids.Count > 0)
+        {
+            var log = Path.Combine(dataDir, "nurlive.log");
+            try { File.Delete(log); } catch { }
+            OpenMulti(ids, chat: false);
+            await Task.Delay(25_000);
+            var c = Core;
+            var probes = await ProbePlayers(c, new HashSet<string>());
+            File.WriteAllText(Path.Combine(ShotsDir, name + "_sondes.json"), string.Join("\n", probes.Select(p => p.ToJsonString())));
+            Check("la sonde lit les lecteurs", probes.Count >= ids.Count && probes.All(p => p["unreachable"] == null), probes.Count + " lecteur(s)");
+            // Démarrage automatique : le lecteur doit avancer sans clic, et un play() avec le son ne doit pas être refusé
+            Check("les lives démarrent seuls", probes.All(p => p["paused"]?.GetValue<bool>() == false && p["ready"]?.GetValue<int>() >= 2), string.Join(" | ", probes.Select(p => $"{p["id"]} pause={p["paused"]} prêt={p["ready"]}")));
+            foreach (var kv in Cur.PlayerFrames.ToList())
+                await kv.Key.ExecuteScriptAsync("(() => { const v = document.querySelector('video'); window.__t = 'attente'; if (!v) { window.__t = 'pas de vidéo'; return; } v.muted = false; v.play().then(() => window.__t = 'accepté', (e) => window.__t = e.name + ' : ' + e.message); })()");
+            await Task.Delay(4000);
+            foreach (var kv in Cur.PlayerFrames.ToList())
+                r.Add("INFO  play() avec le son " + NurLive.ChannelOf("twitch", kv.Value) + " : " +
+                    await kv.Key.ExecuteScriptAsync("window.__t + ' · visible=' + document.visibilityState + ' · taille=' + innerWidth + 'x' + innerHeight"));
+            r.Add("INFO  action utilisateur page=" + await c.ExecuteScriptAsync("navigator.userActivation.hasBeenActive") + " lecteurs=" +
+                string.Join(",", await Task.WhenAll(Cur.PlayerFrames.Keys.ToList().Select(f => f.ExecuteScriptAsync("navigator.userActivation.hasBeenActive")))));
+            await ShotAsync(name + "_lives");
+            var target = Cur.PlayerFrames.First(kv => ids.Contains(NurLive.ChannelOf("twitch", kv.Value)));
+            var id = NurLive.ChannelOf("twitch", target.Value);
+            await target.Key.ExecuteScriptAsync("(() => { const d = document.createElement('div'); d.setAttribute('data-a-target', 'video-ad-label'); document.body.append(d);" +
+                "setInterval(() => document.querySelectorAll('video').forEach((v) => v.pause()), 100); })()");
+            for (int i = 0; i < 60 && !(File.Exists(log) && File.ReadAllText(log).Contains($"relance {id} : publicité figée")); i++) await Task.Delay(1000);
+            var text = File.Exists(log) ? File.ReadAllText(log) : "";
+            Check("pub figée simulée : lecteur relancé", text.Contains($"relance {id} : publicité figée"), id);
+            await Task.Delay(20_000);
+            var after = (await ProbePlayers(Core, new HashSet<string>())).FirstOrDefault(p => (string)p["id"] == id);
+            Check("le lecteur repart après la relance", after != null && after["paused"]?.GetValue<bool>() == false, after?.ToJsonString() ?? "lecteur absent");
+            // Une vraie pub peut suivre la relance : elle doit défiler, pas rester figée
+            var t0 = after?["tAll"]?.GetValue<double>() ?? 0;
+            await Task.Delay(10_000);
+            var later = (await ProbePlayers(Core, new HashSet<string>())).FirstOrDefault(p => (string)p["id"] == id);
+            var t1 = later?["tAll"]?.GetValue<double>() ?? 0;
+            Check("la vidéo avance (pub comprise)", t1 != t0, $"{t0:0.0} s → {t1:0.0} s, pub={later?["ad"]}");
+            await ShotAsync(name + "_apres");
+        }
+        File.WriteAllLines(Path.Combine(ShotsDir, name + ".txt"), r);
     }
 
     /// Clique réellement dans la page Réglages et vérifie que le navigateur applique chaque réglage.

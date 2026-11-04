@@ -12,5 +12,6 @@
 - Le PC bloque l'ouverture de ports locaux (serveur d'aperçu impossible) : vérifier les pages dans l'app.
 
 ## Historique
+- 2026-11-04 — v4.0.1 : lecture sans clic limitée à Nur Live (action utilisateur via CDP), surveillance des lecteurs branchée dans le navigateur (`probe`), matchs sans horaire (`TimeUnknown`), heure indicative `TimeHints` pour M8 vs Cloud9 (20 h, à retirer une fois sur Liquipedia). À NE PAS refaire : lancer des fenêtres de test en boucle pendant que Ryan utilise le PC. Démarrage réel des lecteurs pas confirmé en test (résultats instables, fenêtre masquée ou non) : voir `nurlive.log` dans le dossier des données.
 - 2026-11-03 — v4.0.0 (branche `refonte-v4`, commit d287e25, installée sur le PC de Ryan, non publiée sur GitHub ; sauvegarde v3.1.2 dans `%LOCALAPPDATA%\LiteBrowser\_backup\`) : page Réglages, session, onglets épinglés et privés, bouclier
   par site, pistage réglable, rappels de prière, thème rose M8, mode test (`LITEBROWSER_DATA`/`LITEBROWSER_SHOTS`).

@@ -64,6 +64,7 @@ select option{background:var(--card);color:var(--text)}
 .match:hover{border-color:var(--line);transform:translateY(-1px)}
 .m-when .d{color:var(--sub);font-size:12px;text-transform:capitalize}
 .m-when .t{font-family:var(--head);font-size:22px;font-weight:600;letter-spacing:.5px}
+.m-when .t .tbd{display:block;font-size:12px;font-weight:400;letter-spacing:0;line-height:1.2;color:var(--accent)}
 .m-vs{display:flex;align-items:center;gap:10px;font-family:var(--head);font-size:18px;font-weight:700;min-width:0}
 .m-vs .team{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .m-vs .gm{color:var(--text)}
@@ -308,13 +309,13 @@ function renderMatches() {
   const now = Date.now();
   box.innerHTML = list.slice(0, 8).map(x => {
     const d = new Date(x.ts * 1000);
-    const live = x.status === 'live' || d.getTime() <= now;
+    const live = !x.timeUnknown && (x.status === 'live' || d.getTime() <= now);
     return `<a class="match" href="${esc(x.url || '#')}" title="Voir sur Liquipedia">
-      <div class="m-when"><div class="d">${esc(dayLabel(d))}</div><div class="t">${hm(d)}</div></div>
+      <div class="m-when"><div class="d">${esc(dayLabel(d))}</div><div class="t">${x.timeUnknown ? '<span class="tbd">horaire à venir</span>' : hm(d)}</div></div>
       <div class="m-vs"><span class="team gm">M8</span><span class="v">VS</span><span class="team opp" title="${esc(x.opp)}">${esc(x.oppShort || x.opp)}</span></div>
-      <div class="cd">${live ? '<span class="live">EN DIRECT</span>' : until(d - now)}
+      <div class="cd">${live ? '<span class="live">EN DIRECT</span>' : x.timeUnknown ? 'alerte dès que l\'heure est connue' : until(d - now)}
         <div class="m-act">
-          <button class="btn icon ${x.muted ? 'off' : ''}" data-mute="${esc(x.id)}" title="${x.muted ? 'Réactiver l\'alerte de ce match' : 'Couper l\'alerte de ce match'}">${x.muted ? '🔕' : '🔔'}</button>
+          ${x.timeUnknown ? '' : `<button class="btn icon ${x.muted ? 'off' : ''}" data-mute="${esc(x.id)}" title="${x.muted ? 'Réactiver l\'alerte de ce match' : 'Couper l\'alerte de ce match'}">${x.muted ? '🔕' : '🔔'}</button>`}
           <button class="btn main" data-watch="${esc(x.id)}" title="Ouvre la co-diffusion M8 en live, sinon la diffusion officielle">Regarder</button>
         </div></div>
       <div class="m-meta"><span class="game g-${esc(x.game)}" title="${esc(x.gameLabel)}">${esc(x.gameShort)}</span>

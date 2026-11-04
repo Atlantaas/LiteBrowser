@@ -154,8 +154,8 @@
       return snap();
     },
     testAlert: () => rpc("testAlert"),
-    probe: async () => [],
-    log: async () => true,
+    probe: (resumeIds) => rpc("probe", [resumeIds || []]),
+    log: (line) => rpc("log", [String(line)]),
     open: (url) => rpc("open", [url]),
     pin: async () => { data.pinned = !!(await rpc("pin")); return snap(); },
     fullscreen: async (v) => { data.fullscreen = !!(await rpc("fullscreen", [v === undefined ? null : v])); emit(); return true; },

@@ -289,6 +289,32 @@ static class Program
 
         // ---------- Tournois hors page d'équipe (Coupe de France Slash 2026, page réelle) ----------
         Section("M8 : tournois hors page d'équipe");
+        Section("M8 : affiche publiée sans horaire (Monster Launch Invitational, page réelle du 04/11/2026)");
+        const string cdlTitle = "Call of Duty League/Season 8/Monster Launch Invitational";
+        var cdl = File.ReadAllText(Path.Combine(Fixtures, "m8", "cdl_mli_sans_horaires.html"));
+        long cdlNow = new DateTimeOffset(2026, 11, 4, 20, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        var mli = M8.ParseTournamentPage(cdl, "callofduty", "callofduty", cdlTitle, cdlNow);
+        Check("M8 vs Cloud9 New York trouvé", mli.Count == 1 && mli[0].Opponent == "Cloud9 New York", mli.Count + " match(s)");
+        long at20h = new DateTimeOffset(2026, 11, 6, 19, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+        Check("vendredi 20 h à Paris, marqué à confirmer", mli.Count == 1 && !mli[0].TimeUnknown && mli[0].Ts == at20h && mli[0].Stage == "Groupe D · heure à confirmer" && mli[0].Tournament == "Monster Launch Invitational");
+        Check("alerte 15 min avant", M8.DueAlerts(mli, true, 15, null, new HashSet<string>(), new HashSet<string>(), (at20h - 600) * 1000).Count == 1);
+        var mliDuring = M8.ParseTournamentPage(cdl, "callofduty", "callofduty", cdlTitle, new DateTimeOffset(2026, 11, 7, 9, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds());
+        Check("sans heure connue : date du jour pendant le tournoi", mliDuring.Count == 1 && mliDuring[0].TimeUnknown && mliDuring[0].Stage == "Groupe D" && M8.DateFr(mliDuring[0].Ts) == "sam. 7 nov.");
+        Check("sans heure connue : aucune alerte", M8.DueAlerts(mliDuring, true, 15, null, new HashSet<string>(), new HashSet<string>(), mliDuring[0].Ts * 1000).Count == 0);
+        Check("sans heure connue : reste « à venir »", M8.RefreshStatus(mliDuring, (mliDuring[0].Ts + 3600) * 1000)[0].Status == "upcoming");
+        Check("après le tournoi : plus affiché", M8.ParseTournamentPage(cdl, "callofduty", "callofduty", cdlTitle, new DateTimeOffset(2026, 11, 10, 9, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds()).Count == 0);
+        var nlTours = M8.UndatedAsTournaments(mliDuring);
+        Check("Nur Live : sans heure, présenté comme tournoi à venir", nlTours.Count == 1 && nlTours[0].Name.Contains("M8 vs " + mliDuring[0].OpponentShort) && nlTours[0].When.Contains("horaire à venir"), nlTours.Count == 1 ? nlTours[0].Name : "");
+        Check("Nur Live : avec heure, match normal", M8.UndatedAsTournaments(mli).Count == 0);
+        M8Page PgOf(string g) => M8.Pages.First(p => p.Game == g);
+        var fair = M8.FairOrder(new[] {
+            (PgOf("rocketleague"), "RL1", false), (PgOf("rocketleague"), "RL2", false), (PgOf("rocketleague"), "RL3", false),
+            (PgOf("rocketleague"), "connu", true), (PgOf("callofduty"), "CDL", false) });
+        Check("lecture équitable : connu d'abord, puis CoD avant le 2e RL", fair[0].Item2 == "connu" && fair.FindIndex(x => x.Item2 == "CDL") < fair.FindIndex(x => x.Item2 == "RL2"), string.Join(",", fair.Select(x => x.Item2)));
+        var seasonJson = "{\"query\":{\"pages\":{\"1\":{\"title\":\"" + cdlTitle + "\",\"revisions\":[{\"timestamp\":\"2026-11-03T20:31:05Z\"}]},\"2\":{\"title\":\"Call of Duty League/Season 8\",\"revisions\":[{\"timestamp\":\"2026-11-03T20:31:05Z\"}]},\"3\":{\"title\":\"Some Old Page\",\"revisions\":[{\"timestamp\":\"2026-11-03T20:31:05Z\"}]}}}}";
+        var seasonCands = M8.TournamentCandidates(seasonJson, new DateTime(2026, 11, 4, 20, 0, 0, DateTimeKind.Utc));
+        Check("page de ligue par saison (sans année) retenue", seasonCands.Contains(cdlTitle) && !seasonCands.Contains("Some Old Page"), string.Join(", ", seasonCands));
+
         var cdf = File.ReadAllText(Path.Combine(Fixtures, "m8", "rl_cdf_slash_2026.html"));
         long cdfNow = DateTimeOffset.Parse("2026-11-01T19:00:00Z").ToUnixTimeMilliseconds();
         var cm = M8.ParseTournamentPage(cdf, "rocketleague", "rocketleague", "NEO/Coupe de France Slash/2026", cdfNow);
@@ -343,6 +369,13 @@ static class Program
     // ------------------------------------------------------------------
     static void NurLiveTests()
     {
+        Section("Lecteurs de Nur Live (surveillance des pubs figées)");
+        Check("lecteur Twitch reconnu", NurLive.PlayerKind("https://player.twitch.tv/?channel=Gotaga&parent=nurlive.home") == "twitch");
+        Check("chaîne Twitch lue en minuscules", NurLive.ChannelOf("twitch", "https://player.twitch.tv/?parent=a&channel=Gotaga") == "twitch:gotaga");
+        Check("chat Kick ignoré, lecteur Kick reconnu", NurLive.PlayerKind("https://player.kick.com/xqc/chatroom") == "" && NurLive.ChannelOf("kick", "https://player.kick.com/XQC?autoplay=true") == "kick:xqc");
+        Check("lecteur YouTube intégré reconnu", NurLive.PlayerKind("https://www.youtube.com/embed/abc") == "youtube");
+        Check("page ordinaire ignorée", NurLive.PlayerKind("https://www.twitch.tv/gotaga") == "" && NurLive.PlayerKind("pas une adresse") == "");
+        Check("sonde : relance demandée ou non", NurLive.ProbeScript(true).Contains("const RESUME = true") && NurLive.ProbeScript(false).Contains("const RESUME = false"));
         Section("Intégration de Nur Live");
         var root = Path.Combine(Path.GetTempPath(), "lb-nurlive-test");
         if (Directory.Exists(root)) Directory.Delete(root, true);

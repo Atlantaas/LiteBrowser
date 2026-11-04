@@ -36,6 +36,8 @@ namespace LiteCore
         [JsonPropertyName("score")] public string Score { get; set; }
         [JsonPropertyName("url")] public string Url { get; set; }
         [JsonPropertyName("streams")] public List<StreamRef> Streams { get; set; } = new();
+        /// Liquipedia a publié l'affiche mais pas l'heure : Ts ne vaut que pour la date, jamais d'alerte.
+        [JsonPropertyName("timeUnknown")] public bool TimeUnknown { get; set; }
     }
 
     public class M8Tournament
@@ -291,7 +293,9 @@ namespace LiteCore
             foreach (var pg in pages.EnumerateObject())
             {
                 var title = pg.Value.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
-                if (title.Length == 0 || NotTournament.IsMatch(title) || !years.Any(y => Regex.IsMatch(title, $@"(^|[^0-9]){y}([^0-9]|$)"))) continue;
+                // Certaines ligues nomment leurs pages par saison, sans année : « Call of Duty League/Season 8/… »
+                bool dated = years.Any(y => Regex.IsMatch(title, $@"(^|[^0-9]){y}([^0-9]|$)")) || Regex.IsMatch(title, @"(^|/)Season \d+(/|$)");
+                if (title.Length == 0 || NotTournament.IsMatch(title) || !dated) continue;
                 DateTime at = DateTime.MinValue;
                 if (pg.Value.TryGetProperty("revisions", out var revs) && revs.ValueKind == JsonValueKind.Array && revs.GetArrayLength() > 0 &&
                     revs[0].TryGetProperty("timestamp", out var ts))
@@ -300,6 +304,16 @@ namespace LiteCore
                 outp.Add((title, at));
             }
             return outp.OrderByDescending(x => x.At).Select(x => x.Title).ToList();
+        }
+
+        /// Pages à lire : d'abord les tournois connus, puis une page par jeu à tour de rôle, pour qu'un jeu
+        /// aux nombreuses compétitions (RLCS, VCT) ne prive pas les autres de lecture.
+        public static List<(M8Page Page, string Title, bool Known)> FairOrder(IEnumerable<(M8Page Page, string Title, bool Known)> queue)
+        {
+            var list = queue.ToList();
+            return list.Where(q => q.Known)
+                .Concat(list.Where(q => !q.Known).GroupBy(q => q.Page.Game).SelectMany(g => g.Select((q, i) => (q, i))).OrderBy(x => x.i).Select(x => x.q))
+                .ToList();
         }
 
         /// Phase en français : « Day 1 » → « Jour 1 », « Semifinals » → « Demi-finales »…
@@ -325,6 +339,7 @@ namespace LiteCore
         {
             var parts = (title ?? "").Replace('_', ' ').Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length >= 3 && !Regex.IsMatch(parts[0], @"\d{4}")) parts = parts.Skip(1).ToArray();
+            parts = parts.Where(p => !Regex.IsMatch(p, @"^Season \d+$")).ToArray();
             return string.Join(" ", parts);
         }
 
@@ -342,7 +357,11 @@ namespace LiteCore
                 int a = starts[i], b = i + 1 < starts.Count ? starts[i + 1] : Math.Min(html.Length, a + 20000);
                 var blk = html[a..b];
                 var tsM = Regex.Match(blk, "class=\"timer-object[^\"]*\"[^>]*data-timestamp=\"(\\d+)\"");
-                if (!tsM.Success) continue;
+                if (!tsM.Success)
+                {
+                    if (DateOnlyMatch(html, blk, a, game, wiki, title, tournament, now) is M8Match undated && seen.Add(undated.Id)) outp.Add(undated);
+                    continue;
+                }
                 long ts = long.Parse(tsM.Groups[1].Value, CultureInfo.InvariantCulture);
                 if (ts == 0 || ts < now - LiveWindowS || ts > now + 60 * 86400) continue;
                 var names = Regex.Matches(blk, "<div class=\"team-name\">([\\s\\S]*?)</div>").Select(x => StripTags(x.Groups[1].Value)).Take(2).ToList();
@@ -395,6 +414,65 @@ namespace LiteCore
             return outp.OrderBy(m => m.Ts).ToList();
         }
 
+        /// Affiche publiée sans heure (groupes annoncés avant le planning) : M8 et son adversaire, à la date du tournoi.
+        static M8Match DateOnlyMatch(string html, string blk, int at, string game, string wiki, string title, string tournament, long now)
+        {
+            var names = Regex.Matches(blk, "<div class=\"team-name\">([\\s\\S]*?)</div>").Select(x => StripTags(x.Groups[1].Value)).Take(2).ToList();
+            if (names.Count < 2) return null;
+            int self = SelfRe.IsMatch(names[0]) ? 0 : SelfRe.IsMatch(names[1]) ? 1 : -1;
+            if (self < 0 || names[1 - self] == "TBD" || names[1 - self].Length == 0) return null;
+            if (Regex.IsMatch(blk, "brkts-matchlist-slot-winner|brkts-opponent-win")) return null; // déjà joué
+            var start = Regex.Match(html, @"Start Date:\s*</div>\s*<div[^>]*>\s*(\d{4})-(\d{2})-(\d{2})");
+            var end = Regex.Match(html, @"End Date:\s*</div>\s*<div[^>]*>\s*(\d{4})-(\d{2})-(\d{2})");
+            if (!start.Success) return null;
+            static long Noon(Match d) => new DateTimeOffset(int.Parse(d.Groups[1].Value), int.Parse(d.Groups[2].Value), int.Parse(d.Groups[3].Value), 12, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+            long from = Noon(start), to = end.Success ? Noon(end) : from;
+            if (now > to + 12 * 3600 || from > now + 60 * 86400) return null;
+            // pendant le tournoi, l'affiche reste visible à la date du jour (midi UTC = bonne date en France)
+            long today = now - now % 86400 + 43200;
+            var shorts = Regex.Matches(blk, "<div class=\"team-shortname\">([\\s\\S]*?)</div>").Select(x => StripTags(x.Groups[1].Value)).Take(2).ToList();
+            var opp = names[1 - self];
+            int gh = html.LastIndexOf("id=\"Group_", at, StringComparison.Ordinal);
+            var group = gh >= 0 ? Regex.Match(html.Substring(gh, 20), "Group_([A-Za-z0-9]+)") : Match.Empty;
+            string stage = group.Success ? "Groupe " + group.Groups[1].Value : "";
+            string oppKey = Regex.Replace(opp.ToLowerInvariant(), "[^a-z0-9]+", "");
+            // Heure annoncée mais pas encore sur Liquipedia : utilisée jusqu'à ce que le vrai horaire apparaisse sur la page
+            bool hinted = TimeHints.TryGetValue(title + "|" + oppKey, out var hint) && hint > now - LiveWindowS;
+            return new M8Match
+            {
+                Id = $"{game}:{Regex.Replace(title.ToLowerInvariant(), "[^a-z0-9]+", "")}:{oppKey}",
+                Game = game, Ts = hinted ? hint : Math.Max(from, today), Opponent = opp, OpponentShort = shorts.Count == 2 ? shorts[1 - self] : opp,
+                Tournament = tournament, Stage = hinted ? (stage.Length > 0 ? stage + " · " : "") + "heure à confirmer" : stage,
+                Status = hinted && hint <= now ? "live" : "upcoming", Score = "",
+                Url = $"https://liquipedia.net/{wiki}/{title.Replace(' ', '_')}", TimeUnknown = !hinted,
+            };
+        }
+
+        /// Heures connues avant Liquipedia (page|adversaire → instant UTC). 6 nov. 2026, 20 h à Paris : indiquée par Ryan, à confirmer.
+        static readonly Dictionary<string, long> TimeHints = new()
+        {
+            ["Call of Duty League/Season 8/Monster Launch Invitational|cloud9newyork"] =
+                new DateTimeOffset(2026, 11, 6, 19, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds(),
+        };
+
+        static readonly string[] DaysFr = { "dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam." };
+        static readonly string[] MonthsFr = { "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc." };
+
+        /// « ven. 6 nov. » (le navigateur tourne sans données de langue, d'où ces noms écrits à la main).
+        public static string DateFr(long ts)
+        {
+            var d = DateTimeOffset.FromUnixTimeSeconds(ts).UtcDateTime;
+            return $"{DaysFr[(int)d.DayOfWeek]} {d.Day} {MonthsFr[d.Month - 1]}";
+        }
+
+        /// Pour Nur Live, dont le panneau suppose une vraie heure : les affiches sans heure passent en « tournoi à venir ».
+        public static List<M8Tournament> UndatedAsTournaments(IEnumerable<M8Match> list) =>
+            (list ?? Enumerable.Empty<M8Match>()).Where(m => m.TimeUnknown).Select(m => new M8Tournament
+            {
+                Game = m.Game, Url = m.Url, When = DateFr(m.Ts) + " · horaire à venir",
+                Name = $"{m.Tournament} · M8 vs {m.OpponentShort}" + (string.IsNullOrEmpty(m.Stage) ? "" : $" ({m.Stage})"),
+            }).ToList();
+
         public static List<M8Tournament> ParseUpcomingTournaments(string html, string game, string wiki)
         {
             var outp = new List<M8Tournament>();
@@ -414,14 +492,14 @@ namespace LiteCore
             long now = nowMs / 1000;
             return (list ?? Enumerable.Empty<M8Match>())
                 .Where(m => m.Ts > now - LiveWindowS || m.Status == "live")
-                .Select(m => Clone(m, m.Status == "finished" ? "finished" : m.Ts > now ? "upcoming" : m.Ts > now - LiveWindowS ? "live" : "finished"))
+                .Select(m => Clone(m, m.TimeUnknown ? "upcoming" : m.Status == "finished" ? "finished" : m.Ts > now ? "upcoming" : m.Ts > now - LiveWindowS ? "live" : "finished"))
                 .Where(m => m.Ts > now - LiveWindowS).ToList();
         }
 
         static M8Match Clone(M8Match m, string status) => new()
         {
             Id = m.Id, Game = m.Game, Ts = m.Ts, Opponent = m.Opponent, OpponentShort = m.OpponentShort,
-            Tournament = m.Tournament, Stage = m.Stage, Status = status, Score = m.Score, Url = m.Url, Streams = m.Streams,
+            Tournament = m.Tournament, Stage = m.Stage, Status = status, Score = m.Score, Url = m.Url, Streams = m.Streams, TimeUnknown = m.TimeUnknown,
         };
 
         /// Alertes à envoyer maintenant (rappel avant le match, puis coup d'envoi).
@@ -434,7 +512,7 @@ namespace LiteCore
             foreach (var m in list ?? Enumerable.Empty<M8Match>())
             {
                 if ((games != null && games.TryGetValue(m.Game, out var on) && !on) || (mutes != null && mutes.Contains(m.Id))) continue;
-                if (m.Status == "finished") continue;
+                if (m.Status == "finished" || m.TimeUnknown) continue; // pas d'heure connue : pas d'alerte à une heure fausse
                 string kStart = $"{m.Game}@{m.Ts}#start", kRem = $"{m.Game}@{m.Ts}#rem{reminderMin}";
                 if (now >= m.Ts && now < m.Ts + 1200 && !fired.Contains(kStart)) outp.Add(new M8Alert(kStart, "start", m));
                 else if (reminderMin > 0 && now >= m.Ts - reminderMin * 60 && now < m.Ts && !fired.Contains(kRem)) outp.Add(new M8Alert(kRem, "reminder", m));
@@ -482,7 +560,7 @@ namespace LiteCore
         public Func<string, Task<HttpResponseMessage>> Fetch; // remplaçable dans les tests
         public int GapMs = M8.MinGapMs;
         public int QueryGapMs = 2500;          // requêtes simples (hors « parse ») : 1 toutes les 2 s max
-        public int MaxTournamentParses = 3;    // pages de tournoi lues par actualisation
+        public int MaxTournamentParses = 6;    // pages de tournoi lues par actualisation
         long lastParseAt, lastQueryAt;
         bool rateLimited;
         // Matchs trouvés sur les pages de tournoi (Coupe de France, ligues…) : clé « jeu|titre »
@@ -643,7 +721,7 @@ namespace LiteCore
                 catch { }
             }
             int done = 0;
-            foreach (var q in queue.OrderByDescending(x => x.Known))
+            foreach (var q in M8.FairOrder(queue))
             {
                 if (rateLimited || done >= MaxTournamentParses) break;
                 var key = q.Page.Game + "|" + q.Title;
@@ -1077,6 +1155,70 @@ namespace LiteCore
             var app = Path.Combine(dst, "js", "app.js");
             File.WriteAllText(app, PatchApp(File.ReadAllText(app)));
         }
+
+        // ---------- Surveillance des lecteurs (même sonde que l'appli Nur Live, voir main.js) ----------
+
+        /// twitch / kick / youtube si l'adresse est celle d'un lecteur intégré, sinon "".
+        public static string PlayerKind(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return "";
+            var h = u.Host.ToLowerInvariant();
+            if (h == "player.twitch.tv") return "twitch";
+            if (h == "player.kick.com" && !Regex.IsMatch(u.AbsolutePath, @"/chatroom/?$", RegexOptions.IgnoreCase)) return "kick";
+            if ((h.EndsWith("youtube.com") || h.EndsWith("youtube-nocookie.com")) && u.AbsolutePath.StartsWith("/embed/")) return "youtube";
+            return "";
+        }
+
+        /// Identifiant de chaîne d'un lecteur (twitch:nom), "" si inconnu.
+        public static string ChannelOf(string kind, string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return "";
+            if (kind == "twitch")
+            {
+                var m = Regex.Match(u.Query, @"[?&]channel=([^&]*)");
+                return m.Success ? "twitch:" + Uri.UnescapeDataString(m.Groups[1].Value).ToLowerInvariant() : "";
+            }
+            if (kind == "kick")
+            {
+                var first = u.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                return first != null ? "kick:" + first.ToLowerInvariant() : "";
+            }
+            return "";
+        }
+
+        /// Script exécuté dans le lecteur : état de la vidéo, pub en cours, relance douce si demandée.
+        public static string ProbeScript(bool resume) => ProbeTemplate.Replace("__RESUME__", resume ? "true" : "false");
+
+        const string ProbeTemplate = """
+            (() => {
+              try {
+                const RESUME = __RESUME__;
+                const vids = Array.from(document.querySelectorAll("video"));
+                const v = vids.slice().sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight))[0];
+                const gate = document.querySelector('[data-a-target="content-classification-gate-overlay-start-watching-button"],[data-a-target="player-overlay-mature-accept"],[data-a-target="player-overlay-content-gate-button"]');
+                let clicked = false;
+                if (gate) { gate.click(); clicked = true; }
+                const txt = (document.body && document.body.innerText || "").slice(0, 4000);
+                let errCode = 0;
+                const m = /(?:Erreur|Error)\s*#?\s*\(?(\d{4})/i.exec(txt);
+                if (m) errCode = Number(m[1]);
+                const ad = /Publicit[ée]|Advertisement|Commercial break|after this ad|après cette publicit/i.test(txt) ||
+                  !!document.querySelector('[data-a-target="video-ad-label"],[data-a-target="video-ad-countdown"],.video-ad-label');
+                let resumed = 0;
+                if (RESUME) for (const x of (ad ? vids : (v ? [v] : []))) {
+                  if (x.paused && !x.ended && x.readyState >= 2) {
+                    const p = x.play();
+                    if (p && p.catch) p.catch(() => { x.muted = true; const q = x.play(); if (q && q.catch) q.catch(() => {}); });
+                    resumed++;
+                  }
+                }
+                const tAll = vids.reduce((n, x) => n + (x.currentTime || 0), 0);
+                const vinfo = vids.map((x) => [x.videoWidth, x.videoHeight, Math.round((x.currentTime || 0) * 10) / 10, x.paused ? 1 : 0, x.readyState, (x.error && x.error.code) || 0]);
+                if (!v) return { video: false, clicked, errCode, ad, tAll, vinfo };
+                return { vinfo, video: true, t: v.currentTime || 0, tAll, paused: !!v.paused, ended: !!v.ended, ready: v.readyState || 0, err: v.error ? v.error.code : 0, w: v.videoWidth || 0, clicked, errCode, ad, resumed };
+              } catch (e) { return { video: false, fail: String(e && e.message || e) }; }
+            })()
+            """;
 
         /// Pont « window.nur » avec les modules de Nur Live (sources, modèle) insérés tels quels.
         public static string Bridge(string template, string sourcesJs, string modelJs) =>
