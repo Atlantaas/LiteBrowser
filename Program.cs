@@ -30,6 +30,10 @@ static class Program
     static void Main(string[] args)
     {
         StartUrl = Launch.UrlFromArgs(args);
+        // Relance après une mise à jour : on attend la fin de l'ancienne fenêtre avant de prendre sa place
+        foreach (var a in args ?? Array.Empty<string>())
+            if (a.StartsWith("--attendre=") && int.TryParse(a[11..], out var oldPid))
+                try { using var old = Process.GetProcessById(oldPid); old.WaitForExit(15000); } catch { }
         // 1er lancement depuis le dossier Téléchargements : on s'installe et on se relance depuis l'emplacement fixe
         // Mode test automatique (CI Windows) : pas d'installation, rapport puis fermeture
         // Mode développement (LITEBROWSER_DATA) : pas d'installation, données à part
@@ -65,7 +69,9 @@ static class Program
         if (RestartRequested)
         {
             System.Threading.Thread.Sleep(800); // laisse le moteur web se fermer proprement
-            Process.Start(new ProcessStartInfo(Environment.ProcessPath) { UseShellExecute = true });
+            var psi = new ProcessStartInfo(Environment.ProcessPath) { UseShellExecute = false };
+            psi.ArgumentList.Add("--attendre=" + Environment.ProcessId);
+            Process.Start(psi);
         }
     }
 }
@@ -769,6 +775,8 @@ class BrowserTab
     public bool Discarded, HasInput;
     /// Barre de chargement sous la barre d'adresse (0 à 1), qui s'efface en fondu une fois la page prête.
     public float Progress, ProgressTarget, ProgressAlpha;
+    /// Adresse de la première navigation, réessayée une fois si elle est coupée net.
+    public string RetryUrl;
 }
 
 /// Barre d'onglets : onglets arrondis, icône du site, haut-parleur (son), bouton ✕, bouton +.
@@ -2112,11 +2120,22 @@ class BrowserForm : Form
         var opts = new CoreWebView2EnvironmentOptions(
             "--disable-background-networking --disable-component-update --disable-sync " +
             "--disable-domain-reliability --disable-breakpad --no-pings " +
-            "--renderer-process-limit=3 " +
+            // (plus de --renderer-process-limit : à 3, tous les sites partageaient 3 processus et une page bloquée les bloquait tous ;
+            //  la mémoire est tenue par l'économiseur qui libère les onglets inactifs)
+
             "--disable-features=Translate,msSmartScreenProtection,msEdgeShoppingAssistant,AutofillServerCommunication");
         opts.AreBrowserExtensionsEnabled = true;
 
-        env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(dataDir, "WebView2"), opts);
+        // Juste après une mise à jour, l'ancien moteur (autres options) peut encore être en train de se fermer : on réessaie
+        for (int attempt = 1; ; attempt++)
+        {
+            try { env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(dataDir, "WebView2"), opts); break; }
+            catch (Exception ex) when (attempt < 6)
+            {
+                CrashLog.Write($"Moteur web (essai {attempt})", ex);
+                await Task.Delay(1500);
+            }
+        }
         PrepareNurLive();
     }
 
@@ -2202,8 +2221,11 @@ class BrowserForm : Form
     }
 
     /// Démarre le moteur web d'un onglet et branche tous ses évènements.
+    static void Trace(string m) { if (ShotsDir != null) try { File.AppendAllText(Path.Combine(ShotsDir, "trace.txt"), $"{DateTime.Now:HH:mm:ss.fff} {m}" + Environment.NewLine); } catch { } }
+
     async Task StartTab(BrowserTab t, string url, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null)
     {
+        Trace($"StartTab début « {t.Title} » url={url}");
         t.Lazy = false;
         t.Discarded = false;
         t.PendingUrl = null;
@@ -2219,9 +2241,10 @@ class BrowserForm : Form
             }
             else await t.View.EnsureCoreWebView2Async(env);
         }
-        catch { if (popup != null) popup.Handled = true; deferral?.Complete(); return; }
+        catch (Exception ex) { CrashLog.Write("Démarrage d'un onglet", ex); if (popup != null) popup.Handled = true; deferral?.Complete(); return; }
         if (!tabs.Contains(t)) { if (popup != null) popup.Handled = true; deferral?.Complete(); return; } // fermé entre-temps
         var core = t.View.CoreWebView2;
+        Trace($"StartTab moteur prêt « {t.Title} »");
         if (ShotsDir != null) core.IsMuted = true; // les tests ne font jamais de bruit sur le PC
 
         // Clic droit (même sur une vidéo) : Lens pour copier le texte affiché
@@ -2252,6 +2275,7 @@ class BrowserForm : Form
             core.SetVirtualHostNameToFolderMapping(NurLive.Host, nurLiveUi, CoreWebView2HostResourceAccessKind.Allow);
             try { await core.AddScriptToExecuteOnDocumentCreatedAsync(nurBridge); } catch { }
             try { await core.AddScriptToExecuteOnDocumentCreatedAsync(NurLive.SpyScript); } catch { }
+            Trace($"StartTab scripts Nur Live ajoutés « {t.Title} »");
         }
 
         // Bloqueur de pubs / traqueurs : la requête n'est même pas envoyée.
@@ -2341,6 +2365,7 @@ class BrowserForm : Form
                 if (open >= 0) { e.Cancel = true; BeginInvoke(new Action(() => { int k = tabs.FindIndex(x => IsNurLivePage(x.View.CoreWebView2?.Source)); if (k >= 0) SelectTab(k); })); return; }
             }
             // nouvelle page : compteur du bouclier remis à zéro, exception éventuelle du site appliquée
+            Trace($"navigation commence « {t.Title} » → {e.Uri}{(e.IsRedirected ? " (redirection)" : "")}");
             if (!e.IsRedirected) t.Blocked = 0;
             t.AdsAllowed = SiteList.Contains(adblockAllow, e.Uri);
             if (t == Cur) UpdateShield();
@@ -2353,6 +2378,15 @@ class BrowserForm : Form
         core.ContentLoading += (_, _) => t.ProgressTarget = Math.Max(t.ProgressTarget, 0.6f);
         core.NavigationCompleted += (_, e) =>
         {
+            Trace($"navigation terminée « {t.Title} » ok={e.IsSuccess} erreur={e.WebErrorStatus} code={e.HttpStatusCode} → {core.Source}");
+            // Coupée net (souvent par le chargement des extensions au démarrage) et page restée blanche : un nouvel essai, une seule fois
+            if (!e.IsSuccess && e.WebErrorStatus == CoreWebView2WebErrorStatus.ConnectionAborted && core.Source == "about:blank" && t.RetryUrl != null)
+            {
+                var again = t.RetryUrl;
+                t.RetryUrl = null;
+                BeginInvoke(new Action(async () => { await Task.Delay(400); try { if (tabs.Contains(t) && core.Source == "about:blank") core.Navigate(again); } catch { } }));
+            }
+            else if (e.IsSuccess) t.RetryUrl = null;
             t.Loading = false;
             t.ProgressTarget = 1;
             strip.Invalidate();
@@ -2453,12 +2487,17 @@ class BrowserForm : Form
         };
 
         if (forceDark) { try { await ApplyForceDark(t); } catch { } }
+        Trace($"StartTab navigation « {t.Title} » → {(popup != null ? "popup" : string.IsNullOrEmpty(url) ? HomeUrl : url)}");
         if (popup != null)
         {
             try { popup.NewWindow = core; } catch { core.Navigate(popup.Uri); }
             deferral?.Complete();
         }
-        else core.Navigate(string.IsNullOrEmpty(url) ? HomeUrl : url);
+        else
+        {
+            t.RetryUrl = string.IsNullOrEmpty(url) ? HomeUrl : url;
+            core.Navigate(t.RetryUrl);
+        }
         if (t == Cur) UpdateUi();
 
         // Les extensions vivent dans le profil normal, jamais dans le profil privé
@@ -5431,6 +5470,23 @@ class BrowserForm : Form
                 if (parts[1] == "rebond") { await RebondTest(parts[0]); continue; }
                 if (parts[1] == "perf") { await PerfTest(parts[0]); continue; }
                 if (parts[1] == "streams") { await StreamsTest(parts[0]); continue; }
+                if (parts[1] == "nlrepond")
+                {
+                    // Nur Live répond-il ? (page bloquée = script qui ne revient jamais)
+                    var rr = new List<string>();
+                    await NewTab(NurLive.Url);
+                    var nlc = Core;
+                    for (int i = 0; i < 25; i++)
+                    {
+                        await Task.Delay(2000);
+                        var job = nlc.ExecuteScriptAsync("JSON.stringify({tiles: document.querySelectorAll('.tile').length, cinema: document.body.classList.contains('cinema'), reveal: (document.querySelector('.topbar')||{className:''}).className})");
+                        var done = await Task.WhenAny(job, Task.Delay(3000));
+                        rr.Add($"{(i + 1) * 2} s : " + (done == job ? job.Result : "PAGE BLOQUÉE (pas de réponse en 3 s)"));
+                        File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), rr);
+                        if (i == 4) await ShotAsync(parts[0] + "_10s");
+                    }
+                    continue;
+                }
                 if (parts[1] == "lens")
                 {
                     // texte dessiné dans une image (comme une vidéo) : impossible à sélectionner, Lens doit le lire

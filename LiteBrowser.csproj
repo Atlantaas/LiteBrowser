@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -10,9 +10,9 @@
     <AssemblyName>LiteBrowser</AssemblyName>
     <RootNamespace>LiteBrowser</RootNamespace>
     <Product>LiteBrowser</Product>
-    <Version>4.2.0</Version>
+    <Version>4.2.1</Version>
     <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
-    <!-- Réglages pour consommer le moins de RAM possible côté appli -->
+    <!-- RÃ©glages pour consommer le moins de RAM possible cÃ´tÃ© appli -->
     <InvariantGlobalization>true</InvariantGlobalization>
     <ServerGarbageCollector>false</ServerGarbageCollector>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
