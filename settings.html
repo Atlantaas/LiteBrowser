@@ -168,6 +168,8 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
   .key:nth-child(2){border-top:1px solid var(--line)}
   .row{flex-wrap:wrap}
 }
+@keyframes page-in{from{opacity:0}}
+@media (prefers-reduced-motion:no-preference){body{animation:page-in .16s ease-out}}
 </style>
 </head>
 <body class="m8">
@@ -195,13 +197,18 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
     <h1>Réglages</h1>
     <p class="lead">Tout ton navigateur, au même endroit. Chaque changement est enregistré tout de suite.</p>
 
-    <section id="general" data-k="général démarrage moteur recherche google duckduckgo bing qwant ecosia session onglets">
+    <section id="general" data-k="général démarrage moteur recherche google duckduckgo bing qwant ecosia session onglets navigateur par défaut brave liens applis suggestions raccourcis barre d'adresse">
       <h2><i class="ic">&#xE713;</i>Général</h2>
       <div class="card">
         <div class="row"><div class="t"><b>Au démarrage</b><small>Rouvre tes onglets de la dernière fois (chargés seulement quand tu cliques dessus).</small></div>
           <div class="seg" id="startup"><button data-v="session">Reprendre mes onglets</button><button data-v="home">Page d'accueil</button></div></div>
         <div class="row"><div class="t"><b>Moteur de recherche</b><small>Utilisé par la barre d'adresse et la page d'accueil.</small></div>
           <select id="engine"></select></div>
+        <div class="row"><div class="t"><b>Navigateur par défaut</b><small id="defInfo"></small></div>
+          <span id="defBox"></span></div>
+        <div class="row"><div class="t"><b>Suggestions de recherche</b><small>Propositions du moteur pendant que tu tapes dans la barre d’adresse. Jamais en navigation privée.</small></div>
+          <label class="sw"><input type="checkbox" data-set="searchSuggest"><span></span></label></div>
+        <div class="hint">Raccourcis de recherche dans la barre d’adresse : <kbd>:yt</kbd> YouTube, <kbd>:w</kbd> Wikipédia, <kbd>:tw</kbd> Twitch, <kbd>:a</kbd> Amazon, <kbd>:g</kbd> Google, <kbd>:d</kbd> DuckDuckGo. Exemple : <kbd>:yt lofi</kbd> puis Entrée.</div>
       </div>
     </section>
 
@@ -248,6 +255,10 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
           <select data-set="tabSleep" data-num>
             <option value="30">après 30 secondes</option><option value="60">après 1 minute</option><option value="300">après 5 minutes</option>
             <option value="900">après 15 minutes</option><option value="3600">après 1 heure</option><option value="0">jamais</option></select></div>
+        <div class="row"><div class="t"><b>Économiseur de mémoire</b><small id="discardInfo">Un onglet resté longtemps en arrière-plan libère toute sa mémoire et se recharge quand tu cliques dessus. Jamais pour un onglet épinglé, privé, qui joue du son, Nur Live, ou avec un texte en cours.</small></div>
+          <select data-set="tabDiscard" data-num>
+            <option value="5">après 5 minutes</option><option value="15">après 15 minutes</option><option value="30">après 30 minutes</option>
+            <option value="60">après 1 heure</option><option value="0">jamais</option></select></div>
         <div class="hint">Clic droit sur un onglet : <b>Épingler</b> (compact, toujours à gauche, rouvert au démarrage), <b>Dupliquer</b>, <b>Couper le son</b>, <b>Rouvrir en onglet privé</b>.</div>
       </div>
     </section>
@@ -301,9 +312,11 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
       </div>
     </section>
 
-    <section id="favoris" data-k="favoris marque-pages renommer déplacer supprimer">
+    <section id="favoris" data-k="favoris marque-pages renommer déplacer supprimer importer brave chrome edge">
       <h2><i class="ic">&#xE734;</i>Favoris</h2>
-      <div class="card"><div class="list" id="favs"></div>
+      <div class="card"><div class="row" id="impRow"><div class="t"><b>Importer des favoris</b><small id="impInfo"></small></div>
+          <div class="btns" id="imports"></div></div>
+        <div class="list" id="favs"></div>
         <div class="hint">Ajoute la page affichée avec l'étoile de la barre d'adresse ou <kbd>Ctrl+D</kbd>. Les 8 premiers apparaissent sur la page d'accueil.</div></div>
     </section>
 
@@ -355,8 +368,8 @@ const act = (name, arg) => post({ type: 'action', name, arg });
 // ---------- Raccourcis (statiques) ----------
 const KEYS = [
   ['Nouvel onglet', 'Ctrl+T'], ['Nouvel onglet privé', 'Ctrl+Maj+N'], ['Fermer l\'onglet', 'Ctrl+W'], ['Rouvrir l\'onglet fermé', 'Ctrl+Maj+T'],
-  ['Onglet suivant / précédent', 'Ctrl+Tab'], ['Aller à l\'onglet n°', 'Ctrl+1…9'], ['Barre d\'adresse', 'Ctrl+L'], ['Ajouter aux favoris', 'Ctrl+D'],
-  ['Barre de favoris', 'Ctrl+Maj+B'], ['Historique', 'Ctrl+H'], ['Téléchargements', 'Ctrl+J'], ['Réglages', 'Ctrl+,'],
+  ['Onglet suivant / précédent', 'Ctrl+Tab'], ['Aller à l\'onglet n°', 'Ctrl+1…9'], ['Barre d\'adresse', 'Ctrl+L ou Ctrl+K'], ['Ouvrir la proposition dans un nouvel onglet', 'Alt+Entrée'], ['Retirer une page des propositions', 'Maj+Suppr'], ['Ajouter aux favoris', 'Ctrl+D'],
+  ['Barre de favoris', 'Ctrl+Maj+B'], ['Copier le texte à l'écran (Lens)', 'Ctrl+Maj+L'], ['Historique', 'Ctrl+H'], ['Téléchargements', 'Ctrl+J'], ['Réglages', 'Ctrl+,'],
   ['Effacer les données', 'Ctrl+Maj+Suppr'], ['Couper le son de l\'onglet', 'Ctrl+M'], ['Multistream', 'Ctrl+Maj+M'], ['Actualiser', 'F5'],
   ['Page précédente / suivante', 'Alt+← / →'], ['Plein écran', 'F11'], ['Rechercher dans la page', 'Ctrl+F'], ['Zoom', 'Ctrl+molette'],
 ];
@@ -409,10 +422,21 @@ function render() {
   segOn('startup', S.startup);
   segOn('tracking', S.tracking);
   $('trackingInfo').textContent = TRACK[S.tracking] || '';
+  $('discardInfo').textContent = 'Un onglet resté longtemps en arrière-plan libère toute sa mémoire et se recharge quand tu cliques dessus. Jamais pour un onglet épinglé, privé, qui joue du son, Nur Live, ou avec un texte en cours.' +
+    (S.discardedNow ? ` En ce moment : ${S.discardedNow} onglet${S.discardedNow > 1 ? 's' : ''} sans mémoire utilisée.` : '');
   document.querySelectorAll('.th').forEach(b => b.classList.toggle('on', b.dataset.v === S.theme));
+  $('defInfo').textContent = S.isDefault
+    ? 'C’est LiteBrowser : les liens de Discord, des mails et de toutes tes applis s’ouvrent ici.'
+    : (S.currentBrowser ? 'Aujourd’hui, c’est ' + S.currentBrowser + '. ' : '') + 'Windows te demandera de confirmer en un clic.';
+  $('defBox').innerHTML = S.isDefault ? '<span class="chip on static">&#x2713; LiteBrowser</span>'
+    : '<button class="btn main" data-act="setDefault">Définir par défaut</button>';
+  $('imports').innerHTML = (S.importFrom || []).map(n => `<button class="btn" data-act="importBookmarks" data-arg="${esc(n)}">Depuis ${esc(n)}</button>`).join('');
+  $('impInfo').textContent = (S.importFrom || []).length
+    ? 'Copie tes favoris, dossiers compris. Ceux déjà présents ne sont pas ajoutés deux fois.'
+    : 'Aucun favori de Brave, Chrome ou Edge trouvé sur ce PC.';
   $('engine').innerHTML = S.engines.map(e => `<option value="${esc(e.id)}" ${e.id === S.engine ? 'selected' : ''}>${esc(e.name)}</option>`).join('');
   $('blockedInfo').textContent = S.adblock
-    ? `Sur tous les sites, y compris les pubs YouTube · ${S.blockedCount.toLocaleString('fr-FR')} élément${S.blockedCount > 1 ? 's' : ''} bloqué${S.blockedCount > 1 ? 's' : ''} depuis le lancement.`
+    ? `Sur tous les sites, y compris les pubs YouTube · ${S.blockedTotal.toLocaleString('fr-FR')} élément${S.blockedTotal > 1 ? 's' : ''} bloqué${S.blockedTotal > 1 ? 's' : ''} en tout (${S.blockedCount.toLocaleString('fr-FR')} depuis le lancement), environ ${S.timeSaved} de chargement gagné.`
     : 'Coupé : les pubs et traqueurs ne sont plus bloqués.';
   $('allow').innerHTML = S.allow.length
     ? '<div class="offs">' + S.allow.map(h => `<span class="chip on">${esc(h)} <button class="ib" style="width:18px;height:18px;color:inherit" data-host="${esc(h)}" title="Réactiver le bloqueur sur ce site">&#xE711;</button></span>`).join('') + '</div>'

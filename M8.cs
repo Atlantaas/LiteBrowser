@@ -985,8 +985,59 @@ namespace LiteCore
             return hit;
         }
 
+        /// Lit la réponse de la recherche Twitch (même requête que l'appli Nur Live) : en live d'abord, puis les plus suivis.
+        public static List<SearchHit> ParseSearch(string json)
+        {
+            var hits = new List<SearchHit>();
+            using var doc = JsonDocument.Parse(json);
+            var edges = doc.RootElement.GetProperty("data").GetProperty("searchUsers").GetProperty("edges");
+            foreach (var edge in edges.EnumerateArray())
+            {
+                if (!edge.TryGetProperty("node", out var n) || n.ValueKind != JsonValueKind.Object) continue;
+                var login = n.GetProperty("login").GetString();
+                if (string.IsNullOrEmpty(login)) continue;
+                var hit = new SearchHit { Key = login, Name = n.TryGetProperty("displayName", out var d) && d.GetString() is string dn && dn.Length > 0 ? dn : login };
+                if (n.TryGetProperty("profileImageURL", out var a)) hit.Avatar = a.GetString() ?? "";
+                if (n.TryGetProperty("followers", out var f) && f.ValueKind == JsonValueKind.Object && f.TryGetProperty("totalCount", out var c) && c.ValueKind == JsonValueKind.Number) hit.Followers = c.GetInt32();
+                if (n.TryGetProperty("stream", out var s) && s.ValueKind == JsonValueKind.Object)
+                {
+                    hit.Live = true;
+                    if (s.TryGetProperty("viewersCount", out var v) && v.ValueKind == JsonValueKind.Number) hit.Viewers = v.GetInt32();
+                    if (s.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.Object && g.TryGetProperty("displayName", out var gn)) hit.Game = gn.GetString() ?? "";
+                }
+                hits.Add(hit);
+            }
+            return hits.OrderByDescending(h => h.Live).ThenByDescending(h => h.Followers).ToList();
+        }
+
+        /// Vraie recherche de chaînes sur Twitch. Liste vide si Twitch ne répond pas.
+        static async Task<List<SearchHit>> TwitchSearch(string q)
+        {
+            try
+            {
+                using var http = Net.Client(TimeSpan.FromSeconds(5));
+                using var req = new HttpRequestMessage(HttpMethod.Post, "https://gql.twitch.tv/gql");
+                req.Headers.Add("Client-Id", "kimne78kx3ncx6brgo4mv6wki5h1ko"); // identifiant public du site Twitch, comme dans core/status.js de Nur Live
+                req.Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    query = "query NurSearch($q:String!){ searchUsers(userQuery:$q, first:8){ edges { node { login displayName profileImageURL(width:50) followers { totalCount } stream { viewersCount game { displayName } } } } } }",
+                    variables = new { q },
+                }), Encoding.UTF8, "application/json");
+                using var res = await http.SendAsync(req);
+                return res.IsSuccessStatusCode ? ParseSearch(await res.Content.ReadAsStringAsync()) : new List<SearchHit>();
+            }
+            catch { return new List<SearchHit>(); }
+        }
+
         public static async Task<List<SearchHit>> SearchAsync(string query, IEnumerable<string> extra = null)
         {
+            var typed = (Channels.TwitchLogin(query) ?? query ?? "").Trim();
+            if (typed.Length >= 2)
+            {
+                var found = await TwitchSearch(typed);
+                if (found.Count > 0) return found;
+            }
+            // Twitch injoignable : les streameurs connus, vérifiés un par un
             var cands = Candidates(query, extra);
             if (cands.Count == 0) return new List<SearchHit>();
             using var http = Net.Client(TimeSpan.FromSeconds(8));
@@ -1156,6 +1207,31 @@ namespace LiteCore
             File.WriteAllText(app, PatchApp(File.ReadAllText(app)));
         }
 
+        /// Recopie seulement les fichiers changés (sans tout effacer : la page ouverte continue d'être servie).
+        /// Renvoie le nombre de fichiers mis à jour.
+        public static int Sync(string src, string dst)
+        {
+            var ui = Path.Combine(src, "ui");
+            int n = 0;
+            foreach (var file in Directory.GetFiles(ui, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(ui, file);
+                if (rel.StartsWith("node_modules")) continue;
+                var target = Path.Combine(dst, rel);
+                bool isApp = rel.Replace('\\', '/') == "js/app.js";
+                var fresh = isApp ? PatchApp(File.ReadAllText(file)) : null;
+                if (File.Exists(target))
+                {
+                    if (isApp ? File.ReadAllText(target) == fresh
+                              : new FileInfo(target).Length == new FileInfo(file).Length && File.ReadAllBytes(target).AsSpan().SequenceEqual(File.ReadAllBytes(file))) continue;
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                if (isApp) File.WriteAllText(target, fresh); else File.Copy(file, target, true);
+                n++;
+            }
+            return n;
+        }
+
         // ---------- Surveillance des lecteurs (même sonde que l'appli Nur Live, voir main.js) ----------
 
         /// twitch / kick / youtube si l'adresse est celle d'un lecteur intégré, sinon "".
@@ -1187,12 +1263,47 @@ namespace LiteCore
         }
 
         /// Script exécuté dans le lecteur : état de la vidéo, pub en cours, relance douce si demandée.
-        public static string ProbeScript(bool resume) => ProbeTemplate.Replace("__RESUME__", resume ? "true" : "false");
+        public static string ProbeScript(bool resume, bool mute = false) =>
+            ProbeTemplate.Replace("__RESUME__", resume ? "true" : "false").Replace("__MUTE__", mute ? "true" : "false");
+
+        /// Mouchard des lecteurs de Nur Live (diagnostic des pubs figées) : qui met la vidéo en pause, ce que le moteur refuse,
+        /// si quelque chose recouvre le lecteur (IntersectionObserver v2). Lu et vidé par la sonde, écrit dans nurlive.log.
+        public const string SpyScript = """
+            (() => {
+              if (location.hostname !== "player.twitch.tv" || !(location.ancestorOrigins[0] || "").includes("nurlive.home")) return;
+              const ev = window.__spy = [];
+              const push = (s) => { if (ev.length < 40) ev.push(Math.round(performance.now() / 100) / 10 + "s " + s); };
+              const stack = () => (new Error().stack || "").split("\n").slice(3, 5).map((l) => l.trim().slice(0, 60)).join(" < ");
+              const pause = HTMLMediaElement.prototype.pause;
+              HTMLMediaElement.prototype.pause = function () { push("pause() demandé t=" + this.currentTime.toFixed(1) + " par " + stack()); return pause.apply(this, arguments); };
+              const play = HTMLMediaElement.prototype.play;
+              HTMLMediaElement.prototype.play = function () { const r = play.apply(this, arguments); const m = this.muted; if (r && r.catch) r.catch((e) => push("play() refusé muet=" + m + " : " + e.name)); return r; };
+              for (const k of ["warn", "error", "info", "log"]) {
+                const c = console[k];
+                console[k] = function (...x) { const s = x.map(String).join(" "); if (/autoplay|visibility|requirement|adblock|ad block/i.test(s)) push("console : " + s.replace(/\s+/g, " ").slice(0, 170)); return c.apply(this, x); };
+              }
+              for (const n of ["pause", "emptied", "stalled", "error"])
+                document.addEventListener(n, (e) => { const v = e.target; if (v.tagName === "VIDEO") push(n + " t=" + v.currentTime.toFixed(1) + " w=" + v.videoWidth + " page=" + document.visibilityState + " focus=" + document.hasFocus() + (v.error ? " " + v.error.message : "")); }, true);
+              let seen = null, shown = null;
+              setInterval(() => {
+                const v = document.querySelector("video");
+                if (!v || v === seen || !window.IntersectionObserver) return;
+                seen = v;
+                try {
+                  new IntersectionObserver((list) => {
+                    const e = list[list.length - 1];
+                    if (e.isVisible !== shown) { shown = e.isVisible; push("lecteur " + (e.isVisible ? "visible" : "RECOUVERT") + " (" + Math.round(e.intersectionRatio * 100) + " % à l'écran)"); }
+                  }, { threshold: [0, 1], trackVisibility: true, delay: 200 }).observe(v);
+                } catch (_) { }
+              }, 1000);
+            })();
+            """;
 
         const string ProbeTemplate = """
             (() => {
               try {
                 const RESUME = __RESUME__;
+                const MUTE = __MUTE__; // ce live ne doit pas s'entendre (ex. son remis par l'écran « contenu mature »)
                 const vids = Array.from(document.querySelectorAll("video"));
                 const v = vids.slice().sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight))[0];
                 const gate = document.querySelector('[data-a-target="content-classification-gate-overlay-start-watching-button"],[data-a-target="player-overlay-mature-accept"],[data-a-target="player-overlay-content-gate-button"]');
@@ -1202,8 +1313,11 @@ namespace LiteCore
                 let errCode = 0;
                 const m = /(?:Erreur|Error)\s*#?\s*\(?(\d{4})/i.exec(txt);
                 if (m) errCode = Number(m[1]);
-                const ad = /Publicit[ée]|Advertisement|Commercial break|after this ad|après cette publicit/i.test(txt) ||
-                  !!document.querySelector('[data-a-target="video-ad-label"],[data-a-target="video-ad-countdown"],.video-ad-label');
+                // Jamais le simple mot « Publicité » : c'est aussi le label des streams sponsorisés et il peut être dans un titre
+                const ad = !!document.querySelector('[data-a-target="video-ad-label"],[data-a-target="video-ad-countdown"],.video-ad-label') ||
+                  /Commercial break|after this ad|après cette publicit/i.test(txt);
+                const vis = document.visibilityState;
+                const brief = txt.replace(/\s+/g, " ").slice(0, 90);
                 let resumed = 0;
                 if (RESUME) for (const x of (ad ? vids : (v ? [v] : []))) {
                   if (x.paused && !x.ended && x.readyState >= 2) {
@@ -1214,8 +1328,10 @@ namespace LiteCore
                 }
                 const tAll = vids.reduce((n, x) => n + (x.currentTime || 0), 0);
                 const vinfo = vids.map((x) => [x.videoWidth, x.videoHeight, Math.round((x.currentTime || 0) * 10) / 10, x.paused ? 1 : 0, x.readyState, (x.error && x.error.code) || 0]);
-                if (!v) return { video: false, clicked, errCode, ad, tAll, vinfo };
-                return { vinfo, video: true, t: v.currentTime || 0, tAll, paused: !!v.paused, ended: !!v.ended, ready: v.readyState || 0, err: v.error ? v.error.code : 0, w: v.videoWidth || 0, clicked, errCode, ad, resumed };
+                if (MUTE) for (const x of vids) x.muted = true;
+                const spy = window.__spy ? window.__spy.splice(0) : [];
+                if (!v) return { video: false, clicked, errCode, ad, tAll, vinfo, vis, brief, spy };
+                return { spy, vis, brief, vinfo, video: true, muted: !!v.muted, t: v.currentTime || 0, tAll, paused: !!v.paused, ended: !!v.ended, ready: v.readyState || 0, err: v.error ? v.error.code : 0, w: v.videoWidth || 0, clicked, errCode, ad, resumed };
               } catch (e) { return { video: false, fail: String(e && e.message || e) }; }
             })()
             """;

@@ -615,4 +615,234 @@ namespace LiteCore
   setInterval(skip, 300);
 })();";
     }
+
+    // ==================================================================
+    //  Barre d'adresse façon Brave : propositions, saisie semi-automatique, raccourcis
+    // ==================================================================
+    public static class Omni
+    {
+        public sealed record Entry(string Title, string Url);
+        public sealed record Hit(string Kind, string Title, string Url, int Score);
+
+        /// Raccourcis tapés au début de la barre : « :yt lofi » cherche « lofi » sur YouTube.
+        public static readonly (string Key, string Name, string Url)[] Keywords =
+        {
+            ("g", "Google", "https://www.google.com/search?q="),
+            ("d", "DuckDuckGo", "https://duckduckgo.com/?q="),
+            ("b", "Bing", "https://www.bing.com/search?q="),
+            ("q", "Qwant", "https://www.qwant.com/?q="),
+            ("e", "Ecosia", "https://www.ecosia.org/search?q="),
+            ("yt", "YouTube", "https://www.youtube.com/results?search_query="),
+            ("w", "Wikipédia", "https://fr.wikipedia.org/w/index.php?search="),
+            ("tw", "Twitch", "https://www.twitch.tv/search?term="),
+            ("a", "Amazon", "https://www.amazon.fr/s?k="),
+        };
+
+        /// « :yt lofi » → (YouTube, adresse de recherche, « lofi ») ; null si ce n'est pas un raccourci.
+        public static (string Name, string Prefix, string Query)? Keyword(string text)
+        {
+            text = (text ?? "").TrimStart();
+            if (!text.StartsWith(":")) return null;
+            int sp = text.IndexOf(' ');
+            var key = (sp < 0 ? text[1..] : text[1..sp]).ToLowerInvariant();
+            foreach (var k in Keywords)
+                if (k.Key == key) return (k.Name, k.Url, sp < 0 ? "" : text[(sp + 1)..].Trim());
+            return null;
+        }
+
+        public static bool IsWeb(string url) =>
+            url != null && (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            && !url.Contains("://litebrowser.home/", StringComparison.OrdinalIgnoreCase);
+
+        public static string Host(string url)
+        {
+            try
+            {
+                var h = new Uri(url).Host.ToLowerInvariant();
+                return h.StartsWith("www.") ? h[4..] : h;
+            }
+            catch { return ""; }
+        }
+
+        /// Adresse affichée quand la barre n'est pas active : sans « https:// » ni « www. » (comme Brave).
+        /// Les sites non sécurisés gardent « http:// » pour que ça se voie.
+        public static string Display(string url)
+        {
+            if (string.IsNullOrEmpty(url) || !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return url ?? "";
+            var s = url[8..];
+            if (s.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) s = s[4..];
+            if (s.EndsWith("/") && s.IndexOf('/') == s.Length - 1) s = s[..^1];
+            return s;
+        }
+
+        /// Pages de l'historique et des favoris qui correspondent à ce qui est tapé, les plus probables d'abord.
+        public static List<Hit> Rank(string typed, IEnumerable<Entry> favs, IEnumerable<Entry> history, int max = 6)
+        {
+            var t = (typed ?? "").Trim().ToLowerInvariant();
+            if (t.Length == 0) return new();
+            var visits = new Dictionary<string, int>();
+            var titles = new Dictionary<string, string>();
+            foreach (var h in history ?? Enumerable.Empty<Entry>())
+            {
+                if (!IsWeb(h?.Url)) continue;
+                visits[h.Url] = visits.GetValueOrDefault(h.Url) + 1;
+                if (!string.IsNullOrWhiteSpace(h.Title)) titles[h.Url] = h.Title;
+            }
+            var favSet = new HashSet<string>();
+            foreach (var f in favs ?? Enumerable.Empty<Entry>())
+            {
+                if (!IsWeb(f?.Url)) continue;
+                favSet.Add(f.Url);
+                if (!string.IsNullOrWhiteSpace(f.Title)) titles[f.Url] = f.Title;
+            }
+            var hits = new List<Hit>();
+            foreach (var url in visits.Keys.Union(favSet))
+            {
+                var title = titles.GetValueOrDefault(url);
+                int s = Score(t, url, title);
+                if (s <= 0) continue;
+                bool fav = favSet.Contains(url);
+                s += Math.Min(visits.GetValueOrDefault(url), 20) * 2 + (fav ? 25 : 0);
+                hits.Add(new Hit(fav ? "fav" : "history", string.IsNullOrWhiteSpace(title) ? Display(url) : title, url, s));
+            }
+            return hits.OrderByDescending(h => h.Score).ThenBy(h => h.Url.Length).Take(max).ToList();
+        }
+
+        static int Score(string t, string url, string title)
+        {
+            var low = url.ToLowerInvariant();
+            var host = Host(url);
+            var shortForm = (UrlTools.ShortForm(url) ?? low).ToLowerInvariant();
+            if (host.Length > 0 && host.StartsWith(t)) return 100 - Math.Min(Math.Max(shortForm.Length - host.Length, 0), 30) / 3; // l'accueil du site d'abord
+            if (low.StartsWith(t) || shortForm.StartsWith(t)) return 85;
+            if (host.Split('.', '-').Any(p => p.Length > 0 && p.StartsWith(t))) return 70;
+            var words = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var tl = (title ?? "").ToLowerInvariant();
+            if (words.Length > 0 && words.All(w => tl.Contains(w) || shortForm.Contains(w)))
+                return tl.Split(' ', '-', '|', '·', ':').Any(x => x.StartsWith(words[0])) ? 50 : 35;
+            return 0;
+        }
+
+        /// Saisie semi-automatique : « you » → « youtube.com » (la suite est sélectionnée dans la barre).
+        public static string InlineCompletion(string typed, IEnumerable<Hit> hits)
+        {
+            if (string.IsNullOrEmpty(typed) || typed.Contains(' ') || typed.StartsWith(":")) return null;
+            var t = typed.ToLowerInvariant();
+            foreach (var h in hits ?? Enumerable.Empty<Hit>())
+            {
+                var host = Host(h.Url);
+                if (host.Length == 0) continue;
+                foreach (var c in new[] { host, "www." + host })
+                    if (c.Length > t.Length && c.StartsWith(t)) return typed + c[t.Length..];
+            }
+            return null;
+        }
+
+        /// Adresse des suggestions de recherche (Google pour Google, DuckDuckGo pour les autres moteurs).
+        public static string SuggestUrl(string engineId, string query) =>
+            (engineId == "google"
+                ? "https://suggestqueries.google.com/complete/search?client=firefox&hl=fr&ie=utf-8&oe=utf-8&q="
+                : "https://duckduckgo.com/ac/?kl=fr-fr&q=") + Uri.EscapeDataString(query ?? "");
+
+        /// Lit les suggestions : format Google ["q",["a","b"]] ou DuckDuckGo [{"phrase":"a"}].
+        public static List<string> ParseSuggest(string json, int max = 5)
+        {
+            var r = new List<string>();
+            try
+            {
+                using var d = JsonDocument.Parse(json ?? "");
+                var root = d.RootElement;
+                if (root.ValueKind != JsonValueKind.Array) return r;
+                if (root.GetArrayLength() > 1 && root[1].ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var x in root[1].EnumerateArray())
+                        if (x.ValueKind == JsonValueKind.String) r.Add(x.GetString());
+                }
+                else
+                {
+                    foreach (var x in root.EnumerateArray())
+                        if (x.ValueKind == JsonValueKind.Object && x.TryGetProperty("phrase", out var p) && p.ValueKind == JsonValueKind.String)
+                            r.Add(p.GetString());
+                }
+            }
+            catch { }
+            return r.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase).Take(max).ToList();
+        }
+
+        /// Temps gagné estimé grâce au bloqueur (comme le compteur de Brave) : environ 50 ms par élément bloqué.
+        public static string TimeSaved(long blocked)
+        {
+            var sec = blocked * 0.05;
+            if (sec < 60) return "moins d'1 min";
+            var m = (long)(sec / 60);
+            if (m < 60) return m + " min";
+            var h = m / 60;
+            if (h < 24) return $"{h} h {m % 60:00}";
+            return $"{h / 24} j {h % 24} h";
+        }
+    }
+
+    /// Lien reçu au lancement (navigateur par défaut) : adresse web ou fichier ouvert depuis l'Explorateur.
+    public static class Launch
+    {
+        public static string UrlFromArgs(IEnumerable<string> args)
+        {
+            foreach (var raw in args ?? Enumerable.Empty<string>())
+            {
+                var a = (raw ?? "").Trim().Trim('"');
+                if (a.Length == 0 || a.StartsWith("--")) continue;
+                if (Allowed(a)) return a;
+                try
+                {
+                    if (Path.IsPathRooted(a) && File.Exists(a)) return new Uri(Path.GetFullPath(a)).AbsoluteUri;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        /// Seules ces adresses peuvent être ouvertes par un autre programme.
+        public static bool Allowed(string url) =>
+            url != null && (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                            || url.StartsWith("file:", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// Import des favoris de Brave, Chrome ou Edge (fichier « Bookmarks » au format JSON).
+    public static class Bookmarks
+    {
+        public static List<(string Title, string Url)> ParseChromium(string json)
+        {
+            var r = new List<(string, string)>();
+            try
+            {
+                using var d = JsonDocument.Parse(json ?? "");
+                if (d.RootElement.TryGetProperty("roots", out var roots) && roots.ValueKind == JsonValueKind.Object)
+                    foreach (var root in roots.EnumerateObject()) Walk(root.Value, r);
+            }
+            catch { }
+            return r;
+        }
+
+        static void Walk(JsonElement n, List<(string, string)> r)
+        {
+            if (n.ValueKind != JsonValueKind.Object) return;
+            if (n.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String && t.GetString() == "url"
+                && n.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String && Omni.IsWeb(u.GetString()))
+            {
+                var url = u.GetString();
+                var name = n.TryGetProperty("name", out var nm) && nm.ValueKind == JsonValueKind.String ? nm.GetString() : null;
+                r.Add((string.IsNullOrWhiteSpace(name) ? Omni.Display(url) : name.Trim(), url));
+            }
+            if (n.TryGetProperty("children", out var ch) && ch.ValueKind == JsonValueKind.Array)
+                foreach (var c in ch.EnumerateArray()) Walk(c, r);
+        }
+
+        /// Ne garde que les favoris absents (même adresse), sans doublons.
+        public static List<(string Title, string Url)> NewOnes(IEnumerable<(string Title, string Url)> existing, IEnumerable<(string Title, string Url)> incoming)
+        {
+            var seen = new HashSet<string>((existing ?? Enumerable.Empty<(string, string)>()).Select(x => x.Item2), StringComparer.OrdinalIgnoreCase);
+            return (incoming ?? Enumerable.Empty<(string, string)>()).Where(x => seen.Add(x.Url)).ToList();
+        }
+    }
 }

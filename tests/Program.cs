@@ -34,6 +34,7 @@ static class Program
         M8Tests();
         ChannelTests();
         SearchTests();
+        OmniTests();
         NurLiveTests();
         PrayerParsing();
         YouTube();
@@ -152,6 +153,7 @@ static class Program
         Check("ID depuis un lien du Chrome Web Store",
             Crx.ParseStoreId("https://chromewebstore.google.com/detail/nordpass/eiaeiblijfjekdanodkjadfinkhbfgcd?hl=fr") == "eiaeiblijfjekdanodkjadfinkhbfgcd");
         Check("lien sans ID : rien", Crx.ParseStoreId("https://google.com") == null);
+        Check("lien du store Edge reconnu", Crx.ParseStoreId("https://microsoftedge.microsoft.com/addons/detail/coupert-automatic-coupo/pefhciejnkgdgoahgfeklebcbpmhnhhd?utm_source=x") == "pefhciejnkgdgoahgfeklebcbpmhnhhd");
 
         foreach (var ver in new[] { 3, 2 })
         {
@@ -376,6 +378,7 @@ static class Program
         Check("lecteur YouTube intégré reconnu", NurLive.PlayerKind("https://www.youtube.com/embed/abc") == "youtube");
         Check("page ordinaire ignorée", NurLive.PlayerKind("https://www.twitch.tv/gotaga") == "" && NurLive.PlayerKind("pas une adresse") == "");
         Check("sonde : relance demandée ou non", NurLive.ProbeScript(true).Contains("const RESUME = true") && NurLive.ProbeScript(false).Contains("const RESUME = false"));
+        Check("sonde : le mot Publicité d'un stream sponsorisé n'est pas une pub", !NurLive.ProbeScript(false).Contains("Publicit[ée]") && NurLive.ProbeScript(false).Contains("video-ad-label"));
         Section("Intégration de Nur Live");
         var root = Path.Combine(Path.GetTempPath(), "lb-nurlive-test");
         if (Directory.Exists(root)) Directory.Delete(root, true);
@@ -400,6 +403,14 @@ static class Program
         Check("lecteurs Twitch autorisés sur la page du navigateur", app.Contains("const PARENTS = [location.hostname];") && !app.Contains("127.0.0.1"));
         Check("variante d'écriture aussi adaptée", NurLive.PatchApp("const PARENTS = ['a','b'];") == "const PARENTS = [location.hostname];");
         Check("le dossier d'origine n'est pas modifié", File.ReadAllText(Path.Combine(src, "ui", "js", "app.js")).Contains("127.0.0.1"));
+        Check("synchro : rien à recopier si rien n'a changé", NurLive.Sync(src, dst) == 0);
+        File.WriteAllText(Path.Combine(src, "ui", "index.html"), "<html>v2</html>");
+        File.WriteAllText(Path.Combine(src, "ui", "js", "app.js"), "const PARENTS = [\"127.0.0.1\", \"localhost\"];\nconsole.log('v2');");
+        int synced = NurLive.Sync(src, dst);
+        Check("synchro : seuls les 2 fichiers modifiés sont recopiés", synced == 2, synced + " fichier(s)");
+        Check("synchro : nouvelle version servie, lecteurs Twitch toujours autorisés", File.ReadAllText(Path.Combine(dst, "index.html")) == "<html>v2</html>" &&
+              File.ReadAllText(Path.Combine(dst, "js", "app.js")).Contains("const PARENTS = [location.hostname];") && File.ReadAllText(Path.Combine(dst, "js", "app.js")).Contains("v2"));
+        Check("synchro : les fichiers inchangés restent en place", File.Exists(Path.Combine(dst, "assets", "logo.png")));
         var bridge = NurLive.Bridge("A/*__SOURCES__*/B/*__MODEL__*/C", "S", "M");
         Check("pont : modules insérés", bridge == "ASBMC");
         var real = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "nurbridge.js"));
@@ -523,6 +534,65 @@ static class Program
     }
 
     // ------------------------------------------------------------------
+    static void OmniTests()
+    {
+        Section("Barre d'adresse façon Brave");
+        var hist = new List<Omni.Entry>
+        {
+            new("YouTube", "https://www.youtube.com/"), new("YouTube", "https://www.youtube.com/"),
+            new("Lofi - YouTube", "https://www.youtube.com/watch?v=abc"),
+            new("Gentle Mates", "https://www.gentlemates.com/fr"),
+            new("Accueil", "https://litebrowser.home/index.html"),
+        };
+        var favs = new List<Omni.Entry> { new("Twitch", "https://www.twitch.tv/") };
+        var r = Omni.Rank("you", favs, hist);
+        Check("« you » → l'accueil YouTube en premier", r.Count >= 2 && r[0].Url == "https://www.youtube.com/", string.Join(" | ", r.Select(x => x.Url)));
+        Check("pages intégrées jamais proposées", Omni.Rank("acc", favs, hist).All(x => !x.Url.Contains("litebrowser.home")));
+        Check("favori marqué « fav »", Omni.Rank("twi", favs, hist).FirstOrDefault()?.Kind == "fav");
+        Check("recherche dans le titre : « gentle »", Omni.Rank("gentle", favs, hist).Any(x => x.Url.Contains("gentlemates")));
+        Check("rien tapé → rien", Omni.Rank("  ", favs, hist).Count == 0);
+        Check("« you » complété en « youtube.com »", Omni.InlineCompletion("you", r) == "youtube.com", Omni.InlineCompletion("you", r));
+        Check("la casse tapée est gardée : « YOu » → « YOutube.com »", Omni.InlineCompletion("YOu", r) == "YOutube.com");
+        Check("pas de complétion avec un espace", Omni.InlineCompletion("you tube", r) == null);
+        Check("« www.yo » → « www.youtube.com »", Omni.InlineCompletion("www.yo", r) == "www.youtube.com");
+        var k = Omni.Keyword(":yt lofi girl");
+        Check(":yt lofi girl → YouTube", k is { } kk && kk.Name == "YouTube" && kk.Query == "lofi girl" && kk.Prefix.Contains("youtube.com/results"));
+        Check(":w seul → Wikipédia, recherche vide", Omni.Keyword(":w") is { } kw && kw.Name == "Wikipédia" && kw.Query == "");
+        Check(":zz → pas un raccourci", Omni.Keyword(":zz test") == null && Omni.Keyword("yt lofi") == null);
+        Check("affichage sans https:// ni www.", Omni.Display("https://www.youtube.com/") == "youtube.com" && Omni.Display("https://fr.wikipedia.org/wiki/M8") == "fr.wikipedia.org/wiki/M8");
+        Check("http:// reste visible (non sécurisé)", Omni.Display("http://exemple.fr/") == "http://exemple.fr/");
+        Check("suggestions Google", string.Join(",", Omni.ParseSuggest("[\"gent\",[\"gentle mates\",\"gentleman\",\"Gentle Mates\"]]")) == "gentle mates,gentleman");
+        Check("suggestions DuckDuckGo", string.Join(",", Omni.ParseSuggest("[{\"phrase\":\"gentle mates\"},{\"phrase\":\"gentle mates valorant\"}]")) == "gentle mates,gentle mates valorant");
+        Check("réponse illisible → aucune suggestion", Omni.ParseSuggest("<html>") .Count == 0);
+        Check("adresse de suggestions : Google / DuckDuckGo", Omni.SuggestUrl("google", "a b").Contains("suggestqueries.google.com") && Omni.SuggestUrl("qwant", "a").Contains("duckduckgo.com/ac"));
+        Check("temps gagné : 0 → moins d'1 min", Omni.TimeSaved(0) == "moins d'1 min");
+        Check("temps gagné : 2 400 éléments → 2 min", Omni.TimeSaved(2400) == "2 min", Omni.TimeSaved(2400));
+        Check("temps gagné : 100 000 éléments → 1 h 23", Omni.TimeSaved(100_000) == "1 h 23", Omni.TimeSaved(100_000));
+
+        Section("Navigateur par défaut : liens reçus");
+        Check("lien https reçu", Launch.UrlFromArgs(new[] { "https://discord.com/x" }) == "https://discord.com/x");
+        Check("guillemets retirés", Launch.UrlFromArgs(new[] { "\"https://a.fr/\"" }) == "https://a.fr/");
+        Check("option --truc ignorée", Launch.UrlFromArgs(new[] { "--flag", "http://b.fr" }) == "http://b.fr");
+        var tmp = Path.Combine(Path.GetTempPath(), "lb test é.html");
+        File.WriteAllText(tmp, "<p>x</p>");
+        var fu = Launch.UrlFromArgs(new[] { tmp });
+        Check("fichier .html de l'Explorateur → file:///", fu != null && fu.StartsWith("file:///") && fu.Contains("lb%20test"), fu);
+        File.Delete(tmp);
+        Check("programme ou commande refusés", Launch.UrlFromArgs(new[] { "javascript:alert(1)", "calc.exe" }) == null && !Launch.Allowed("javascript:alert(1)"));
+        Check("rien reçu → null", Launch.UrlFromArgs(Array.Empty<string>()) == null);
+
+        Section("Import des favoris de Brave");
+        var bm = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"children\":[{\"type\":\"url\",\"name\":\"Twitch\",\"url\":\"https://www.twitch.tv/\"}," +
+                 "{\"type\":\"folder\",\"name\":\"Esport\",\"children\":[{\"type\":\"url\",\"name\":\"\",\"url\":\"https://www.gentlemates.com/\"}]}]}," +
+                 "\"other\":{\"type\":\"folder\",\"children\":[{\"type\":\"url\",\"name\":\"Réglages\",\"url\":\"chrome://settings\"}]}},\"version\":1}";
+        var got = Bookmarks.ParseChromium(bm);
+        Check("2 favoris lus (dossiers compris, chrome:// ignoré)", got.Count == 2, string.Join(" | ", got));
+        Check("favori sans nom → nom du site", got.Any(x => x.Title == "gentlemates.com"));
+        var neu = Bookmarks.NewOnes(new List<(string, string)> { ("Twitch", "https://www.twitch.tv/") }, got.Concat(got));
+        Check("doublons et favoris déjà présents ignorés", neu.Count == 1 && neu[0].Url == "https://www.gentlemates.com/");
+        Check("fichier abîmé → aucun favori, pas de plantage", Bookmarks.ParseChromium("{pas du json").Count == 0);
+    }
+
     static void SearchTests()
     {
         Section("Suggestions de chaînes");
@@ -535,6 +605,15 @@ static class Program
         Check("lien twitch.tv/Gotaga → gotaga en premier", ChannelSearch.Candidates("https://twitch.tv/Gotaga")[0] == "gotaga");
         Check("au plus 5 candidats", ChannelSearch.Candidates("a").Count == 0 && ChannelSearch.Candidates("an").Count <= 5);
         Check("tes chaînes sont aussi proposées", ChannelSearch.Candidates("zzmonpote", new[] { "zzmonpote_tv" }).Contains("zzmonpote_tv"));
+        var found = ChannelSearch.ParseSearch("{\"data\":{\"searchUsers\":{\"edges\":[" +
+            "{\"node\":{\"login\":\"petit\",\"displayName\":\"Petit\",\"profileImageURL\":\"https://x/a.png\",\"followers\":{\"totalCount\":10},\"stream\":null}}," +
+            "{\"node\":null}," +
+            "{\"node\":{\"login\":\"grand\",\"displayName\":\"\",\"followers\":{\"totalCount\":5000},\"stream\":null}}," +
+            "{\"node\":{\"login\":\"enlive\",\"displayName\":\"EnLive\",\"followers\":{\"totalCount\":3},\"stream\":{\"viewersCount\":42,\"game\":{\"displayName\":\"Valorant\"}}}}" +
+            "]}}}");
+        Check("recherche Twitch : en live d'abord, puis les plus suivis", string.Join(",", found.Select(h => h.Key)) == "enlive,grand,petit", string.Join(",", found.Select(h => h.Key)));
+        Check("recherche Twitch : live, spectateurs et jeu lus", found[0].Live && found[0].Viewers == 42 && found[0].Game == "Valorant");
+        Check("recherche Twitch : nom vide remplacé par le pseudo", found[1].Name == "grand");
         var bridge = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "nurbridge.js"));
         Check("Nur Live : la recherche passe par le navigateur", bridge.Contains("rpc(\"search\""));
     }

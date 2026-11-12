@@ -153,8 +153,9 @@
       if (r && r.ids && r.ids.length) watch({ ids: r.ids });
       return snap();
     },
+    inBrowser: true, // dans LiteBrowser : pas de réglages Windows (démarrage, horloge) propres à l'appli seule
     testAlert: () => rpc("testAlert"),
-    probe: (resumeIds) => rpc("probe", [resumeIds || []]),
+    probe: (resumeIds, muteIds) => rpc("probe", [resumeIds || [], muteIds || []]),
     log: (line) => rpc("log", [String(line)]),
     open: (url) => rpc("open", [url]),
     pin: async () => { data.pinned = !!(await rpc("pin")); return snap(); },

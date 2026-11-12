@@ -48,7 +48,7 @@ jobs:
         run: |
           dotnet publish LiteBrowser.csproj -c Release -r win-x64 --self-contained true `
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:EnableCompressionInSingleFile=true -p:DebugType=none -o out
+            -p:EnableCompressionInSingleFile=false -p:DebugType=none -o out
 
       - name: Test de bout en bout sur Windows
         shell: pwsh

@@ -62,7 +62,7 @@ $env:LITEBROWSER_SHOTS_PAGES = "reglages=https://litebrowser.home/settings.html;
 
 ## Compiler soi-même
 ```
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o out
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=false -o out
 ```
 (depuis Linux/macOS, ajouter `-p:EnableWindowsTargeting=true`)
 

@@ -49,6 +49,33 @@ input::placeholder{color:var(--sub)}
 select{border:0;background:var(--card2);color:var(--text);border-radius:10px;padding:9px 12px;font-family:inherit;font-size:13px;cursor:pointer;outline:0}
 select option{background:var(--card);color:var(--text)}
 
+/* ---- Propositions de la recherche (comme la barre d'adresse) ---- */
+#f{position:relative}
+.osug{position:absolute;left:-1px;right:-1px;top:calc(100% + 6px);background:var(--card);border:1px solid var(--line);border-radius:14px;padding:6px;z-index:30;box-shadow:0 14px 36px rgba(0,0,0,.45)}
+.osug[hidden]{display:none}
+.os{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:9px;cursor:pointer;min-width:0}
+.os .ic{width:18px;text-align:center;flex:none}
+.os b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:65%}
+.os span.s{color:var(--sub);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.os:hover{background:var(--card2)}
+.os.on{background:var(--card2);box-shadow:inset 3px 0 0 var(--accent)}
+.os.on .ic,.os .ic.fav{color:var(--accent)}
+
+/* ---- Bouclier façon Brave + navigateur par défaut ---- */
+.stats{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-end;margin-top:22px}
+.stats[hidden]{display:none}
+.stat b{display:block;font-family:var(--head);font-size:30px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.stat span{color:var(--sub);font-size:12px;letter-spacing:1.5px;text-transform:uppercase}
+.stat:first-child b{color:var(--accent)}
+.stats .note{color:var(--sub);font-size:12px;margin-left:auto}
+.defb{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:18px;background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;padding:12px 16px}
+.defb[hidden]{display:none}
+.defb p{margin:0;flex:1;min-width:220px;font-size:14px}
+.defb p small{display:block;color:var(--sub);font-size:12.5px;margin-top:2px}
+.defb .go{border:0;background:var(--accent);color:var(--accent-text);border-radius:9px;padding:8px 14px;font-weight:600;font-size:13px;font-family:inherit;cursor:pointer}
+.defb .later{border:0;background:none;color:var(--sub);font-family:inherit;font-size:13px;cursor:pointer;padding:8px}
+.defb .later:hover{color:var(--text)}
+
 /* ---- Grille ---- */
 .grid{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:18px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px 18px 14px}
@@ -167,6 +194,8 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
 
 @media (max-width:900px){.grid{grid-template-columns:1fr}.clock{font-size:48px}}
 @media (max-width:520px){.wrap{padding:22px 14px 50px}.match{grid-template-columns:70px minmax(0,1fr)}.cd{grid-row:auto;grid-column:2;text-align:left}.brand-name{font-size:22px}}
+@keyframes page-in{from{opacity:0}}
+@media (prefers-reduced-motion:no-preference){body{animation:page-in .16s ease-out}}
 </style>
 </head>
 <body>
@@ -183,10 +212,22 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
       </div></div>
   </header>
 
+  <div class="stats" id="stats" hidden>
+    <div class="stat"><b id="stB">0</b><span>pubs et pisteurs bloqués</span></div>
+    <div class="stat"><b id="stT">–</b><span>de chargement gagné</span></div>
+    <span class="note">Estimation : environ 50 ms par élément bloqué.</span>
+  </div>
+  <div class="defb" id="defb" hidden>
+    <p><b>Fais de LiteBrowser ton navigateur principal</b><small id="defS">Les liens de Discord, des mails et de toutes tes applis s’ouvriront ici.</small></p>
+    <button class="go" id="defGo">Définir par défaut</button>
+    <button class="later" id="defLater">Plus tard</button>
+  </div>
+
   <form id="f" autocomplete="off">
     <span class="ic">&#xE721;</span>
     <input id="q" placeholder="Rechercher sur le web ou saisir une adresse" autofocus>
     <select id="eng" title="Moteur de recherche"></select>
+    <div class="osug" id="osug" hidden></div>
   </form>
 
   <div class="grid">
@@ -279,9 +320,58 @@ function tick() {
 }
 
 // ---------- Recherche ----------
-$('f').addEventListener('submit', e => { e.preventDefault(); const v = $('q').value.trim(); if (v) post({ type: 'search', q: v }); });
+let orows = [], osel = 0, otimer;
+const OGLYPH = { fav: '&#xE735;', history: '&#xE81C;', url: '&#xE774;', search: '&#xE721;', suggest: '&#xE721;' };
+function renderOmni() {
+  const box = $('osug');
+  if (!orows.length || document.activeElement !== $('q')) { box.hidden = true; return; }
+  box.innerHTML = orows.map((r, i) => `<div class="os${i === osel ? ' on' : ''}" data-i="${i}"><span class="ic${r.kind === 'fav' ? ' fav' : ''}">${OGLYPH[r.kind] || OGLYPH.search}</span>` +
+    `<b>${esc(r.title)}</b>${r.sub ? `<span class="s">— ${esc(r.sub)}</span>` : ''}</div>`).join('');
+  box.hidden = false;
+}
+function hideOmni() { orows = []; osel = 0; $('osug').hidden = true; }
+function goRow(r) { if (r && r.url) post({ type: 'search', q: r.url }); }
+$('q').addEventListener('input', () => {
+  clearTimeout(otimer);
+  const q = $('q').value.trim();
+  if (!q) { hideOmni(); return; }
+  otimer = setTimeout(() => post({ type: 'omni', q }), 90);
+});
+$('q').addEventListener('keydown', e => {
+  if ($('osug').hidden || !orows.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    osel = (osel + (e.key === 'ArrowDown' ? 1 : orows.length - 1)) % orows.length;
+    renderOmni();
+    const r = orows[osel];
+    $('q').value = r.kind === 'search' || r.kind === 'suggest' ? r.title : r.url || r.title;
+  } else if (e.key === 'Escape') { e.preventDefault(); hideOmni(); }
+});
+$('q').addEventListener('blur', () => setTimeout(() => { $('osug').hidden = true; }, 150));
+$('q').addEventListener('focus', renderOmni);
+$('osug').addEventListener('mousedown', e => {
+  const el = e.target.closest('.os'); if (!el) return;
+  e.preventDefault(); goRow(orows[+el.dataset.i]);
+});
+$('f').addEventListener('submit', e => {
+  e.preventDefault();
+  const v = $('q').value.trim();
+  const r = !$('osug').hidden && osel > 0 ? orows[osel] : null;
+  hideOmni();
+  if (r) goRow(r); else if (v) post({ type: 'search', q: v });
+});
+$('defGo').addEventListener('click', () => post({ type: 'setDefault' }));
+$('defLater').addEventListener('click', () => { $('defb').hidden = true; post({ type: 'defaultLater' }); });
+function renderStats() {
+  const st = state.stats;
+  $('stats').hidden = !st || !st.on;
+  if (st) { $('stB').textContent = Number(st.blocked || 0).toLocaleString('fr-FR'); $('stT').textContent = st.saved || '–'; }
+  $('defb').hidden = !state.defaultAsk;
+  if (state.defaultAsk) $('defS').textContent = (state.currentBrowser && state.currentBrowser !== 'LiteBrowser' ? 'Aujourd’hui, c’est ' + state.currentBrowser + '. ' : '') +
+    'Les liens de Discord, des mails et de toutes tes applis s’ouvriront ici.';
+}
 $('eng').addEventListener('change', () => { post({ type: 'engine', id: $('eng').value }); placeholder(); });
-function placeholder() { const o = $('eng').options[$('eng').selectedIndex]; $('q').placeholder = 'Rechercher avec ' + (o ? o.text : 'le web') + ' ou saisir une adresse'; }
+function placeholder() { const o = $('eng').options[$('eng').selectedIndex]; $('q').placeholder = 'Rechercher avec ' + (o ? o.text : 'le web') + ' ou saisir une adresse  ·  :yt, :w, :tw…'; }
 $('city').addEventListener('click', () => post({ type: 'city' }));
 document.addEventListener('click', e => {
   const o = e.target.closest('[data-open]');
@@ -476,6 +566,10 @@ function renderTiles() {
 function render(d) {
   if (d.type === 'error') { $('lverr').textContent = d.text; return; }
   if (d.type === 'added') return;
+  if (d.type === 'omni') {
+    if (d.q === $('q').value.trim()) { orows = d.rows || []; osel = Math.min(osel, Math.max(0, orows.length - 1)); renderOmni(); }
+    return;
+  }
   if (d.type === 'channelHits') {
     if (d.q === $('lvin').value.trim()) { sugg = d.hits || []; suggSel = -1; renderSugg(); }
     return;
@@ -490,6 +584,7 @@ function render(d) {
     placeholder();
   }
   if (d.tiles) renderTiles();
+  renderStats();
   tick();
   if (first) $('q').focus();
 }
