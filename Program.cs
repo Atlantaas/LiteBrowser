@@ -777,6 +777,8 @@ class BrowserTab
     public float Progress, ProgressTarget, ProgressAlpha;
     /// Adresse de la première navigation, réessayée une fois si elle est coupée net.
     public string RetryUrl;
+    /// Dernière page vraiment chargée : c'est elle qu'on garde dans la session si l'onglet est resté blanc.
+    public string LastUrl;
 }
 
 /// Barre d'onglets : onglets arrondis, icône du site, haut-parleur (son), bouton ✕, bouton +.
@@ -2150,9 +2152,11 @@ class BrowserForm : Form
             var list = keep.Select(t =>
             {
                 var src = t.View.CoreWebView2?.Source ?? t.PendingUrl ?? "";
-                bool web = src.StartsWith("http://") || src.StartsWith("https://");
-                // pages intégrées (accueil, réglages…) : rouvertes comme page d'accueil
-                var url = !web || IsLocalPage(src) ? "" : src;
+                bool Web(string u) => u != null && (u.StartsWith("http://") || u.StartsWith("https://"));
+                // page restée blanche (chargement coupé, erreur) : on garde la dernière vraie page, jamais l'accueil à sa place
+                if (!Web(src) && Web(t.LastUrl ?? t.RetryUrl)) src = t.LastUrl ?? t.RetryUrl;
+                // Nur Live est rouvert tel quel ; les autres pages intégrées (accueil, réglages…) comme page d'accueil
+                var url = !Web(src) ? "" : IsNurLivePage(src) ? NurLive.Url : IsLocalPage(src) ? "" : src;
                 return new SessionTab(url, t.Title, t.Pinned);
             });
             int s = Cur != null && !Cur.Private ? keep.IndexOf(Cur) : 0;
@@ -2174,6 +2178,7 @@ class BrowserForm : Form
             var t = CreateTab(s.Url == "", priv: false);
             t.Lazy = true;
             t.PendingUrl = s.Url;
+            t.LastUrl = s.Url == "" ? null : s.Url;
             t.Pinned = s.Pinned;
             if (!string.IsNullOrWhiteSpace(s.Title)) t.Title = s.Title;
             if (s.Url != "") t.Icon = CachedIcon(s.Url);
@@ -2387,6 +2392,7 @@ class BrowserForm : Form
                 BeginInvoke(new Action(async () => { await Task.Delay(400); try { if (tabs.Contains(t) && core.Source == "about:blank") core.Navigate(again); } catch { } }));
             }
             else if (e.IsSuccess) t.RetryUrl = null;
+            if (e.IsSuccess && (core.Source.StartsWith("http://") || core.Source.StartsWith("https://"))) t.LastUrl = core.Source;
             t.Loading = false;
             t.ProgressTarget = 1;
             strip.Invalidate();
@@ -3997,7 +4003,8 @@ class BrowserForm : Form
         try
         {
             settings.TryGetValue("nurlive.path", out var configured);
-            var src = NurLive.FindFolder(NurLive.Candidates(configured));
+            // LITEBROWSER_SANS_NURLIVE=1 : comme sur le PC de test de GitHub (multistream intégré)
+            var src = Environment.GetEnvironmentVariable("LITEBROWSER_SANS_NURLIVE") == "1" ? null : NurLive.FindFolder(NurLive.Candidates(configured));
             if (src == null) return;
             var dst = Path.Combine(dataDir, "nurlive");
             NurLive.Prepare(src, dst);
