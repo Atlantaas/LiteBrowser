@@ -37,6 +37,7 @@ static class Program
         SearchTests();
         OmniTests();
         TabTests();
+        PaletteTests();
         WindowAndTabPlaceTests();
         NurLiveTests();
         PrayerParsing();
@@ -642,6 +643,19 @@ static class Program
         Check("onglet lâché après le dernier : au bout", TabPlace.DropIndex(tabsX, 900) == 4);
         Check("épinglé : reste dans le groupe des épinglés", TabPlace.InGroup(5, true, 2, 6) == 2 && TabPlace.InGroup(0, true, 2, 6) == 0);
         Check("non épinglé : jamais au milieu des épinglés", TabPlace.InGroup(0, false, 2, 6) == 2 && TabPlace.InGroup(9, false, 2, 6) == 6);
+    }
+
+    static void PaletteTests()
+    {
+        Section("Palette de commandes");
+        Check("rien tapé : 9 actions", Palette.Find("").Count == 9);
+        Check("« priere » : la pause prière d'abord", Palette.Find("priere").FirstOrDefault()?.Id == "prayerPause", Palette.Find("priere").FirstOrDefault()?.Id);
+        Check("« capt » : les deux captures", Palette.Find("capt").Select(c => c.Id).SequenceEqual(new[] { "shot", "shotFull" }), string.Join(",", Palette.Find("capt").Select(c => c.Id)));
+        Check("« Épingler » avec accent ou non", Palette.Find("epingl").FirstOrDefault()?.Id == "pin" && Palette.Find("Épingl").FirstOrDefault()?.Id == "pin");
+        Check("synonyme : « screenshot »", Palette.Find("screenshot").Any(c => c.Id == "shot"));
+        Check("deux mots : « son onglet » → couper le son", Palette.Find("son onglet").FirstOrDefault()?.Id == "mute", Palette.Find("son onglet").FirstOrDefault()?.Id);
+        Check("rien de trouvé : liste vide", Palette.Find("zzzz").Count == 0);
+        Check("identifiants uniques", Palette.All.Select(c => c.Id).Distinct().Count() == Palette.All.Length);
     }
 
     static void TabTests()

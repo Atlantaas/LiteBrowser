@@ -1162,4 +1162,65 @@ namespace LiteCore
             return ("Impossible de détacher la vidéo", "La page n’a pas répondu.");
         }
     }
+
+    // ==================================================================
+    //  Palette de commandes (F2, ou « > » dans la barre d'adresse) : on tape ce qu'on veut faire
+    // ==================================================================
+    public static class Palette
+    {
+        public sealed record Cmd(string Id, string Title, string Keys, string Words);
+
+        /// Toutes les actions. Words : autres mots qui la retrouvent (synonymes, anglais courant).
+        public static readonly Cmd[] All =
+        {
+            new("prayerPause", "Pause prière : couper le son de tout", "", "priere salat silence muet son couper"),
+            new("prayerResume", "Reprendre le son après la prière", "", "priere son remettre reprendre"),
+            new("prayers", "Horaires des prières", "", "priere salat horaires mosquee"),
+            new("newTab", "Nouvel onglet", "Ctrl+T", "tab ouvrir"),
+            new("privateTab", "Nouvel onglet privé", "Ctrl+Maj+N", "incognito prive navigation privee"),
+            new("reopen", "Rouvrir l'onglet fermé", "Ctrl+Maj+T", "restaurer annuler fermeture"),
+            new("closeTab", "Fermer l'onglet", "Ctrl+W", "quitter tab"),
+            new("duplicate", "Dupliquer l'onglet", "", "copie double"),
+            new("pin", "Épingler ou détacher l'onglet", "", "epingle pin"),
+            new("detach", "Ouvrir l'onglet dans une nouvelle fenêtre", "", "fenetre ecran sortir detacher"),
+            new("closeDupes", "Fermer les onglets en double", "", "doublons"),
+            new("tabSearch", "Rechercher dans les onglets ouverts", "Ctrl+Maj+A", "liste onglets trouver"),
+            new("mute", "Couper ou remettre le son de l'onglet", "Ctrl+M", "muet silence audio"),
+            new("reload", "Actualiser la page", "F5", "recharger refresh"),
+            new("find", "Rechercher dans la page", "Ctrl+F", "trouver mot texte"),
+            new("print", "Imprimer", "Ctrl+P", "pdf papier"),
+            new("shot", "Capture de la partie visible", "Ctrl+Maj+X", "screenshot image ecran"),
+            new("shotFull", "Capture de la page entière", "Ctrl+Maj+S", "screenshot image longue"),
+            new("pip", "Image dans l'image (vidéo flottante)", "Alt+P", "pip video flottante"),
+            new("lens", "Lens : copier le texte d'une image ou d'une vidéo", "Ctrl+Maj+L", "ocr texte google lens"),
+            new("split", "Vue partagée (deux pages côte à côte)", "Ctrl+Maj+D", "diviser cote a cote split"),
+            new("fullscreen", "Plein écran", "F11", "ecran entier"),
+            new("zoomIn", "Zoom avant", "Ctrl++", "agrandir plus gros"),
+            new("zoomOut", "Zoom arrière", "Ctrl+-", "reduire plus petit"),
+            new("zoomReset", "Zoom normal (100 %)", "Ctrl+0", "taille normale"),
+            new("favorite", "Ajouter ou retirer des favoris", "Ctrl+D", "favori marque page bookmark etoile"),
+            new("favBar", "Afficher ou masquer la barre de favoris", "Ctrl+Maj+B", "favoris barre"),
+            new("history", "Historique", "Ctrl+H", "pages visitees"),
+            new("downloads", "Téléchargements", "Ctrl+J", "fichiers download"),
+            new("settings", "Réglages", "Ctrl+,", "parametres options preferences"),
+            new("clearData", "Effacer les données de navigation", "Ctrl+Maj+Suppr", "cookies cache vider"),
+            new("adblock", "Bloqueur de pubs : activer ou couper", "", "pub publicite youtube bouclier"),
+            new("multi", "Ouvrir Nur Live (multistream)", "Ctrl+Maj+M", "twitch live stream lives m8 gentle mates"),
+            new("free", "Libérer la mémoire des onglets inactifs", "", "ram memoire leger performance"),
+        };
+
+        /// Actions qui correspondent à ce qui est tapé (chaque mot doit être retrouvé, sans accents ni majuscules) ;
+        /// les titres qui commencent par le texte d'abord. Rien de tapé : tout, dans l'ordre.
+        public static List<Cmd> Find(string query, int max = 9)
+        {
+            var words = TabTools.Fold(query ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 0) return All.Take(max).ToList();
+            return All
+                .Select((c, i) => (c, i, title: TabTools.Fold(c.Title), all: TabTools.Fold(c.Title + " " + c.Words)))
+                .Where(x => words.All(w => x.all.Split(' ', '(', ')', ':', ',').Any(t => t.StartsWith(w)) || x.all.Contains(w)))
+                .OrderBy(x => x.title.StartsWith(words[0]) ? 0 : x.title.Split(' ').Any(t => t.StartsWith(words[0])) ? 1 : 2)
+                .ThenBy(x => x.i)
+                .Take(max).Select(x => x.c).ToList();
+        }
+    }
 }

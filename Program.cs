@@ -1970,13 +1970,14 @@ sealed class TabCard : Form
 /// Une proposition de la barre d'adresse.
 sealed class OmniRow
 {
-    public string Kind, Title, Sub, Url, Fill;
+    public string Kind, Title, Sub, Url, Fill, Cmd;
     public BrowserTab Tab;
     public string Glyph => Kind switch
     {
         "fav" => Glyphs.StarFill,
         "history" => Glyphs.History,
         "tab" => "\uE8A7",
+        "cmd" => "\uE756",
         "url" => Glyphs.Globe,
         _ => Glyphs.Search,
     };
@@ -2322,7 +2323,9 @@ partial class BrowserForm : Form
             else if (e.KeyCode == Keys.Enter)
             {
                 e.SuppressKeyPress = true;
-                var row = omni.Visible && omni.Selected > 0 && omni.Selected < omni.Rows.Count ? omni.Rows[omni.Selected] : null;
+                bool palette = IsPaletteText(addr.Box.Text) || omni.Visible && omni.Rows.Count > 0 && omni.Rows[0].Kind == "cmd";
+                var row = omni.Visible && (omni.Selected > 0 || palette) && omni.Selected < omni.Rows.Count ? omni.Rows[omni.Selected] : null;
+                if (palette) { if (row != null) RunPaletteRow(row); return; }
                 addrEdited = false;
                 HideOmni();
                 if (row != null) OmniGo(row, e.Alt);
@@ -2939,7 +2942,7 @@ partial class BrowserForm : Form
         };
         // Plantage du moteur web : avant, tous les onglets devenaient blancs sans explication
         core.ProcessFailed += (_, e) => BeginInvoke(new Action(() => OnProcessFailed(t, e.ProcessFailedKind, e.Reason, e.ExitCode)));
-        core.IsDocumentPlayingAudioChanged += (_, _) => { t.Audio = core.IsDocumentPlayingAudio; strip.Invalidate(); };
+        core.IsDocumentPlayingAudioChanged += (_, _) => { t.Audio = core.IsDocumentPlayingAudio; if (t.Audio) PrayerMute(t); strip.Invalidate(); }; // pendant la pause prière, ce qui se lance reste muet
         core.IsMutedChanged += (_, _) => { t.Muted = core.IsMuted; strip.Invalidate(); };
         core.ContainsFullScreenElementChanged += (_, _) =>
         {
@@ -4074,6 +4077,7 @@ partial class BrowserForm : Form
 
     void OmniGo(OmniRow row, bool newTab)
     {
+        if (row.Kind == "cmd") { RunPaletteRow(row); return; }
         addrEdited = false;
         HideOmni();
         if (row.Tab != null && tabs.IndexOf(row.Tab) is int ti && ti >= 0) { SelectTab(ti); return; }
@@ -4090,6 +4094,7 @@ partial class BrowserForm : Form
         var rows = new List<OmniRow>();
         var t = (typed ?? "").Trim();
         if (t.Length == 0) return rows;
+        if (IsPaletteText(t)) return PaletteRows(typed); // « > » : palette de commandes (Features/Commandes.cs)
         if (Omni.Keyword(t) is { } kw)
         {
             var (name, prefix, q) = kw;
@@ -4129,6 +4134,7 @@ partial class BrowserForm : Form
         bool inline = grew && !omniNoInline;
         omniNoInline = false;
         omniTyped = text;
+        if (IsPaletteText(text)) { omniBox = text; ShowOmni(OmniRows(text, text, new List<Omni.Hit>(), null, false)); return; } // ni complétion ni suggestions Google
         var hits = Omni.Rank(text, FavEntries, HistEntries, 6);
         omniBox = text;
         if (inline && Omni.InlineCompletion(text, hits) is string comp)
@@ -4383,6 +4389,7 @@ partial class BrowserForm : Form
             jumua = prayerDay.Jumua,
             notify = prayerNotify,
             reminder = prayerReminder,
+            paused = PrayerPaused,
             times = prayerDay.Times.Select(t => new { key = t.Key, name = t.Name, time = t.Time.ToString(@"hh\:mm") }).ToArray()
         };
     }
@@ -4472,6 +4479,7 @@ partial class BrowserForm : Form
             switch (Str("type"))
             {
                 case "nlInit": SendNlInit(core); break;
+                case "prayerPause": if (isHome) { if (PrayerPaused) ResumePrayerPause(); else StartPrayerPause(); } break;
                 case "nlSave":
                     if (root.TryGetProperty("state", out var nlst)) OnNlSave(nlst.GetRawText());
                     break;
@@ -6157,6 +6165,7 @@ partial class BrowserForm : Form
                 if (parts[1] == "pc-integrees") { await IntegreesTest(parts[0]); continue; }
                 if (parts[1] == "pc-menus") { await PcMenusTest(parts[0]); continue; }
                 if (parts[1] == "pc-onglets") { await PcOngletsTest(parts[0]); continue; }
+                if (parts[1] == "commandes") { await CommandesTest(parts[0]); continue; } // Features/Commandes.cs
                 if (parts[1] == "youtube")
                 {
                     var yr = new List<string>();
@@ -6667,7 +6676,7 @@ partial class BrowserForm : Form
                 if (prayerNotify && now >= at && now < at.AddMinutes(5) && lastNotified != id)
                 {
                     lastNotified = id;
-                    Notify($"C'est l'heure de {name}", $"{name} – {time:hh\\:mm} · {prayerDay.City}");
+                    Notify($"C'est l'heure de {name}", $"{name} – {time:hh\\:mm} · {prayerDay.City}\nClique ici pour la pause prière : le son de tes onglets est coupé.", StartPrayerPause);
                 }
                 // Rappel quelques minutes avant (réglable : 5, 10, 15, 20, 30 min)
                 var before = at.AddMinutes(-prayerReminder);
@@ -6713,6 +6722,12 @@ partial class BrowserForm : Form
             }
             m.Items.Add(new ToolStripSeparator());
         }
+
+        // Pause prière : son coupé partout, remis ensuite tel quel (Features/Commandes.cs)
+        m.Items.Add(PrayerPaused
+            ? MI($"Reprendre le son ({prayerMuted.Count} onglet{(prayerMuted.Count > 1 ? "s" : "")})", ResumePrayerPause)
+            : MI("Pause prière : couper le son de tout", StartPrayerPause));
+        m.Items.Add(new ToolStripSeparator());
 
         // Source des horaires : calcul selon la ville, ou la mosquée choisie
         bool mosque = prayerSource == "mosque" && !string.IsNullOrEmpty(prayerMosque);
@@ -7390,6 +7405,7 @@ partial class BrowserForm : Form
         {
             case Keys.Control | Keys.T: _ = NewTab(); return true;
             case Keys.Control | Keys.Shift | Keys.N: _ = NewTab(priv: true); return true;
+            case Keys.F2: OpenPalette(); return true; // palette de commandes (Features/Commandes.cs)
             case Keys.Control | Keys.H: OpenSettings("historique"); return true;
             case Keys.Control | Keys.J: Core?.OpenDefaultDownloadDialog(); return true;
             case Keys.Control | Keys.Oemcomma: OpenSettings(); return true;

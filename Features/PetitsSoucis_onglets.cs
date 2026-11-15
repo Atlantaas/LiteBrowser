@@ -86,6 +86,7 @@ partial class BrowserForm
             case Keys.Control | Keys.Shift | Keys.PageUp:
             case Keys.Control | Keys.Shift | Keys.PageDown:
             case Keys.F11:
+            case Keys.F2: // palette de commandes
             case Keys.Control | Keys.L:
             case Keys.Alt | Keys.D:
             case Keys.F6:

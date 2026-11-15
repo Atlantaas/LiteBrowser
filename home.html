@@ -174,6 +174,9 @@ select option{background:var(--card);color:var(--text)}
 .bar i{display:block;height:100%;background:var(--accent);border-radius:4px;transition:width .4s}
 .pfoot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px}
 .pfoot .credit{margin:0}
+.ppause{margin-top:10px;width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px;border-radius:10px;border:1px solid var(--line, rgba(255,255,255,.08));background:var(--card2);color:var(--text);font:inherit;font-size:13px;cursor:pointer;transition:background .15s,border-color .15s}
+.ppause:hover{border-color:var(--accent)}
+.ppause.on{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
 .prow{display:flex;justify-content:space-between;padding:8px 6px;border-bottom:1px solid var(--line);font-size:14px}
 .prow:last-child{border-bottom:0}
 .prow.past{color:var(--sub)}
@@ -405,6 +408,7 @@ $('city').addEventListener('click', () => post({ type: 'city' }));
 document.addEventListener('click', e => {
   const o = e.target.closest('[data-open]');
   if (o) { e.preventDefault(); post({ type: 'openSettings', section: o.dataset.open || null }); }
+  if (e.target.closest('[data-prayer-pause]')) post({ type: 'prayerPause' });
 });
 $('mrefresh').addEventListener('click', () => post({ type: 'refreshMatches' }));
 
@@ -585,7 +589,8 @@ function renderPrayers() {
         <span>${esc(t.name)}</span><span class="tm">${esc(t.time)}</span></div>`).join('')}
     ${p.jumua ? `<div class="prow minor"><span>Jumu’a (vendredi)</span><span class="tm">${esc(p.jumua)}</span></div>` : ''}
     <div class="pfoot"><div class="credit">${esc(p.methodName || '')}</div>
-      <button class="link" data-open="prieres" title="Notifications et rappels des prières">${esc(remind)}</button></div>`);
+      <button class="link" data-open="prieres" title="Notifications et rappels des prières">${esc(remind)}</button></div>
+    <button class="ppause ${p.paused ? 'on' : ''}" data-prayer-pause title="${p.paused ? 'Remet le son des onglets coupés par la pause' : 'Coupe le son de tout ce qui joue, puis le remet tel quel après'}">${p.paused ? 'Reprendre le son' : 'Pause prière'}</button>`);
 }
 
 // ---------- Raccourcis ----------
