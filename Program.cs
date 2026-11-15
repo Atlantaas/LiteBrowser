@@ -846,6 +846,7 @@ class TabStrip : Control
     /// Onglet glissé à une autre place ; onglet tiré hors de la barre (point écran où le lâcher).
     public event Action<int, int> TabMove;
     public event Action<int, Point> TabTearOff;
+    public event Action<Graphics> PaintExtra;
     int dragIndex = -1;
     Point dragStart;
     bool dragging;
@@ -1149,6 +1150,7 @@ class TabStrip : Control
         }
 
         g.ResetClip();
+        PaintExtra?.Invoke(g); // repères dessinés par la fenêtre (vue partagée)
         // Bords qui débordent : fondu discret + petite flèche
         if (LeftArrowShown) DrawArrow(g, LeftArrow(), true, hoverLeft);
         if (RightArrowShown) DrawArrow(g, RightArrow(), false, hoverRight);
@@ -2955,12 +2957,13 @@ partial class BrowserForm : Form
 
     void ShowTabViews(int i)
     {
+        SplitPrepare(i); // vue partagée (Features/SplitView.cs) : les deux moitiés restent affichées
         // L'onglet choisi d'abord : ne jamais cacher l'ancien avant que le nouveau soit là (flash au changement d'onglet)
         foreach (int k in Enumerable.Range(0, tabs.Count).OrderBy(x => x != i))
         {
             var t = tabs[k];
             var core = t.View.CoreWebView2;
-            if (k == i)
+            if (k == i || SplitShows(t))
             {
                 t.View.Visible = true;
                 t.View.BringToFront();
@@ -3003,6 +3006,7 @@ partial class BrowserForm : Form
                 ScheduleDiscard(t);
             }
         }
+        SplitLayout();
     }
 
     static bool KeepsPlaying(CoreWebView2 core) =>
@@ -3047,7 +3051,7 @@ partial class BrowserForm : Form
     bool DiscardTab(BrowserTab t, bool force = false)
     {
         var core = t.View.CoreWebView2;
-        if (core == null || t.Lazy || t == Cur || !tabs.Contains(t)) return false;
+        if (core == null || t.Lazy || t == Cur || SplitShows(t) || !tabs.Contains(t)) return false;
         if (!force && (t.Private || t.Pinned || t.Audio || t.HasInput || KeepsPlaying(core))) return false;
         if (t.Private) return false; // un onglet privé libéré perdrait tout : jamais, même à la main
         var url = core.Source;
@@ -3094,6 +3098,7 @@ partial class BrowserForm : Form
         t.View.Dispose(); // libère réellement les processus du moteur
         t.Icon?.Dispose();
         if (tabs.Count == 0) { Close(); return; }
+        if (i == sel && SplitPartner(t) is BrowserTab half) { SelectTab(tabs.IndexOf(half)); return; } // vue partagée : l'autre moitié reste affichée
         // fenêtre ouverte par un site (connexion, extension…) : on revient à l'onglet qui l'a ouverte
         if (i == sel && t.Opener != null && tabs.Contains(t.Opener)) { SelectTab(tabs.IndexOf(t.Opener)); return; }
         if (i < sel) sel--;
@@ -3652,7 +3657,7 @@ partial class BrowserForm : Form
         tear.Enabled = tabs.Count > 1;
         m.Items.Add(tear);
         var free = MI("Libérer la mémoire de cet onglet", () => DiscardTab(t, force: true));
-        free.Enabled = t != Cur && !t.Lazy && !t.Private && t.View.CoreWebView2 != null;
+        free.Enabled = t != Cur && !SplitShows(t) && !t.Lazy && !t.Private && t.View.CoreWebView2 != null;
         m.Items.Add(free);
         if (!t.Private) m.Items.Add(MI(t.Pinned ? "Détacher l'onglet" : "Épingler l'onglet", () => TogglePin(t)));
         if (!t.Private && src != null && src.StartsWith("http") && !IsLocalPage(src))
@@ -3674,6 +3679,7 @@ partial class BrowserForm : Form
         right.Enabled = i < tabs.Count - 1;
         m.Items.Add(right);
         m.Items.Add(DuplicatesMenuItem());
+        if (tabs.Count > 1 || t == Cur) { m.Items.Add(new ToolStripSeparator()); SplitMenuItems(m, t); }
         m.Show(strip, pt);
     }
 
@@ -5993,6 +5999,7 @@ partial class BrowserForm : Form
                 if (parts[1] == "streams") { await StreamsTest(parts[0]); continue; }
                 if (parts[1] == "onglets") { await TabsTest(parts[0]); continue; }
                 if (parts[1] == "outils") { await ToolsTest(parts[0]); continue; }
+                if (parts[1] == "partage") { await SplitTest(parts[0]); continue; }
                 if (parts[1] == "fenetres")
                 {
                     var fr = new List<string>();
@@ -7219,6 +7226,7 @@ partial class BrowserForm : Form
             case Keys.Control | Keys.Shift | Keys.B: ToggleFavBar(); return true;
             case Keys.Control | Keys.Shift | Keys.L: StartLens(); return true;
             case Keys.Control | Keys.Shift | Keys.A: ShowTabSearch(); return true;
+            case Keys.Control | Keys.Shift | Keys.S: SplitToggle(); return true;
             case Keys.Control | Keys.Shift | Keys.M: OpenMulti(new List<string>(), chat: true); return true;
             case Keys.Control | Keys.M: ToggleMute(sel); return true;
             case Keys.F5:
