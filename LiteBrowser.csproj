@@ -10,7 +10,7 @@
     <AssemblyName>LiteBrowser</AssemblyName>
     <RootNamespace>LiteBrowser</RootNamespace>
     <Product>LiteBrowser</Product>
-    <Version>4.2.2</Version>
+    <Version>4.3.0</Version>
     <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
     <!-- RÃ©glages pour consommer le moins de RAM possible cÃ´tÃ© appli -->
     <InvariantGlobalization>true</InvariantGlobalization>
