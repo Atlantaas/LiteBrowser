@@ -845,4 +845,82 @@ namespace LiteCore
             return (incoming ?? Enumerable.Empty<(string, string)>()).Where(x => seen.Add(x.Url)).ToList();
         }
     }
+
+    // ==================================================================
+    //  Onglets : recherche dans les onglets ouverts, onglets en double
+    // ==================================================================
+    public static class TabTools
+    {
+        /// Minuscules sans accents (« Électricité » → « electricite ») : la recherche ne dépend ni des majuscules ni des accents.
+        public static string Fold(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var sb = new StringBuilder(s.Length);
+            foreach (var ch in s.ToLowerInvariant())
+            {
+                switch (ch)
+                {
+                    case 'à': case 'â': case 'ä': case 'á': case 'ã': case 'å': sb.Append('a'); break;
+                    case 'ç': sb.Append('c'); break;
+                    case 'é': case 'è': case 'ê': case 'ë': sb.Append('e'); break;
+                    case 'î': case 'ï': case 'í': case 'ì': sb.Append('i'); break;
+                    case 'ô': case 'ö': case 'ó': case 'ò': case 'õ': sb.Append('o'); break;
+                    case 'ù': case 'û': case 'ü': case 'ú': sb.Append('u'); break;
+                    case 'ÿ': case 'ý': sb.Append('y'); break;
+                    case 'ñ': sb.Append('n'); break;
+                    case 'œ': sb.Append("oe"); break;
+                    case 'æ': sb.Append("ae"); break;
+                    case '’': sb.Append('\''); break;
+                    default: sb.Append(ch); break;
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// Chaque mot tapé doit se trouver dans le titre ou dans l'adresse (sans https:// ni www.).
+        public static bool Matches(string query, string title, string url)
+        {
+            var words = Fold(query).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 0) return true;
+            var hay = Fold(title) + " " + Fold(Omni.Display(url ?? ""));
+            return words.All(w => hay.Contains(w));
+        }
+
+        /// Adresse comparée pour repérer les doublons (null : page qui n'est pas un site, jamais considérée en double).
+        public static string DuplicateKey(string url)
+        {
+            if (!Omni.IsWeb(url)) return null;
+            try
+            {
+                var s = new Uri(url.Trim()).AbsoluteUri; // hôte en minuscules, port par défaut retiré
+                return s.EndsWith("#") ? s[..^1] : s;
+            }
+            catch { return url.Trim(); }
+        }
+
+        /// Onglets à fermer pour ne garder qu'un exemplaire de chaque adresse. On garde l'onglet affiché s'il est concerné,
+        /// sinon un épinglé, sinon le premier. Un onglet épinglé n'est jamais fermé ; un onglet privé n'est le double que d'un autre onglet privé.
+        public static List<int> DuplicatesToClose(IReadOnlyList<(string Url, bool Pinned, bool Private)> tabs, int current)
+        {
+            var close = new List<int>();
+            if (tabs == null) return close;
+            var groups = new Dictionary<string, List<int>>();
+            for (int i = 0; i < tabs.Count; i++)
+            {
+                var key = DuplicateKey(tabs[i].Url);
+                if (key == null) continue;
+                key = (tabs[i].Private ? "p|" : "n|") + key;
+                if (!groups.TryGetValue(key, out var list)) groups[key] = list = new List<int>();
+                list.Add(i);
+            }
+            foreach (var g in groups.Values)
+            {
+                if (g.Count < 2) continue;
+                int keep = g.Contains(current) ? current : g.FirstOrDefault(i => tabs[i].Pinned, g[0]);
+                close.AddRange(g.Where(i => i != keep && !tabs[i].Pinned));
+            }
+            close.Sort();
+            return close;
+        }
+    }
 }
