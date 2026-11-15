@@ -42,6 +42,7 @@ static class Program
         NurLiveTests();
         PrayerParsing();
         YouTube();
+        Mobilic();
         ToolsTests();
         if (online) await Online();
 
@@ -611,6 +612,20 @@ static class Program
         Check("script YouTube validé", p.ExitCode == 0);
     }
 
+
+    static void Mobilic()
+    {
+        Section("Pré-remplissage Mobilic");
+        var js = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "mobilic-prefill.js"));
+        Check("limité au domaine Mobilic", js.Contains("mobilic.beta.gouv.fr"));
+        Check("inactif dans un iframe (cadre principal seulement)", js.Contains("window.top !== window"));
+        Check("nom de mission par défaut", js.Contains("mondial relay"));
+        Check("adresse Rombas", js.Contains("Chronopost-Mondial Relay (Rombas)"));
+        Check("véhicule 175", js.Contains("\"175\""));
+        Check("motif 1", js.Contains("reason: \"1\""));
+        Check("aucun clic automatique sur Continuer", !js.Contains("Continuer") || js.Contains("clique toi-même sur Continuer"));
+        Check("valeurs mémorisées en localStorage", js.Contains("localStorage"));
+    }
     static string FindNode()
     {
         foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))

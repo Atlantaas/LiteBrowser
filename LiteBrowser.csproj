@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -10,7 +10,7 @@
     <AssemblyName>LiteBrowser</AssemblyName>
     <RootNamespace>LiteBrowser</RootNamespace>
     <Product>LiteBrowser</Product>
-    <Version>4.3.3</Version>
+    <Version>4.3.4</Version>
     <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
     <!-- RÃ©glages pour consommer le moins de RAM possible cÃ´tÃ© appli -->
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -25,6 +25,7 @@
     <EmbeddedResource Include="multi.html" LogicalName="multi.html" />
     <EmbeddedResource Include="settings.html" LogicalName="settings.html" />
     <EmbeddedResource Include="nurbridge.js" LogicalName="nurbridge.js" />
+    <EmbeddedResource Include="Features\mobilic-prefill.js" LogicalName="mobilic-prefill.js" />
     <Compile Remove="tests/**" />
     <None Remove="tests/**" />
   </ItemGroup>

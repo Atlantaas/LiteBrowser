@@ -2823,6 +2823,9 @@ partial class BrowserForm : Form
             try { t.YtScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(YouTubeAdblock.Script); } catch { }
         }
 
+        // Mobilic : le script ne s'active que sur mobilic.beta.gouv.fr (cadre principal).
+        try { await core.AddScriptToExecuteOnDocumentCreatedAsync(MobilicPrefill.Script); } catch { }
+
         // Téléchargements : on suit chaque fichier et on prévient clairement en cas de souci
         core.DownloadStarting += (_, e) =>
         {

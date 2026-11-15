@@ -14,6 +14,7 @@
     <Compile Include="../Features/PetitsSoucis_onglets.Logique.cs" Link="PetitsSoucis_onglets.Logique.cs" />
     <None Include="fixtures/**" CopyToOutputDirectory="PreserveNewest" />
     <None Include="youtube_test.js" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../Features/mobilic-prefill.js" Link="mobilic-prefill.js" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../nurbridge.js" Link="nurbridge.js" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
