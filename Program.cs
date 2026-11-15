@@ -641,10 +641,50 @@ static class Fade
         f.Shown += (_, _) => Start(f, ms);
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
+    static bool AnyButtonDown() => (GetAsyncKeyState(0x01) & 0x8000) != 0 || (GetAsyncKeyState(0x02) & 0x8000) != 0 || (GetAsyncKeyState(0x04) & 0x8000) != 0;
+
+    /// Dernier menu refermé par un clic à côté : le bouton qui l'avait ouvert ne le rouvre pas dans la foulée.
+    public static DateTime LastOutsideClose;
+
+    static bool Inside(ToolStripDropDown d, Point p)
+    {
+        if (d == null || d.IsDisposed || !d.Visible) return false;
+        if (d.Bounds.Contains(p)) return true;
+        foreach (var item in d.Items.OfType<ToolStripDropDownItem>())
+            if (item.HasDropDownItems && item.DropDown.Visible && Inside(item.DropDown, p)) return true;
+        return false;
+    }
+
     public static void In(ToolStripDropDown m, int ms = 90)
     {
+        System.Windows.Forms.Timer watch = null;
+        void Stop() { if (watch == null) return; watch.Stop(); watch.Dispose(); watch = null; }
         m.Opening += (_, _) => m.Opacity = 0;
-        m.Opened += (_, _) => Run(() => m.IsDisposed || !m.Visible, v => m.Opacity = v, ms);
+        m.Opened += (_, _) =>
+        {
+            Run(() => m.IsDisposed || !m.Visible, v => m.Opacity = v, ms);
+            // Un clic dans la page (moteur web à part) n'est jamais signalé au menu : on regarde le vrai bouton de la souris,
+            // seulement tant que le menu est ouvert.
+            Stop();
+            bool wasDown = AnyButtonDown();
+            watch = new System.Windows.Forms.Timer { Interval = 30 };
+            watch.Tick += (_, _) =>
+            {
+                if (m.IsDisposed || !m.Visible) { Stop(); return; }
+                bool down = AnyButtonDown();
+                if (down && !wasDown && !Inside(m, Cursor.Position))
+                {
+                    LastOutsideClose = DateTime.Now;
+                    Stop();
+                    m.Close(ToolStripDropDownCloseReason.AppClicked);
+                    return;
+                }
+                wasDown = down;
+            };
+            watch.Start();
+        };
+        m.Closed += (_, _) => Stop();
     }
 }
 
@@ -2733,7 +2773,7 @@ partial class BrowserForm : Form
         // Cadres publicitaires (iframes) bloqués eux aussi
         core.FrameNavigationStarting += (_, e) =>
         {
-            if (adblock && !t.AdsAllowed && Uri.TryCreate(e.Uri, UriKind.Absolute, out var fu) && IsBlocked(fu.Host)) { e.Cancel = true; Counted(t); }
+            if (adblock && !t.AdsAllowed && Uri.TryCreate(e.Uri, UriKind.Absolute, out var fu) && IsBlocked(fu.Host) && !(YouTubeBlocking && IsYouTubePage(core.Source))) { e.Cancel = true; Counted(t); }
         };
 
         // Bloqueur de pubs YouTube (le script ne s'active que sur youtube.com)
@@ -3205,6 +3245,7 @@ partial class BrowserForm : Form
     };
 
     bool YouTubeBlocking => adblock && !SiteList.Contains(adblockAllow, "https://www.youtube.com/");
+    static bool IsYouTubePage(string url) => Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Host == "youtube.com" || u.Host.EndsWith(".youtube.com"));
 
     // ---------- Bouclier (pubs bloquées sur la page) ----------
 
@@ -3799,10 +3840,43 @@ partial class BrowserForm : Form
             SaveSessionSoon();
         };
         if (Offscreen) { w.ShowInTaskbar = false; w.Location = new Point(-4000, -4000); }
+        w.Opacity = 0;
         w.Show();
+        Fade.Start(w, 160);
         if (!Offscreen) w.Activate();
         SelectTab(Math.Clamp(sel, 0, tabs.Count - 1));
         SaveSessionSoon();
+        // Tant que le bouton reste enfoncé, la fenêtre suit la souris (on la pose où on veut, même sur l'autre écran)
+        if (screenPoint != null && !Offscreen && MouseButtons.HasFlag(MouseButtons.Left) || screenPoint != null && !Offscreen && FollowTest) FollowMouse(w, new Point(S(140), S(18)));
+        // Fenêtre glissée par sa barre de titre et lâchée sur la barre d'onglets : l'onglet y revient
+        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && OverTabStrip(Cursor.Position)) ReattachWindow(w); };
+    }
+
+    /// Tests : simule « bouton encore enfoncé » pour vérifier le suivi de la souris.
+    static bool FollowTest => false;
+
+    bool OverTabStrip(Point screen) => Visible && WindowState != FormWindowState.Minimized && strip.RectangleToScreen(strip.ClientRectangle).Contains(screen);
+
+    /// La fenêtre détachée colle à la souris (prise par le haut, comme un onglet) jusqu'à ce que le bouton soit relâché.
+    void FollowMouse(DetachedWindow w, Point grab)
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 12 };
+        timer.Tick += (_, _) =>
+        {
+            if (w.IsDisposed) { timer.Stop(); timer.Dispose(); return; }
+            var c = Cursor.Position;
+            w.Location = new Point(c.X - grab.X, c.Y - grab.Y);
+            if ((MouseButtons & MouseButtons.Left) != 0) return;
+            timer.Stop(); timer.Dispose();
+            if (OverTabStrip(c)) ReattachWindow(w); // relâchée sur la barre d'onglets : l'onglet y retourne
+            else
+            {
+                var wa = Screen.FromPoint(c).WorkingArea; // jamais hors de l'écran
+                w.Location = new Point(Math.Clamp(w.Left, wa.Left - w.Width + S(120), wa.Right - S(120)), Math.Clamp(w.Top, wa.Top, wa.Bottom - S(60)));
+                w.Activate();
+            }
+        };
+        timer.Start();
     }
 
     /// « Remettre dans LiteBrowser » : l'onglet revient dans la barre, juste après l'onglet affiché.
@@ -6045,6 +6119,38 @@ partial class BrowserForm : Form
                     File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), fr);
                     continue;
                 }
+                if (parts[1] == "youtube")
+                {
+                    var yr = new List<string>();
+                    void Y(string what, bool ok, string d = "") => yr.Add((ok ? "OK    " : "ÉCHEC ") + what + (d.Length > 0 ? " · " + d : ""));
+                    await NewTab("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+                    for (int i = 0; i < 100 && Cur.Loading; i++) await Task.Delay(100);
+                    await Task.Delay(5000);
+                    var yc = Core;
+                    // profil de test vierge : fenêtre des cookies refusée (comme le ferait Ryan), puis lecture comme après un clic
+                    try { await yc.ExecuteScriptAsync("(() => { const b = [...document.querySelectorAll('button')].find(x => /Tout refuser|Reject all/i.test(x.textContent)); if (b) b.click(); })()"); } catch { }
+                    await Task.Delay(6000);
+                    try { await yc.CallDevToolsProtocolMethodAsync("Runtime.evaluate", "{\"expression\":\"(document.querySelector('video')||{play(){}}).play()\",\"userGesture\":true}"); } catch { }
+                    await Task.Delay(3000);
+                    async Task<string> J(string code) { try { return await yc.ExecuteScriptAsync(code); } catch (Exception ex) { return "erreur " + ex.Message; } }
+                    var native = await J("JSON.stringify([JSON.parse, window.fetch, Function.prototype.toString].map(f => /\\[native code\\]/.test(Function.prototype.toString.call(f))))");
+                    Y("fonctions remplacées indiscernables des vraies (JSON.parse, fetch, toString)", native.Contains("[true,true,true]"), native);
+                    var names = await J("JSON.stringify([JSON.parse.name, JSON.parse.length, fetch.name, fetch.length])");
+                    Y("même nom et même nombre de paramètres que les vraies", names.Contains("[\\\"parse\\\",2,\\\"fetch\\\",1]"), names);
+                    var ads = await J("JSON.stringify({place: !!(window.ytInitialPlayerResponse && (ytInitialPlayerResponse.adPlacements || ytInitialPlayerResponse.playerAds || ytInitialPlayerResponse.adSlots)), showing: !!document.querySelector('.html5-video-player.ad-showing')})");
+                    Y("aucune pub dans les données du lecteur ni à l'écran", ads.Contains("\\\"place\\\":false") && ads.Contains("\\\"showing\\\":false"), ads);
+                    var flag = await J("JSON.stringify({key: Object.keys(window).includes('__lbYtAdblock'), on: !!window.__lbYtAdblock})");
+                    Y("aucune trace visible du bloqueur dans la page", flag.Contains("\\\"key\\\":false") && flag.Contains("\\\"on\\\":true"), flag);
+                    var t1 = await J("(document.querySelector('video')||{}).currentTime||0"); await Task.Delay(5000); var t2 = await J("(document.querySelector('video')||{}).currentTime||0");
+                    double.TryParse(t1, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var a1);
+                    double.TryParse(t2, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var a2);
+                    Y("la vidéo avance", a2 - a1 > 2, $"{a1:0.0} → {a2:0.0} s");
+                    var enf = await J("String(!!document.querySelector('ytd-enforcement-message-view-model'))");
+                    Y("pas de fenêtre « bloqueurs non autorisés »", enf.Contains("false"), enf);
+                    await ShotAsync(parts[0] + "_video");
+                    File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), yr);
+                    continue;
+                }
                 if (parts[1] == "bloque")
                 {
                     var br = new List<string>();
@@ -6974,6 +7080,7 @@ partial class BrowserForm : Form
 
     void ShowMenu()
     {
+        if ((DateTime.Now - Fade.LastOutsideClose).TotalMilliseconds < 250 && menuBtn.RectangleToScreen(menuBtn.ClientRectangle).Contains(Cursor.Position)) return;
         lastMenu?.Dispose();
         var r = new MenuRenderer(theme, iconSmall);
         var font = new Font("Segoe UI", 9.5f);

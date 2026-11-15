@@ -670,51 +670,65 @@ namespace LiteCore
         /// 3) masque les encarts publicitaires de la page.
         public const string Script = @"(function () {
   if (!/(^|\.)youtube\.com$/.test(location.hostname) || window.__lbYtAdblock) return;
-  window.__lbYtAdblock = true;
+  // repère invisible (non énumérable) : rien ne trahit le bloqueur dans la liste des propriétés de la page
+  try { Object.defineProperty(window, '__lbYtAdblock', { value: true, enumerable: false }); } catch (e) { return; }
+
+  // Les fonctions remplacées se présentent exactement comme celles du navigateur (texte « [native code] », nom, nombre de paramètres)
+  var fnToString = Function.prototype.toString;
+  var disguised = new WeakMap();
+  function disguise(fake, real) { disguised.set(fake, fnToString.call(real)); return fake; }
+  var toString = { toString: function toString() { return disguised.has(this) ? disguised.get(this) : fnToString.call(this); } }.toString;
+  disguise(toString, fnToString);
+  try { Object.defineProperty(Function.prototype, 'toString', { value: toString, writable: true, configurable: true, enumerable: false }); } catch (e) {}
+
+  // 1) les pubs sont retirées des données du lecteur avant qu'il ne les lise : il n'en demande donc aucune
   var AD_KEYS = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams'];
   function prune(o) {
     if (!o || typeof o !== 'object') return o;
     try {
       for (var i = 0; i < AD_KEYS.length; i++) if (AD_KEYS[i] in o) delete o[AD_KEYS[i]];
+      var mr = o.auxiliaryUi && o.auxiliaryUi.messageRenderers;
+      if (mr && mr.enforcementMessageViewModel) delete mr.enforcementMessageViewModel;
       if (o.playerResponse) prune(o.playerResponse);
       if (o.response) prune(o.response);
       if (Array.isArray(o)) for (var j = 0; j < o.length; j++) prune(o[j]);
     } catch (e) {}
     return o;
   }
-  window.__lbPrune = prune;
 
-  var parse = JSON.parse;
-  JSON.parse = function () { return prune(parse.apply(this, arguments)); };
+  var parse0 = JSON.parse;
+  var parse = { parse: function parse(text, reviver) { return prune(parse0.apply(this, arguments)); } }.parse;
+  JSON.parse = disguise(parse, parse0);
 
   ['ytInitialPlayerResponse', 'ytInitialData'].forEach(function (name) {
     var value;
     try {
-      Object.defineProperty(window, name, {
-        configurable: true,
-        get: function () { return value; },
-        set: function (v) { value = prune(v); }
-      });
+      Object.defineProperty(window, name, { configurable: true, enumerable: true,
+        get: function () { return value; }, set: function (v) { value = prune(v); } });
     } catch (e) {}
   });
 
-  var origFetch = window.fetch;
-  if (origFetch) window.fetch = function (input, init) {
-    var url = typeof input === 'string' ? input : (input && input.url) || '';
-    var p = origFetch.apply(this, arguments);
-    if (!/\/youtubei\/v1\/(player|next)/.test(url)) return p;
-    return p.then(function (res) {
-      return res.clone().json().then(function (j) {
-        var body = JSON.stringify(prune(j));
-        return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
-      }).catch(function () { return res; });
-    });
-  };
+  var fetch0 = window.fetch;
+  if (fetch0) {
+    var fetch = { fetch: function fetch(input) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      var p = fetch0.apply(this, arguments);
+      if (!/\/youtubei\/v1\/(player|next|reel)/.test(url)) return p;
+      return p.then(function (res) {
+        return res.clone().json().then(function (j) {
+          return new Response(JSON.stringify(prune(j)), { status: res.status, statusText: res.statusText, headers: res.headers });
+        }).catch(function () { return res; });
+      });
+    } }.fetch;
+    window.fetch = disguise(fetch, fetch0);
+  }
 
+  // 2) encarts publicitaires de la page masqués (rien n'est bloqué au réseau sur YouTube : c'est ce qu'il surveille)
   var css = 'ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,ytd-banner-promo-renderer,ytd-promoted-sparkles-web-renderer,' +
             'ytd-display-ad-renderer,ytd-statement-banner-renderer,ytd-companion-slot-renderer,ytd-player-legacy-desktop-watch-ads-renderer,' +
             '#masthead-ad,#player-ads,.ytp-ad-overlay-container,.ytp-ad-message-container,ytd-merch-shelf-renderer,' +
-            'ytd-rich-item-renderer:has(ytd-ad-slot-renderer),ytd-reel-video-renderer:has(.ytd-ad-slot-renderer){display:none!important}';
+            'ytd-rich-item-renderer:has(ytd-ad-slot-renderer),ytd-reel-video-renderer:has(.ytd-ad-slot-renderer),' +
+            'tp-yt-paper-dialog:has(ytd-enforcement-message-view-model),ytd-enforcement-message-view-model{display:none!important}';
   function addStyle() {
     if (document.getElementById('lb-yt-adblock')) return;
     var s = document.createElement('style'); s.id = 'lb-yt-adblock'; s.textContent = css;
@@ -722,15 +736,25 @@ namespace LiteCore
   }
   if (document.documentElement) addStyle(); else document.addEventListener('DOMContentLoaded', addStyle);
 
-  function skip() {
-    var player = document.querySelector('.html5-video-player');
-    if (!player || !player.classList.contains('ad-showing')) return;
-    var v = player.querySelector('video');
-    if (v && isFinite(v.duration) && v.duration > 0) { v.muted = true; v.currentTime = v.duration; }
-    var b = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern');
-    if (b) b.click();
-  }
-  setInterval(skip, 300);
+  // 3) filet de sécurité : la fenêtre « bloqueurs non autorisés » est retirée et la vidéo repart ;
+  //    une pub qui passerait quand même est passée avec le bouton « Ignorer » (jamais en sautant dans la vidéo)
+  var wasPlaying = false;
+  setInterval(function () {
+    var v = document.querySelector('video.html5-main-video, #movie_player video');
+    var gate = document.querySelector('ytd-enforcement-message-view-model');
+    if (gate) {
+      var dlg = gate.closest('tp-yt-paper-dialog'); if (dlg) dlg.remove(); else gate.remove();
+      var bd = document.querySelector('tp-yt-iron-overlay-backdrop.opened'); if (bd) bd.remove();
+      document.body && (document.body.style.overflow = '');
+      if (v && v.paused && wasPlaying) v.play().catch(function () {});
+    }
+    if (v) wasPlaying = !v.paused || wasPlaying && !!gate;
+    var player = document.querySelector('.html5-video-player.ad-showing');
+    if (player) {
+      var b = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+      if (b) b.click();
+    }
+  }, 500);
 })();";
     }
 

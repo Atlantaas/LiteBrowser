@@ -46,8 +46,19 @@ function makeBrowser(hostname) {
   b.ctx.ytInitialPlayerResponse = { adPlacements: [1], streamingData: { a: 1 } };
   check('ytInitialPlayerResponse nettoyé', !b.ctx.ytInitialPlayerResponse.adPlacements && b.ctx.ytInitialPlayerResponse.streamingData.a === 1);
 
-  const nested = b.ctx.__lbPrune({ playerResponse: { playerAds: [1], ok: true } });
+  const nested = b.J.parse('{"playerResponse":{"playerAds":[1],"ok":true}}');
   check('réponse imbriquée (playerResponse) nettoyée', !nested.playerResponse.playerAds && nested.playerResponse.ok);
+
+  const gate = b.J.parse('{"auxiliaryUi":{"messageRenderers":{"enforcementMessageViewModel":{"x":1},"other":1}}}');
+  check('message « bloqueurs non autorisés » retiré des données', !gate.auxiliaryUi.messageRenderers.enforcementMessageViewModel && gate.auxiliaryUi.messageRenderers.other === 1);
+
+  // indétectable : les fonctions remplacées se présentent comme celles du navigateur
+  const toStr = vm.runInContext('Function.prototype.toString', b.ctx);
+  check('JSON.parse se présente comme la vraie ([native code])', /\[native code\]/.test(toStr.call(b.J.parse)));
+  check('fetch se présente comme le vrai ([native code])', /\[native code\]/.test(toStr.call(b.ctx.fetch)) || !/__lb|prune/.test(toStr.call(b.ctx.fetch)));
+  check('toString lui-même se présente comme le vrai', /\[native code\]/.test(toStr.call(toStr)));
+  check('même nom et même nombre de paramètres', b.J.parse.name === 'parse' && b.J.parse.length === 2 && b.ctx.fetch.name === 'fetch');
+  check('aucune trace dans la liste des propriétés de la page', !Object.keys(b.ctx).includes('__lbYtAdblock') && b.ctx.__lbYtAdblock === true);
 
   const res = await b.ctx.fetch('https://www.youtube.com/youtubei/v1/player?key=x');
   const body = await res.json();
@@ -59,7 +70,7 @@ function makeBrowser(hostname) {
   check('style anti-encarts ajouté', b.styles.some(s => s.id === 'lb-yt-adblock' && s.textContent.includes('ytd-ad-slot-renderer')));
 
   b.intervals.forEach(fn => fn());
-  check('pub en cours : passée à la fin + coupée', b.video.currentTime === 15 && b.video.muted);
+  check('pub qui passerait quand même : pas de saut dans la vidéo (détectable)', b.video.currentTime === 0);
   check('bouton "Ignorer" cliqué', b.skipped());
 
   const other2 = makeBrowser('www.google.com');
