@@ -2896,6 +2896,7 @@ partial class BrowserForm : Form
         if (!(IsHome(url) || Omni.IsWeb(url))) return false;
         StopSuspend(t);
         StopDiscard(t);
+        DropPermAsks(t); // demande d'autorisation en attente : abandonnée, elle serait périmée au retour
         var old = t.View;
         t.View = new WebView2 { Dock = DockStyle.Fill, Visible = false, DefaultBackgroundColor = theme.Bar };
         content.Controls.Add(t.View);

@@ -19,6 +19,7 @@ partial class BrowserForm
     string sitePrefsPath;
     ZoomBadge zoomBadge;
     SitePermCard permCard;
+    Form permCardHost; // fenêtre passée à Show(owner) : Windows garde ce propriétaire natif même après Owner = null
     PermAsk permShown;
     readonly HashSet<Form> permHooked = new();
     System.Windows.Forms.Timer sitesSaveTimer;
@@ -190,6 +191,9 @@ partial class BrowserForm
     }
 
     /// Ctrl + / − / 0 (aussi ceux du pavé numérique). Ctrl+molette passe par le moteur et ZoomFactorChanged.
+    /// Clavier AZERTY : « = » / « + » (Maj) = Oemplus, « 0 » = D0, mais le « - » de la rangée principale est D6,
+    /// et Ctrl+6 sélectionne déjà le 6e onglet (ProcessCmdKey) : on le lui laisse. Ctrl+− : pavé numérique,
+    /// ou OemMinus (claviers QWERTY) ; dans une page, le moteur gère aussi Ctrl+- lui-même.
     bool SiteZoomKey(Keys k)
     {
         switch (k)
@@ -312,21 +316,48 @@ partial class BrowserForm
         foreach (var a in permQueue.Where(x => x.Tab == t).ToList()) DecidePerm(a, false, false);
     }
 
+    /// Fenêtre détachée encore vivante de l'onglet (null : onglet de la fenêtre principale, ou fenêtre fermée).
+    /// Ne compte pas sur t.Window remis à null à la fermeture : une fenêtre disposée vaut « pas de fenêtre ».
+    static DetachedWindow LiveWindow(BrowserTab t) => t.Window is { IsDisposed: false, Disposing: false } w ? w : null;
+
+    /// Onglet disparu : fermé dans la fenêtre principale, ou sa fenêtre détachée fermée/disposée.
+    bool PermTabGone(BrowserTab t) => t.Window != null ? LiveWindow(t) == null && !tabs.Contains(t) : !tabs.Contains(t);
+
+    /// Cache la carte et la détache de son propriétaire : WinForms dispose les formulaires possédés avec leur
+    /// propriétaire, une carte restée attachée à une fenêtre détachée serait détruite à sa fermeture.
+    void HidePermCard()
+    {
+        if (permCard == null || permCard.IsDisposed) return;
+        if (permCard.Visible) permCard.Hide();
+        if (permCard.Owner != null) permCard.Owner = null;
+    }
+
+    /// La fenêtre qui a porté la carte se ferme : Windows détruirait la carte avec elle (propriétaire natif),
+    /// même cachée et sans Owner. On la jette proprement ; ShowNextPerm en recrée une au besoin.
+    void DropPermCardOf(Form f)
+    {
+        if (permCard == null || (permCardHost != f && permCard.Owner != f)) return;
+        var card = permCard;
+        permCard = null; permCardHost = null; permShown = null;
+        try { if (!card.IsDisposed) { card.Owner = null; card.Hide(); card.Dispose(); } } catch { }
+    }
+
     /// Affiche la carte de la première demande de l'onglet visible (onglet affiché ou fenêtre détachée).
     void ShowNextPerm()
     {
+        if (permCard is { IsDisposed: true }) { permCard = null; permCardHost = null; permShown = null; } // détruite malgré tout : on la recrée
         if (permQueue.Count == 0 && permCard is not { Visible: true }) return;
-        // onglets fermés entre-temps : demande refusée, sans rien retenir
-        foreach (var gone in permQueue.Where(a => !tabs.Contains(a.Tab) && a.Tab.Window == null).ToList()) DecidePerm(gone, false, false);
-        var next = permQueue.FirstOrDefault(a => a.Tab.Window != null ? a.Tab.Window.WindowState != FormWindowState.Minimized
-                                                                      : a.Tab == Cur && WindowState != FormWindowState.Minimized);
-        if (next == null) { permShown = null; permCard?.Hide(); return; }
+        // onglets fermés entre-temps (ou fenêtre détachée fermée) : demande refusée, sans rien retenir
+        foreach (var gone in permQueue.Where(a => PermTabGone(a.Tab)).ToList()) DecidePerm(gone, false, false);
+        var next = permQueue.FirstOrDefault(a => LiveWindow(a.Tab) is { } w ? w.WindowState != FormWindowState.Minimized
+                                                                           : a.Tab == Cur && WindowState != FormWindowState.Minimized);
+        if (next == null) { permShown = null; HidePermCard(); return; }
         if (permCard == null)
         {
             permCard = new SitePermCard(iconFont);
             permCard.Chosen += (allow, remember) => { if (permShown != null) DecidePerm(permShown, allow, remember); };
         }
-        Form owner = (Form)next.Tab.Window ?? this;
+        Form owner = (Form)LiveWindow(next.Tab) ?? this;
         HookPermOwner(owner);
         if (permShown != next)
         {
@@ -334,12 +365,14 @@ partial class BrowserForm
             permCard.Set(next.Host, next.Kind, next.Tab.Private, theme);
             if (permCard.Visible) permCard.Hide();
         }
+        if (permCard.Visible && permCard.Owner != owner) permCard.Hide(); // la carte change de fenêtre
         PlacePermCard();
         if (!permCard.Visible)
         {
             if (permCard.Owner != owner) permCard.Owner = owner;
             permCard.Opacity = 0;
             permCard.Show(owner);
+            permCardHost = owner;
             Fade.Start(permCard, 140);
             permCardsShown++;
         }
@@ -349,17 +382,26 @@ partial class BrowserForm
     void HookPermOwner(Form f)
     {
         if (f == this || !permHooked.Add(f)) return;
-        f.LocationChanged += (_, _) => { if (permShown?.Tab.Window == f) PlacePermCard(); };
-        f.Resize += (_, _) => { if (permQueue.Any(a => a.Tab.Window == f)) ShowNextPerm(); };
-        f.FormClosed += (_, _) => permHooked.Remove(f);
+        f.LocationChanged += (_, _) => { if (permShown != null && LiveWindow(permShown.Tab) == f) PlacePermCard(); };
+        f.Resize += (_, _) => { if (!f.IsDisposed && permQueue.Any(a => a.Tab.Window == f)) ShowNextPerm(); };
+        // avant la destruction de la fenêtre : la carte la quitte, sinon elle part avec elle
+        f.FormClosing += (_, e) => { if (!e.Cancel) DropPermCardOf(f); };
+        f.FormClosed += (_, _) =>
+        {
+            permHooked.Remove(f);
+            DropPermCardOf(f);
+            // demandes de l'onglet de cette fenêtre (sauf s'il revient dans la barre) : abandonnées, puis carte suivante
+            foreach (var a in permQueue.Where(a => a.Tab.Window == f && !tabs.Contains(a.Tab)).ToList()) DecidePerm(a, false, false);
+            if (!IsDisposed) BeginInvoke(new Action(ShowNextPerm));
+        };
     }
 
     void PlacePermCard()
     {
-        if (permCard == null || permShown == null) return;
-        var w = permShown.Tab.Window;
+        if (permCard == null || permCard.IsDisposed || permShown == null) return;
+        var w = LiveWindow(permShown.Tab);
         // sous la barre d'adresse, alignée sur son bord gauche (fenêtre détachée : sous sa barre ;
-        // plein écran, barre masquée : en haut à gauche de la page)
+        // plein écran, barre masquée : en haut à gauche de la page). Jamais PointToScreen sur une fenêtre disposée.
         var p = w != null ? w.PointToScreen(new Point(S(110), S(50)))
               : toolbar.Visible ? addr.PointToScreen(new Point(S(4), addr.Height + S(8)))
               : content.PointToScreen(new Point(S(12), S(12)));
@@ -473,6 +515,30 @@ partial class BrowserForm
         {
             for (int i = 0; i < 30; i++) { if (await ProfileState(Cur?.View.CoreWebView2?.Profile ?? MainCore()?.Profile, host, k) == CoreWebView2PermissionState.Default) return; await Task.Delay(100); }
         }
+        // nouvelle demande (caméra, sinon position si ce PC n'a pas de caméra) sur un onglet de la fenêtre principale :
+        // la carte doit s'afficher sur la fenêtre principale ; refusée sans retenir ensuite
+        async Task PermOnMain(BrowserTab t, string when)
+        {
+            var tc = t.View.CoreWebView2;
+            int shown = permCardsShown;
+            string err = "";
+            try { await Js(tc, "window.__k=null;navigator.mediaDevices.getUserMedia({video:true}).then(s=>{s.getTracks().forEach(t=>t.stop());window.__k='ok'},e=>window.__k=e.name)"); }
+            catch (Exception pe) { err = pe.GetType().Name + " " + pe.Message; }
+            bool ok = await Until(() => permCard is { Visible: true } && permShown?.Tab == t, 5000);
+            string kind = "camera";
+            if (!ok && err == "")
+            {
+                kind = "geolocation"; // pas de caméra sur ce PC : le moteur ne demande rien, on essaie la position
+                try { await Js(tc, "navigator.geolocation.getCurrentPosition(()=>{},()=>{},{timeout:4000})"); } catch (Exception pe) { err = pe.GetType().Name + " " + pe.Message; }
+                ok = await Until(() => permCard is { Visible: true } && permShown?.Tab == t, 5000);
+            }
+            C($"{when} : nouvelle demande ({kind}) sur un autre onglet, la carte s'affiche", ok && err == "" && permCard.Owner == this && permCardsShown >= shown + 1,
+                $"{err} propriétaire {permCard?.Owner?.GetType().Name ?? "aucun"}, carte {(permCard == null ? "absente" : permCard.IsDisposed ? "disposée" : permCard.Visible ? "visible" : "cachée")}, "
+                + $"affichée pour {(permShown == null ? "rien" : permShown.Kind + (permShown.Tab == t ? " (cet onglet)" : " (autre onglet)"))}, en attente {string.Join(",", permQueue.Select(a => a.Kind))}, onglet affiché {(Cur == t)}");
+            if (permCard is { Visible: true }) { permCard.Remember = false; permCard.Choose(false); }
+            await Task.Delay(300);
+        }
+
         async Task CardShot(string file)
         {
             var path = Path.Combine(ShotsDir, file + ".png");
@@ -691,7 +757,57 @@ partial class BrowserForm
                 C("carte fermée : déplacer la fenêtre détachée ne la rouvre pas", permCard is not { Visible: true });
                 dw.Close();
                 await Task.Delay(400);
+                // la carte a été portée par la fenêtre détachée : sa fermeture ne doit pas la détruire
+                C("fenêtre détachée fermée : aucune carte détruite laissée en place (jetée, recréée au besoin)", permCard == null || (!permCard.IsDisposed && permCard.Owner != dw && permCardHost != dw),
+                    permCard == null ? "carte jetée" : $"disposée={permCard.IsDisposed}, propriétaire={(permCard.Owner == dw ? "fenêtre fermée" : permCard.Owner?.GetType().Name ?? "aucun")}");
+                SelectTab(tabs.IndexOf(ex2)); await Task.Delay(300);
+                await PermOnMain(ex2, "après fermeture de la fenêtre détachée");
             }
+
+            // demande en attente sur une fenêtre détachée qu'on ferme, carte affichée dessus
+            await NewTab("https://example.org/?detache=2");
+            await Until(() => Core?.Source?.Contains("detache=2") == true, 15000);
+            await Task.Delay(800);
+            var dt2 = Cur;
+            DetachTab(tabs.IndexOf(dt2));
+            await Until(() => dt2.Window is { Visible: true }, 5000);
+            await Task.Delay(500);
+            var dw2 = dt2.Window;
+            if (dw2 != null)
+            {
+                await Js(dt2.View.CoreWebView2, "Notification.requestPermission()");
+                bool onDw2 = await Until(() => permCard is { Visible: true } && permCard.Owner == dw2, 6000);
+                C("2e fenêtre détachée : la carte apparaît sur elle", onDw2);
+                dw2.Close();
+                await Task.Delay(500);
+                C("fenêtre détachée fermée avec une demande : demande abandonnée, carte cachée ou jetée (jamais détruite en place)",
+                    !permQueue.Any(a => a.Tab == dt2) && (permCard == null || permCard is { IsDisposed: false, Visible: false }) && sitePrefs.PermFor("https://example.org/", "notifications") == null,
+                    $"en attente {permQueue.Count}, carte {(permCard == null ? "absente" : permCard.IsDisposed ? "disposée" : permCard.Visible ? "visible" : "cachée")}");
+                // t.Window n'est pas forcément remis à null par la fermeture : une fenêtre disposée vaut « onglet fermé »
+                bool noThrow = true; string err = "";
+                try { UpdateUi(); ShowNextPerm(); PlacePermCard(); } catch (Exception ue) { noThrow = false; err = ue.GetType().Name + " " + ue.Message; }
+                C("après fermeture : UpdateUi sans exception (fenêtre disposée ignorée)", noThrow, err);
+                await PermOnMain(ex2, "après fermeture d'une fenêtre détachée avec demande");
+            }
+            else C("2e onglet détaché", false);
+
+            // économiseur de mémoire : onglet libéré en arrière-plan avec une demande en attente
+            await NewTab("https://example.org/?libere=1");
+            await Until(() => Core?.Source?.Contains("libere") == true, 15000);
+            await Task.Delay(800);
+            var lt = Cur;
+            await Js(lt.View.CoreWebView2, "Notification.requestPermission()");
+            if (await Until(() => permCard is { Visible: true } && permShown?.Tab == lt, 6000))
+            {
+                SelectTab(tabs.IndexOf(ex2)); await Task.Delay(300);
+                bool freed = DiscardTab(lt, force: true);
+                await Task.Delay(200);
+                C("onglet libéré par l'économiseur : sa demande est abandonnée", freed && !permQueue.Any(a => a.Tab == lt) && permCard is not { Visible: true }, $"libéré={freed}, en attente {permQueue.Count}");
+                SelectTab(tabs.IndexOf(lt)); await Task.Delay(500);
+                C("retour sur l'onglet libéré : pas de carte périmée", permCard is not { Visible: true } || permShown?.Tab != lt);
+                SelectTab(tabs.IndexOf(ex2)); await Task.Delay(200);
+            }
+            else C("onglet à libérer : la carte apparaît", false);
 
             // ---------- 3. Réglages : « Autorisations des sites » ----------
             sitePrefs.SetZoom("https://fr.wikipedia.org/", 1.1); SaveSitePrefs();
@@ -800,6 +916,11 @@ sealed class SitePermCard : Form
     }
 
     protected override bool ShowWithoutActivation => true;
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { glyphFont.Dispose(); hostFont.Dispose(); textFont.Dispose(); btnFont.Dispose(); smallFont.Dispose(); }
+        base.Dispose(disposing);
+    }
     protected override CreateParams CreateParams
     {
         get
