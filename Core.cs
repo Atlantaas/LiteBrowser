@@ -916,7 +916,7 @@ namespace LiteCore
         public static string TimeSaved(long blocked)
         {
             var sec = blocked * 0.05;
-            if (sec < 60) return "moins d'1 min";
+            if (sec < 60) return "moins d’1 min";
             var m = (long)(sec / 60);
             if (m < 60) return m + " min";
             var h = m / 60;

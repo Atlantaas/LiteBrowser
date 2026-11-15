@@ -688,7 +688,7 @@ static class Program
         Check("suggestions DuckDuckGo", string.Join(",", Omni.ParseSuggest("[{\"phrase\":\"gentle mates\"},{\"phrase\":\"gentle mates valorant\"}]")) == "gentle mates,gentle mates valorant");
         Check("réponse illisible → aucune suggestion", Omni.ParseSuggest("<html>") .Count == 0);
         Check("adresse de suggestions : Google / DuckDuckGo", Omni.SuggestUrl("google", "a b").Contains("suggestqueries.google.com") && Omni.SuggestUrl("qwant", "a").Contains("duckduckgo.com/ac"));
-        Check("temps gagné : 0 → moins d'1 min", Omni.TimeSaved(0) == "moins d'1 min");
+        Check("temps gagné : 0 → moins d’1 min", Omni.TimeSaved(0) == "moins d’1 min");
         Check("temps gagné : 2 400 éléments → 2 min", Omni.TimeSaved(2400) == "2 min", Omni.TimeSaved(2400));
         Check("temps gagné : 100 000 éléments → 1 h 23", Omni.TimeSaved(100_000) == "1 h 23", Omni.TimeSaved(100_000));
 

@@ -3364,7 +3364,7 @@ partial class BrowserForm : Form
     {
         var url = SettingsUrl + (section != null ? "#" + section : "");
         int i = tabs.FindIndex(x => IsSettings(x.View.CoreWebView2?.Source));
-        if (i >= 0) { SelectTab(i); tabs[i].View.CoreWebView2?.Navigate(url); }
+        if (i >= 0) { SelectTab(i); SettingsGo(tabs[i].View.CoreWebView2, url); }
         else _ = NewTab(url);
     }
 
@@ -3537,7 +3537,7 @@ partial class BrowserForm : Form
             case "resetDownloadDir":
                 downloadDir = null;
                 SaveSettings();
-                Notify("Téléchargements", "Le dossier par défaut de Windows sera utilisé au prochain démarrage.");
+                foreach (var p in Profiles()) try { p.DefaultDownloadFolderPath = WindowsDownloads(); } catch { } // tout de suite, sans redémarrer
                 break;
             case "openDownloads":
                 try { Process.Start("explorer.exe", "\"" + (downloadDir ?? MainCore()?.Profile.DefaultDownloadFolderPath ?? "") + "\""); } catch { }
@@ -6119,6 +6119,7 @@ partial class BrowserForm : Form
                     File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), fr);
                     continue;
                 }
+                if (parts[1] == "pc-integrees") { await IntegreesTest(parts[0]); continue; }
                 if (parts[1] == "youtube")
                 {
                     var yr = new List<string>();

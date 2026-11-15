@@ -45,6 +45,7 @@ nav a.n:hover{background:var(--card);color:var(--text)}
 nav a.n.on{background:var(--card);color:var(--text);font-weight:600}
 nav a.n.on::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:3px;background:var(--accent)}
 nav a.n .ic{width:18px;text-align:center}
+nav a.n[hidden]{display:none}
 nav a.n.on .ic{color:var(--text)}
 
 /* ---- Contenu ---- */
@@ -155,7 +156,7 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
 .nores{color:var(--sub);text-align:center;padding:40px 0}
 
 @media (max-width:860px){
-  .layout{grid-template-columns:1fr;gap:10px;padding:20px 14px 60px}
+  .layout{grid-template-columns:minmax(0,1fr);gap:10px;padding:20px 14px 60px}
   nav{position:static}
   nav .links{display:flex;gap:4px;overflow-x:auto;padding-bottom:6px}
   nav a.n{white-space:nowrap}
@@ -198,12 +199,12 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
     <h1>Réglages</h1>
     <p class="lead">Tout ton navigateur, au même endroit. Chaque changement est enregistré tout de suite.</p>
 
-    <section id="general" data-k="général démarrage moteur recherche google duckduckgo bing qwant ecosia session onglets navigateur par défaut brave liens applis suggestions raccourcis barre d'adresse">
+    <section id="general" data-k="général démarrage moteur recherche google duckduckgo bing qwant ecosia session onglets navigateur par défaut brave liens applis suggestions raccourcis barre d’adresse">
       <h2><i class="ic">&#xE713;</i>Général</h2>
       <div class="card">
         <div class="row"><div class="t"><b>Au démarrage</b><small>Rouvre tes onglets de la dernière fois (chargés seulement quand tu cliques dessus).</small></div>
-          <div class="seg" id="startup"><button data-v="session">Reprendre mes onglets</button><button data-v="home">Page d'accueil</button></div></div>
-        <div class="row"><div class="t"><b>Moteur de recherche</b><small>Utilisé par la barre d'adresse et la page d'accueil.</small></div>
+          <div class="seg" id="startup"><button data-v="session">Reprendre mes onglets</button><button data-v="home">Page d’accueil</button></div></div>
+        <div class="row"><div class="t"><b>Moteur de recherche</b><small>Utilisé par la barre d’adresse et la page d’accueil.</small></div>
           <select id="engine"></select></div>
         <div class="row"><div class="t"><b>Navigateur par défaut</b><small id="defInfo"></small></div>
           <span id="defBox"></span></div>
@@ -218,11 +219,11 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
       <div class="card">
         <div class="row col"><div class="t"><b>Thème</b><small>Gentle Mates est le thème maison : noir profond et rose M8.</small></div>
           <div class="themes" id="themes">
-            <button class="th" data-v="m8"><div class="pv" style="background:#08080a"><i class="s" style="background:#08080a"></i><i class="b" style="background:#141418;border-top:2px solid #d669d2"></i><i class="c" style="background:#0e0e12;color:#d669d2">M8</i></div><b>Gentle Mates</b><small>Le thème de l'équipe</small></button>
+            <button class="th" data-v="m8"><div class="pv" style="background:#08080a"><i class="s" style="background:#08080a"></i><i class="b" style="background:#141418;border-top:2px solid #d669d2"></i><i class="c" style="background:#0e0e12;color:#d669d2">M8</i></div><b>Gentle Mates</b><small>Le thème de l’équipe</small></button>
             <button class="th" data-v="dark"><div class="pv"><i class="s" style="background:#1f2023"></i><i class="b" style="background:#2d2e31;border-top:2px solid #8ab4f8"></i><i class="c" style="background:#1b1c1f;color:#e8eaed">Aa</i></div><b>Sombre</b><small>Gris doux</small></button>
             <button class="th" data-v="light"><div class="pv"><i class="s" style="background:#dee1e6"></i><i class="b" style="background:#fff;border-top:2px solid #1a73e8"></i><i class="c" style="background:#f3f4f6;color:#1f1f1f">Aa</i></div><b>Clair</b><small>Lumineux</small></button>
           </div></div>
-        <div class="row"><div class="t"><b>Barre de favoris</b><small>Sous la barre d'adresse. Raccourci : <kbd>Ctrl+Maj+B</kbd></small></div>
+        <div class="row"><div class="t"><b>Barre de favoris</b><small>Sous la barre d’adresse. Raccourci : <kbd>Ctrl+Maj+B</kbd></small></div>
           <label class="sw"><input type="checkbox" data-set="favbar"><span></span></label></div>
         <div class="row"><div class="t"><b>Forcer le mode sombre sur tous les sites</b><small>Inverse les couleurs des sites clairs (les images et vidéos restent normales).</small></div>
           <label class="sw"><input type="checkbox" data-set="forceDark"><span></span></label></div>
@@ -234,12 +235,12 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
       <div class="card">
         <div class="row"><div class="t"><b>Bloquer les pubs et les traqueurs</b><small id="blockedInfo">Sur tous les sites, y compris les pubs YouTube.</small></div>
           <label class="sw"><input type="checkbox" data-set="adblock"><span></span></label></div>
-        <div class="row col"><div class="t"><b>Sites où le bloqueur est coupé</b><small>Ajoute un site depuis le bouclier <i class="ic">&#xEA18;</i> de la barre d'adresse s'il fonctionne mal avec le bloqueur.</small></div>
+        <div class="row col"><div class="t"><b>Sites où le bloqueur est coupé</b><small>Ajoute un site depuis le bouclier <i class="ic">&#xEA18;</i> de la barre d’adresse s’il fonctionne mal avec le bloqueur.</small></div>
           <div id="allow"></div></div>
         <div class="row col"><div class="t"><b>Protection contre le pistage</b><small>Bloque les traqueurs intégrés par les sites (en plus de la liste de pubs).</small></div>
           <div class="seg" id="tracking"><button data-v="basic">De base</button><button data-v="balanced">Équilibrée</button><button data-v="strict">Stricte</button></div>
           <small id="trackingInfo" style="color:var(--sub);font-size:12.5px"></small></div>
-        <div class="row"><div class="t"><b>Enregistrer l'historique</b><small>Les onglets privés ne laissent jamais de trace, quel que soit ce réglage.</small></div>
+        <div class="row"><div class="t"><b>Enregistrer l’historique</b><small>Les onglets privés ne laissent jamais de trace, quel que soit ce réglage.</small></div>
           <label class="sw"><input type="checkbox" data-set="historySave"><span></span></label></div>
         <div class="row"><div class="t"><b>Tout effacer en quittant</b><small>Cookies, cache et historique supprimés à chaque fermeture (tu seras déconnecté des sites).</small></div>
           <label class="sw"><input type="checkbox" data-set="clearOnExit"><span></span></label></div>
@@ -262,7 +263,7 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
     <section id="onglets" data-k="onglets performances mémoire ram gel veille épingler privé économie">
       <h2><i class="ic">&#xE8A7;</i>Onglets et performances</h2>
       <div class="card">
-        <div class="row"><div class="t"><b>Mettre en veille les onglets inactifs</b><small>Un onglet en arrière-plan est gelé pour libérer la mémoire (sauf s'il joue du son).</small></div>
+        <div class="row"><div class="t"><b>Mettre en veille les onglets inactifs</b><small>Un onglet en arrière-plan est gelé pour libérer la mémoire (sauf s’il joue du son).</small></div>
           <select data-set="tabSleep" data-num>
             <option value="30">après 30 secondes</option><option value="60">après 1 minute</option><option value="300">après 5 minutes</option>
             <option value="900">après 15 minutes</option><option value="3600">après 1 heure</option><option value="0">jamais</option></select></div>
@@ -299,26 +300,26 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
           <button class="btn" data-act="prayerMosque">Choisir…</button></div>
         <div class="row"><div class="t"><b>Ajuster les horaires</b><small>Décale une prière de quelques minutes pour coller à ta mosquée.</small><div class="offs" id="pOffs"></div></div>
           <button class="btn" data-act="prayerAdjust">Ajuster…</button></div>
-        <div class="row"><div class="t"><b>Notification à l'heure de la prière</b><small>Une alerte Windows à chaque prière (sauf le lever du soleil).</small></div>
+        <div class="row"><div class="t"><b>Notification à l’heure de la prière</b><small>Une alerte Windows à chaque prière (sauf le lever du soleil).</small></div>
           <label class="sw"><input type="checkbox" data-set="prayerNotify"><span></span></label></div>
         <div class="row"><div class="t"><b>Rappel avant la prière</b><small>Pour avoir le temps de faire tes ablutions.</small></div>
           <select data-set="prayerReminder" data-num><option value="0">pas de rappel</option><option value="5">5 min avant</option><option value="10">10 min avant</option>
             <option value="15">15 min avant</option><option value="20">20 min avant</option><option value="30">30 min avant</option></select></div>
-        <div class="hint">La prochaine prière s'affiche dans la barre d'outils, avec un compte à rebours dans la dernière heure. <button class="btn sm" data-act="testNotify" style="margin-left:6px">Tester une notification</button></div>
+        <div class="hint">La prochaine prière s’affiche dans la barre d’outils, avec un compte à rebours dans la dernière heure. <button class="btn sm" data-act="testNotify" style="margin-left:6px">Tester une notification</button></div>
       </div>
     </section>
 
     <section id="matchs" data-k="matchs gentle mates m8 esport alertes lives twitch kick youtube jeux valorant rocket league call of duty fortnite">
       <h2><i class="ic">&#xE7FC;</i>Matchs M8 et lives</h2>
       <div class="card">
-        <div class="row"><div class="t"><b>Alerte avant chaque match</b><small>Notification Windows, puis une autre au coup d'envoi.</small></div>
+        <div class="row"><div class="t"><b>Alerte avant chaque match</b><small>Notification Windows, puis une autre au coup d’envoi.</small></div>
           <label class="sw"><input type="checkbox" data-set="m8Notify"><span></span></label></div>
         <div class="row"><div class="t"><b>Prévenir</b></div>
-          <select data-set="m8Reminder" data-num><option value="0">au coup d'envoi</option><option value="5">5 min avant</option><option value="15">15 min avant</option>
+          <select data-set="m8Reminder" data-num><option value="0">au coup d’envoi</option><option value="5">5 min avant</option><option value="15">15 min avant</option>
             <option value="30">30 min avant</option><option value="60">1 h avant</option></select></div>
-        <div class="row col"><div class="t"><b>Jeux suivis</b><small>Les matchs des jeux décochés n'apparaissent plus et ne sonnent plus.</small></div>
+        <div class="row col"><div class="t"><b>Jeux suivis</b><small>Les matchs des jeux décochés n’apparaissent plus et ne sonnent plus.</small></div>
           <div class="offs" id="games"></div></div>
-        <div class="row"><div class="t"><b>Alerte quand une chaîne lance son live</b><small>Pour les chaînes marquées d'une cloche sur la page d'accueil.</small></div>
+        <div class="row"><div class="t"><b>Alerte quand une chaîne lance son live</b><small>Pour les chaînes marquées d’une cloche sur la page d’accueil.</small></div>
           <label class="sw"><input type="checkbox" data-set="liveNotify"><span></span></label></div>
       </div>
     </section>
@@ -328,13 +329,13 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
       <div class="card"><div class="row" id="impRow"><div class="t"><b>Importer des favoris</b><small id="impInfo"></small></div>
           <div class="btns" id="imports"></div></div>
         <div class="list" id="favs"></div>
-        <div class="hint">Ajoute la page affichée avec l'étoile de la barre d'adresse ou <kbd>Ctrl+D</kbd>. Les 8 premiers apparaissent sur la page d'accueil.</div></div>
+        <div class="hint">Ajoute la page affichée avec l’étoile de la barre d’adresse ou <kbd>Ctrl+D</kbd>. Les 8 premiers apparaissent sur la page d’accueil.</div></div>
     </section>
 
     <section id="historique" data-k="historique pages visitées rechercher supprimer effacer">
       <h2><i class="ic">&#xE81C;</i>Historique</h2>
       <div class="card">
-        <div class="hsearch"><label class="find"><i class="ic">&#xE721;</i><input id="hq" placeholder="Rechercher dans l'historique" autocomplete="off"></label>
+        <div class="hsearch"><label class="find"><i class="ic">&#xE721;</i><input id="hq" placeholder="Rechercher dans l’historique" autocomplete="off"></label>
           <button class="btn danger" data-act="clearHistory" id="hClear">Tout effacer</button></div>
         <div class="list" id="hist"></div>
       </div>
@@ -343,7 +344,7 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
     <section id="extensions" data-k="extensions nordpass trendtrack chrome web store ajouter">
       <h2><i class="ic">&#xEA86;</i>Extensions</h2>
       <div class="card"><div id="exts"></div>
-        <div class="row"><div class="t"><b>Ajouter une extension</b><small>Depuis le Chrome Web Store : ouvre la page de l'extension puis clique ici, ou colle son lien.</small></div>
+        <div class="row"><div class="t"><b>Ajouter une extension</b><small>Depuis le Chrome Web Store : ouvre la page de l’extension puis clique ici, ou colle son lien.</small></div>
           <button class="btn main" data-act="addExtension">Ajouter…</button></div></div>
     </section>
 
@@ -378,10 +379,10 @@ const act = (name, arg) => post({ type: 'action', name, arg });
 
 // ---------- Raccourcis (statiques) ----------
 const KEYS = [
-  ['Nouvel onglet', 'Ctrl+T'], ['Nouvel onglet privé', 'Ctrl+Maj+N'], ['Fermer l\'onglet', 'Ctrl+W'], ['Rouvrir l\'onglet fermé', 'Ctrl+Maj+T'],
-  ['Onglet suivant / précédent', 'Ctrl+Tab'], ['Aller à l\'onglet n°', 'Ctrl+1…9'], ['Barre d\'adresse', 'Ctrl+L ou Ctrl+K'], ['Ouvrir la proposition dans un nouvel onglet', 'Alt+Entrée'], ['Retirer une page des propositions', 'Maj+Suppr'], ['Ajouter aux favoris', 'Ctrl+D'],
+  ['Nouvel onglet', 'Ctrl+T'], ['Nouvel onglet privé', 'Ctrl+Maj+N'], ['Fermer l’onglet', 'Ctrl+W'], ['Rouvrir l’onglet fermé', 'Ctrl+Maj+T'],
+  ['Onglet suivant / précédent', 'Ctrl+Tab'], ['Aller à l’onglet n°', 'Ctrl+1…9'], ['Barre d’adresse', 'Ctrl+L ou Ctrl+K'], ['Ouvrir la proposition dans un nouvel onglet', 'Alt+Entrée'], ['Retirer une page des propositions', 'Maj+Suppr'], ['Ajouter aux favoris', 'Ctrl+D'],
   ['Barre de favoris', 'Ctrl+Maj+B'], ['Copier le texte à l’écran (Lens)', 'Ctrl+Maj+L'], ['Historique', 'Ctrl+H'], ['Téléchargements', 'Ctrl+J'], ['Réglages', 'Ctrl+,'],
-  ['Effacer les données', 'Ctrl+Maj+Suppr'], ['Couper le son de l\'onglet', 'Ctrl+M'], ['Multistream', 'Ctrl+Maj+M'], ['Actualiser', 'F5'],
+  ['Effacer les données', 'Ctrl+Maj+Suppr'], ['Couper le son de l’onglet', 'Ctrl+M'], ['Multistream', 'Ctrl+Maj+M'], ['Actualiser', 'F5'],
   ['Page précédente / suivante', 'Alt+← / →'], ['Plein écran', 'F11'], ['Rechercher dans la page', 'Ctrl+F'], ['Zoom', 'Ctrl+molette'],
   ['Résultat suivant / précédent', 'Entrée ou F3 / Maj+F3'], ['Capturer la zone visible', 'Ctrl+Maj+X'], ['Capturer la page entière', 'Ctrl+Maj+S'], ['Vue partagée (deux onglets côte à côte)', 'Ctrl+Maj+D'], ['Imprimer', 'Ctrl+P'], ['Vidéo en image dans l’image', 'Alt+P'],
 ];
@@ -395,7 +396,16 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('click', e => {
   const a = e.target.closest('[data-act]');
-  if (a) { act(a.dataset.act, a.dataset.arg); if (a.dataset.act === 'testNotify') toast('Notification envoyée'); return; }
+  if (!a || a.disabled) return;
+  const name = a.dataset.act;
+  // un retour visible pour les actions qui prennent du temps ou ne montrent rien d'elles-mêmes
+  if (name === 'checkUpdates' && S && !S.updateReady) {
+    if (S.dev) { toast('Version de test : les mises à jour sont désactivées'); return; }
+    a.disabled = true; a.textContent = 'Recherche en cours…'; // rendu normal au prochain envoi des réglages
+  }
+  act(name, a.dataset.arg);
+  if (name === 'testNotify') toast('Notification envoyée');
+  else if (name === 'resetDownloadDir') toast('Dossier Téléchargements de Windows rétabli');
 });
 function seg(id, key, cb) {
   $(id).addEventListener('click', e => { const b = e.target.closest('button[data-v]'); if (!b) return; (cb || (v => set(key, v, 'Enregistré')))(b.dataset.v); });
@@ -460,7 +470,7 @@ function render() {
 
   // prières
   const p = S.prayer, t = p.today || {};
-  $('pCity').textContent = t.city ? 'Aujourd\'hui à ' + t.city : 'Horaires du jour';
+  $('pCity').textContent = t.city ? 'Aujourd’hui à ' + t.city : 'Horaires du jour';
   $('pMeta').textContent = [t.hijri, t.methodName].filter(Boolean).join(' · ') || (t.error || 'Recherche des horaires…');
   const times = t.times || [];
   const now = new Date(), base = new Date(); base.setHours(0, 0, 0, 0);
@@ -490,7 +500,7 @@ function render() {
         <button class="ib" data-fav="down" title="Descendre" ${i === S.favorites.length - 1 ? 'disabled' : ''}>&#xE70D;</button>
         <button class="ib" data-fav="rename" title="Renommer">&#xE70F;</button>
         <button class="ib del" data-fav="del" title="Supprimer">&#xE74D;</button></div></div>`).join('')
-    : '<div class="empty">Aucun favori pour l\'instant.</div>';
+    : '<div class="empty">Aucun favori pour l’instant.</div>';
 
   // extensions
   $('exts').innerHTML = S.extensions.length ? S.extensions.map(x => `<div class="row"><div class="t"><b>${esc(x.name || x.id)}</b><small>${x.error ? esc(x.error) : x.enabled ? 'Active' : 'Désactivée'}</small></div>
@@ -504,6 +514,7 @@ function render() {
   $('ver').textContent = 'LiteBrowser v' + S.version + (S.dev ? ' (version de test)' : '');
   $('wv').textContent = S.webview ? 'Moteur WebView2 ' + S.webview : '';
   $('upd').textContent = S.updateReady ? 'Redémarrer pour mettre à jour' : 'Rechercher des mises à jour';
+  $('upd').disabled = false;
   $('hClear').disabled = !S.historyCount;
 }
 
@@ -517,8 +528,9 @@ $('favs').addEventListener('click', e => {
     const tx = row.querySelector('.tx b'), old = tx.textContent;
     tx.innerHTML = `<input value="${esc(old)}" maxlength="120">`;
     const inp = tx.querySelector('input'); inp.focus(); inp.select();
-    const done = ok => { if (ok && inp.value.trim() && inp.value.trim() !== old) { post({ type: 'favRename', url, title: inp.value.trim() }); toast('Favori renommé'); } else tx.textContent = old; };
-    inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') done(false); });
+    let finished = false; // Échap remet le titre et retire le champ : le « blur » qui suit ne doit pas renommer quand même
+    const done = ok => { if (finished) return; finished = true; if (ok &&inp.value.trim() && inp.value.trim() !== old) { post({ type: 'favRename', url, title: inp.value.trim() }); toast('Favori renommé'); } else tx.textContent = old; };
+    inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') { ev.preventDefault(); done(false); } });
     inp.addEventListener('blur', () => done(true));
   }
 });
@@ -529,13 +541,13 @@ $('hq').addEventListener('input', () => { clearTimeout(hTimer); hTimer = setTime
 function renderHistory(d) {
   if (d.q !== $('hq').value.trim()) return;
   if (!d.items.length) {
-    $('hist').innerHTML = `<div class="empty">${d.q ? 'Rien ne correspond à « ' + esc(d.q) + ' ».' : S && !S.historySave ? 'L\'historique est désactivé (voir Confidentialité).' : 'Ton historique est vide.'}</div>`;
+    $('hist').innerHTML = `<div class="empty">${d.q ? 'Rien ne correspond à « ' + esc(d.q) + ' ».' : S && !S.historySave ? 'L’historique est désactivé (voir Confidentialité).' : 'Ton historique est vide.'}</div>`;
     return;
   }
   // regroupé par site consécutif pour rester lisible
   $('hist').innerHTML = d.items.map(h => `<div class="it" data-url="${esc(h.url)}">${fav(h.url, h.title)}
       <div class="tx"><b>${esc(h.title)}</b><a href="${esc(h.url)}">${esc(h.url)}</a></div>
-      <div class="ac"><button class="ib del" data-hdel title="Supprimer de l'historique">&#xE74D;</button></div></div>`).join('')
+      <div class="ac"><button class="ib del" data-hdel title="Supprimer de l’historique">&#xE74D;</button></div></div>`).join('')
     + (d.total > d.items.length && !d.q ? `<div class="hint">${d.items.length} pages les plus récentes sur ${d.total}. Utilise la recherche pour retrouver les plus anciennes.</div>` : '');
 }
 $('hist').addEventListener('click', e => {
@@ -552,19 +564,36 @@ const io = new IntersectionObserver(es => {
   if (vis) mark(vis.target.id);
 }, { rootMargin: '-10% 0px -70% 0px' });
 secs.forEach(s => io.observe(s));
-$('find').addEventListener('input', () => {
-  const q = $('find').value.trim().toLowerCase();
+// sans accents ni différence d'apostrophe : « priere », « telechargement » ou « d'accueil » trouvent leur réglage
+const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[’‘`]/g, "'");
+function applyFind() {
+  const q = norm($('find').value.trim());
   let n = 0;
-  secs.forEach(s => { const hit = !q || (s.dataset.k + ' ' + s.textContent).toLowerCase().includes(q); s.hidden = !hit; if (hit) n++; });
+  secs.forEach(s => { const hit = !q || norm(s.dataset.k + ' ' + s.textContent).includes(q); s.hidden = !hit; if (hit) n++; });
+  // la colonne ne garde que les sections trouvées : plus de lien qui ne mène à rien
+  links.forEach(a => { const s = $(a.getAttribute('href').slice(1)); a.hidden = !!(s && s.hidden); });
   $('nores').hidden = n > 0;
+}
+$('find').addEventListener('input', applyFind);
+$('find').addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('find').value) { e.preventDefault(); $('find').value = ''; applyFind(); }
 });
-function goHash() { const id = location.hash.slice(1); if (id && $(id)) { $(id).scrollIntoView(); mark(id); if (id === 'historique') $('hq').focus(); } }
+function goHash() {
+  const id = location.hash.slice(1); if (!id || !$(id)) return;
+  if ($(id).hidden) { $('find').value = ''; applyFind(); } // section masquée par une recherche : on la remontre
+  // focus sans défilement : sinon il coupe le défilement doux et la section s'arrête à mi-écran
+  $(id).scrollIntoView(); mark(id); if (id === 'historique') $('hq').focus({ preventScroll: true });
+}
 window.addEventListener('hashchange', goHash);
 
 if (window.chrome && chrome.webview) {
   chrome.webview.addEventListener('message', e => {
     const d = e.data;
-    if (d.type === 'settings') { const first = !S; S = d; render(); if (first) { post({ type: 'history', q: '' }); goHash(); } }
+    if (d.type === 'settings') {
+      const first = !S, count = S && S.historyCount; S = d; render();
+      if (first) { post({ type: 'history', q: '' }); goHash(); }
+      else if (d.historyCount !== count) post({ type: 'history', q: $('hq').value.trim() }); // historique effacé ou nouvelles pages : liste à jour
+    }
     else if (d.type === 'history') renderHistory(d);
   });
   post({ type: 'ready' });
