@@ -1,7 +1,8 @@
-// Petits soucis du quotidien : pages et barre d'adresse, réglés pour se comporter comme Chrome / Brave.
+﻿// Petits soucis du quotidien : pages et barre d'adresse, réglés pour se comporter comme Chrome / Brave.
 // Menu « Coller et aller », Ctrl+Entrée, historique au clic droit sur précédent / suivant,
 // clic droit qui ne déclenche plus les boutons, cadenas sur un certificat invalide, liens Ctrl+clic / clic du milieu
-// en arrière-plan, plein écran qu'on sait quitter, panneau des téléchargements, adresse lisible (accents).
+// en arrière-plan, plein écran qu'on sait quitter, panneau des téléchargements, adresse lisible (accents),
+// pages d'erreur aux couleurs de LiteBrowser, collage d'un texte sur plusieurs lignes.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -21,6 +22,9 @@ using LiteCore;
 partial class BrowserForm
 {
     readonly ConditionalWeakTable<BrowserTab, string> pageTrouble = new(); // « cert » : certificat invalide ; « failed » : page pas chargée
+    // Sites dont le certificat a été refusé pendant cette session. Après « Continuer vers le site », le moteur garde la décision
+    // et ne signale plus rien : sans cette liste, le cadenas « Connexion sécurisée » revenait sur le site.
+    static readonly HashSet<string> certHosts = new(StringComparer.OrdinalIgnoreCase);
     (BrowserTab Tab, DateTime At) lastBgClick;                           // dernier Ctrl+clic / clic du milieu sur un lien
     BrowserTab lastBgOpener, lastBgTab;                                  // pour ranger les onglets ouverts en arrière-plan à la suite
     bool f11Kept;                                                        // F11 était déjà actif quand la vidéo est passée en plein écran
@@ -45,6 +49,16 @@ partial class BrowserForm
         fwdBtn.MouseUp += (_, e) => { if (e.Button == MouseButtons.Right) _ = ShowNavHistory(fwdBtn, 1); };
         tip.SetToolTip(backBtn, "Page précédente (Alt+←) · clic droit : pages précédentes");
         tip.SetToolTip(fwdBtn, "Page suivante (Alt+→) · clic droit : pages suivantes");
+        // Ctrl+V / Maj+Inser d'un texte sur plusieurs lignes : le champ d'une ligne ne gardait que la première
+        addr.Box.KeyDown += (_, e) =>
+        {
+            if (!((e.Control && !e.Alt && e.KeyCode == Keys.V) || (e.Shift && !e.Control && e.KeyCode == Keys.Insert))) return;
+            var c = (clipGet() ?? "").Trim();
+            if (c.IndexOfAny(new[] { '\r', '\n' }) < 0) return;
+            e.SuppressKeyPress = true; e.Handled = true;
+            addrEdited = true;
+            addr.Box.SelectedText = PasteText(c);
+        };
         shownState = WindowState;
         Resize += (_, _) => { if (WindowState != FormWindowState.Minimized && !fullscreen) shownState = WindowState; };
     }
@@ -53,16 +67,40 @@ partial class BrowserForm
     async Task HookPages(BrowserTab t, CoreWebView2 core)
     {
         ulong navId = 0; // seule la dernière navigation compte (une ancienne qui finit en retard ne touche plus au cadenas)
-        core.NavigationStarting += (_, e) => { navId = e.NavigationId; if (!e.IsRedirected) pageTrouble.Remove(t); };
+        core.NavigationStarting += (_, e) => navId = e.NavigationId; // rien d'effacé ici : la navigation peut encore être annulée
+        // nouvelle page affichée : avertissement repris si son site a déjà montré un certificat invalide (« Continuer vers le site »)
+        core.SourceChanged += (_, _) => { MarkSite(t, core.Source); if (t == Cur) PagesUi(); };
         core.NavigationCompleted += (_, e) =>
         {
             if (e.NavigationId != navId) return;
-            if (!e.IsSuccess && IsCertError(e.WebErrorStatus)) pageTrouble.AddOrUpdate(t, "cert");
+            if (!e.IsSuccess && IsCertError(e.WebErrorStatus))
+            {
+                lock (certHosts) certHosts.Add(HostOf(core.Source));
+                pageTrouble.AddOrUpdate(t, "cert");
+                _ = BrandErrorPage(core, e.WebErrorStatus, true);
+            }
             else if (!e.IsSuccess && e.HttpStatusCode == 0 && e.WebErrorStatus is not (CoreWebView2WebErrorStatus.OperationCanceled
-                or CoreWebView2WebErrorStatus.ConnectionAborted or CoreWebView2WebErrorStatus.Unknown)) pageTrouble.AddOrUpdate(t, "failed");
+                or CoreWebView2WebErrorStatus.ConnectionAborted or CoreWebView2WebErrorStatus.Unknown))
+            {
+                pageTrouble.AddOrUpdate(t, "failed");
+                _ = BrandErrorPage(core, e.WebErrorStatus, false);
+            }
+            else if (e.IsSuccess) MarkSite(t, core.Source); // page rechargée avec succès à la même adresse : plus « inaccessible »
             if (t == Cur) PagesUi();
         };
-        try { core.ServerCertificateErrorDetected += (_, _) => pageTrouble.AddOrUpdate(t, "cert"); } catch { }
+        try
+        {
+            // Levé pour TOUTES les ressources (image, pub, traqueur d'un autre site) : seule une ressource du site de la page
+            // affichée la marque. Une ressource d'un autre site au certificat invalide ne touche plus au cadenas.
+            core.ServerCertificateErrorDetected += (_, e) =>
+            {
+                var h = HostOf(e.RequestUri);
+                if (h.Length == 0) return;
+                lock (certHosts) certHosts.Add(h);
+                if (h == HostOf(core.Source)) pageTrouble.AddOrUpdate(t, "cert");
+            };
+        }
+        catch { }
         core.WebMessageReceived += (_, e) =>
         {
             try { if (e.WebMessageAsJson.StartsWith("{\"lbBackgroundLink\"")) lastBgClick = (t, DateTime.Now); } catch { }
@@ -86,6 +124,75 @@ partial class BrowserForm
         }
         bool fav = !home && favorites.Exists(f => f.Url == src);
         tip.SetToolTip(addr.Star, fav ? "Retirer des favoris (Ctrl+D)" : "Ajouter aux favoris (Ctrl+D)");
+    }
+
+    // ================== Pages d'erreur ==================
+
+    /// Pages d'erreur du moteur (Edge) aux couleurs de LiteBrowser : plus de logo ni de nom « Microsoft Edge »,
+    /// texte en français au tutoiement, bouton rose M8. La page reste celle du moteur (même adresse ; Réessayer / Continuer marchent).
+    async Task BrandErrorPage(CoreWebView2 core, CoreWebView2WebErrorStatus status, bool cert)
+    {
+        var host = HostOf(core.Source);
+        string title, text;
+        if (cert) { title = "Ta connexion n’est pas privée"; text = "Le certificat de « " + host + " » n’est pas valable : quelqu’un pourrait lire ce que tu envoies (mots de passe, messages, cartes bancaires). Ne continue que si tu sais ce que tu fais."; }
+        else (title, text) = status switch
+        {
+            CoreWebView2WebErrorStatus.Disconnected => ("Pas de connexion à internet", "LiteBrowser n’arrive pas à joindre internet. Vérifie ton Wi-Fi ou ton câble réseau, puis réessaie."),
+            CoreWebView2WebErrorStatus.HostNameNotResolved => ("Site introuvable", "L’adresse « " + host + " » ne mène à aucun site. Vérifie qu’elle est bien écrite, ou ta connexion."),
+            CoreWebView2WebErrorStatus.Timeout => ("Le site ne répond pas", "« " + host + " » met trop de temps à répondre. Il est peut-être surchargé : réessaie dans un instant."),
+            CoreWebView2WebErrorStatus.RedirectFailed => ("Cette page tourne en rond", "« " + host + " » renvoie d’une page à l’autre sans jamais s’arrêter. Réessaie plus tard."),
+            CoreWebView2WebErrorStatus.ErrorHttpInvalidServerResponse => ("Réponse du site illisible", "« " + host + " » a renvoyé une réponse que LiteBrowser ne comprend pas."),
+            CoreWebView2WebErrorStatus.ValidAuthenticationCredentialsRequired or CoreWebView2WebErrorStatus.ValidProxyAuthenticationRequired
+                => ("Identification demandée", "Ce site ou ton réseau demande une identification que LiteBrowser n’a pas pu fournir."),
+            _ => ("Impossible d’ouvrir cette page", "« " + host + " » a refusé ou coupé la connexion. Vérifie ta connexion, puis réessaie."),
+        };
+        static string Hex(Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+        var data = JsonSerializer.Serialize(new { title, text, cert, bg = Hex(theme.Strip), card = Hex(theme.Bar), fg = Hex(theme.Text), sub = Hex(theme.Sub), accent = Hex(theme.Accent), line = Hex(theme.FieldBorder) });
+        try { await core.ExecuteScriptAsync("(" + BrandErrorJs + ")(" + data + ")"); } catch { }
+    }
+
+    // Styles posés par le CSSOM (el.style), jamais par une balise <style> : la page d'erreur du moteur a sa propre CSP.
+    // Les boutons du moteur (Réessayer, Avancé, Continuer vers le site) sont repris tels quels : ils gardent leur action.
+    const string BrandErrorJs = @"function(d){try{
+if(location.protocol!=='chrome-error:'&&!document.getElementById('main-frame-error')&&!document.getElementById('proceed-link'))return 'pas une page d\'erreur';
+if(document.getElementById('lb-error'))return 'déjà';
+const S=(el,css)=>{el.style.cssText+=';'+css;return el;};
+const E=(tag,css,txt)=>{const e=S(document.createElement(tag),css);if(txt!=null)e.textContent=txt;return e;};
+const font=""'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif"";
+const btn=(b,primary)=>{if(!b)return b;b.removeAttribute('class');b.style.cssText='';S(b,'all:unset;box-sizing:border-box;display:inline-block;cursor:pointer;padding:10px 22px;border-radius:999px;font:600 14px '+font+';margin:6px 10px 0 0;'+(primary?'background:'+d.accent+';color:#0b0b0d;':'background:transparent;color:'+d.fg+';border:1px solid '+d.line+';'));b.onmouseenter=()=>b.style.filter='brightness(1.12)';b.onmouseleave=()=>b.style.filter='';return b;};
+const code=((document.querySelector('.error-code')||{}).textContent||'').trim();
+const root=E('div','box-sizing:border-box;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:40px 16px;background:'+d.bg+';font-family:'+font+';color:'+d.fg+';');
+root.id='lb-error';
+const card=E('div','box-sizing:border-box;max-width:560px;width:100%;background:'+d.card+';border:1px solid '+d.line+';border-radius:18px;padding:34px 34px 28px;box-shadow:0 18px 50px rgba(0,0,0,.35);');
+const mark=E('div','width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:700 24px '+font+';margin-bottom:18px;background:'+(d.cert?'rgba(255,107,122,.14)':'rgba(214,105,210,.14)')+';color:'+(d.cert?'#ff6b7a':d.accent)+';',d.cert?'!':'?');
+card.append(mark,E('h1','margin:0 0 10px;font:700 24px/1.25 '+font+';color:'+d.fg+';',d.title),E('p','margin:0 0 18px;font:400 15px/1.55 '+font+';color:'+d.sub+';',d.text));
+const actions=E('div','display:flex;flex-wrap:wrap;align-items:center;');
+card.append(actions);
+if(d.cert){
+ const back=btn(document.getElementById('primary-button'),true);if(back){back.textContent='Revenir en sécurité';actions.append(back);}
+ const adv=btn(document.getElementById('details-button'),false);if(adv){actions.append(adv);}
+ const det=document.getElementById('details');const link=document.getElementById('proceed-link');
+ if(det){det.querySelectorAll('*').forEach(n=>{n.style.color=d.sub;n.style.fontFamily=font;});S(det,'margin-top:18px;font:14px/1.5 '+font+';color:'+d.sub+';');card.append(det);}
+ if(link){S(link,'color:'+d.accent+';font:600 14px '+font+';text-decoration:underline;cursor:pointer;');}
+}else{
+ let re=document.getElementById('reload-button');
+ if(!re){re=document.createElement('button');re.onclick=()=>location.reload();}
+ btn(re,true);re.textContent='Réessayer';actions.append(re);
+}
+if(code)card.append(E('div','margin-top:22px;font:12px Consolas,monospace;color:'+d.sub+';opacity:.75;',code));
+const keep=[...document.body.children].filter(n=>n.tagName==='SCRIPT'||n.tagName==='TEMPLATE');
+document.body.replaceChildren(root,...keep);root.append(card);
+S(document.body,'margin:0;background:'+d.bg+';');S(document.documentElement,'background:'+d.bg+';color-scheme:dark;');
+return 'ok';}catch(e){return 'erreur '+e.message;}}";
+
+    static string HostOf(string url) => Uri.TryCreate(url ?? "", UriKind.Absolute, out var u) ? u.Host : "";
+
+    /// Avertissement de la page affichée d'après son site (certificat refusé plus tôt dans la session ou non).
+    void MarkSite(BrowserTab t, string url)
+    {
+        var h = HostOf(url);
+        bool bad; lock (certHosts) bad = h.Length > 0 && certHosts.Contains(h);
+        if (bad) pageTrouble.AddOrUpdate(t, "cert"); else pageTrouble.Remove(t);
     }
 
     static bool IsCertError(CoreWebView2WebErrorStatus s) => s is CoreWebView2WebErrorStatus.CertificateCommonNameIsIncorrect
@@ -147,7 +254,7 @@ partial class BrowserForm
         m.Items.Add(new ToolStripSeparator());
         var cut = MI("Couper", () => { CopyAddr(); Edit(() => b.SelectedText = ""); }, "Ctrl+X"); cut.Enabled = selected; m.Items.Add(cut);
         var copy = MI("Copier", CopyAddr, "Ctrl+C"); copy.Enabled = selected; m.Items.Add(copy);
-        var paste = MI("Coller", () => Edit(() => b.SelectedText = clip), "Ctrl+V"); paste.Enabled = clip.Length > 0; m.Items.Add(paste);
+        var paste = MI("Coller", () => Edit(() => b.SelectedText = PasteText(clip)), "Ctrl+V"); paste.Enabled = clip.Length > 0; m.Items.Add(paste);
         var go = MI(PasteGoLabel(clip), () => PasteAndGo(clip)); go.Enabled = clip.Length > 0; go.Font = new Font(m.Font, FontStyle.Bold); m.Items.Add(go);
         var del = MI("Supprimer", () => Edit(() => b.SelectedText = ""), "Suppr"); del.Enabled = selected; m.Items.Add(del);
         m.Items.Add(new ToolStripSeparator());
@@ -155,6 +262,9 @@ partial class BrowserForm
     }
 
     static bool ClipIsUrl(string clip) => clip.Contains("://") || (!clip.Contains(' ') && UrlTools.LooksLikeUrl(clip));
+
+    /// Texte copié sur plusieurs lignes → une seule ligne, comme Chrome (une adresse coupée en deux est recollée).
+    static string PasteText(string clip) => OneLine(clip, ClipIsUrl(OneLine(clip, true)));
 
     static string OneLine(string clip, bool url) => Regex.Replace(clip, @"\s*[\r\n]+\s*", url ? "" : " ").Trim();
 
@@ -375,6 +485,7 @@ partial class BrowserForm
         void Info(string what) { r.Add("INFO  " + what); File.WriteAllLines(Path.Combine(ShotsDir, name + ".txt"), r); }
         async Task<bool> Until(Func<bool> f, int ms = 8000) { for (int i = 0; i < ms / 100; i++) { if (f()) return true; await Task.Delay(100); } return f(); }
         async Task<string> Js(CoreWebView2 c, string s) { var p = c.ExecuteScriptAsync(s); return await Task.WhenAny(p, Task.Delay(4000)) == p ? p.Result : "(pas de réponse)"; }
+        async Task<bool> UntilJs(string js, string want, int ms) { for (int i = 0; i < ms / 200; i++) { if (await Js(Core, js) == want) return true; await Task.Delay(200); } return await Js(Core, js) == want; }
         async Task Nav(string url) { Core.Navigate(url); await Task.Delay(300); await Until(() => Cur?.Loading == false, 15000); await Task.Delay(400); }
         notifyTest = new List<string>();
         fullscreenTest = _ => { };
@@ -440,6 +551,15 @@ partial class BrowserForm
             FillAddrMenu(menu);
             menu.Items.OfType<ToolStripMenuItem>().First(i => i.Text == "Copier").PerformClick();
             C("« Copier » sur l'adresse affichée copie l'adresse complète (https://…)", copied == "https://example.org/", $"affichée « {addr.Box.Text} », copiée « {copied} »");
+            // Ctrl+V d'une adresse coupée sur deux lignes : avant, seule la première ligne restait
+            addrEdited = true;
+            addr.Box.Text = ""; clip = "https://fr.wikipedia.org/wiki/\r\nGentle_Mates";
+            await CtrlKey(Keys.V);
+            C("Ctrl+V d'une adresse sur deux lignes : recollée en entier", addr.Box.Text == "https://fr.wikipedia.org/wiki/Gentle_Mates", $"« {addr.Box.Text} »");
+            addr.Box.Text = ""; clip = "gentle mates\r\nvalorant";
+            await CtrlKey(Keys.V);
+            C("Ctrl+V d'un texte sur deux lignes : une seule ligne avec une espace", addr.Box.Text == "gentle mates valorant", $"« {addr.Box.Text} »");
+            addrEdited = false; UpdateUi();
 
             // 4. Clic droit sur les boutons : plus de clic gauche déguisé
             await Nav("https://example.com/");
@@ -512,15 +632,40 @@ partial class BrowserForm
             await ShotAsync(name + "_2_certificat");
             var certText = await Js(Core, "document.body ? document.body.innerText.slice(0, 200) : ''");
             Info("page du certificat : " + certText.Replace("\\n", " / "));
+            C("page du certificat aux couleurs de LiteBrowser (plus de « Microsoft Edge »)",
+                await UntilJs("!!document.getElementById('lb-error')", "true", 5000), certText);
+            // « Continuer vers le site » : le moteur retient la décision, l'avertissement doit rester
+            for (int attempt = 0; attempt < 3; attempt++) // réseau capricieux : le moteur peut retomber sur une page de coupure
+            {
+                if (attempt > 0) { await Nav("https://expired.badssl.com/"); await UntilJs("!!document.getElementById('proceed-link')", "true", 8000); }
+                await Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", "{\"expression\":\"document.getElementById('proceed-link').click()\",\"userGesture\":true}");
+                if (await UntilJs("location.protocol", "\"https:\"", 15000)) break;
+            }
+            await Until(() => Cur?.Loading == false, 15000);
+            await Task.Delay(1000);
+            var proceeded = await Js(Core, "location.protocol + ' ' + document.title");
+            C("« Continuer vers le site » : l'avertissement reste sur le site", addr.BadgeGlyph == Glyphs.Warning, $"{proceeded}, « {tip.GetToolTip(addr)} »");
             await Nav("https://example.com/");
             await Task.Delay(3000); // une navigation ancienne qui finirait en retard ne doit plus rien changer
             C("site normal : le cadenas revient (et y reste)", addr.BadgeGlyph == Glyphs.Lock, tip.GetToolTip(addr));
+            await Nav("https://expired.badssl.com/");
+            await Until(() => addr.BadgeGlyph == Glyphs.Warning, 8000);
+            C("retour sur le site déjà accepté : toujours l'avertissement", addr.BadgeGlyph == Glyphs.Warning, tip.GetToolTip(addr));
+            // fausse alerte signalée par le relecteur : une image d'un autre site au certificat invalide
+            await Nav("https://example.com/");
+            await Js(Core, "(() => { const i = document.createElement('img'); i.src = 'https://wrong.host.badssl.com/icons/icon-red.png?' + Date.now(); document.body.appendChild(i); })()");
+            await Task.Delay(4000);
+            bool imgSeen; lock (certHosts) imgSeen = certHosts.Contains("wrong.host.badssl.com");
+            C("image d'un autre site au certificat invalide : la page saine garde son cadenas",
+                imgSeen && addr.BadgeGlyph == Glyphs.Lock, $"erreur de l'image vue par le moteur : {(imgSeen ? "oui" : "non")}, « {tip.GetToolTip(addr)} »");
             await Nav("https://ce-site-n-existe-pas-du-tout.invalid/");
             await Until(() => addr.BadgeGlyph == Glyphs.Globe, 6000);
             C("site introuvable : pas de cadenas « Connexion sécurisée » sur la page d'erreur", addr.BadgeGlyph == Glyphs.Globe, tip.GetToolTip(addr));
             await ShotAsync(name + "_3_introuvable");
             var dnsText = await Js(Core, "document.body ? document.body.innerText.slice(0, 200) : ''");
             Info("page « site introuvable » : " + dnsText.Replace("\\n", " / "));
+            C("page « site introuvable » aux couleurs de LiteBrowser, en français, sans « Microsoft Edge »",
+                dnsText.Contains("Site introuvable") && !dnsText.Contains("Edge") && await Js(Core, "!!document.getElementById('reload-button')") == "true", dnsText);
 
             // 8. Adresse lisible
             await Nav("https://fr.wikipedia.org/wiki/%C3%89cole");
@@ -547,11 +692,21 @@ partial class BrowserForm
             await Nav("https://example.com/");
             var fsLog = new List<bool>();
             fullscreenTest = on => fsLog.Add(on);
+            // demande de plein écran de la page (comme un clic sur le bouton d'une vidéo) ; redemandée si le moteur ne l'a pas prise
+            async Task<string> AskFullscreen()
+            {
+                string res = "";
+                for (int i = 0; i < 3 && !pageFullscreen; i++)
+                {
+                    res = await Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", "{\"expression\":\"document.documentElement.requestFullscreen().then(() => 'ok', e => e.message)\",\"userGesture\":true,\"awaitPromise\":true}");
+                    await Until(() => pageFullscreen, 4000);
+                }
+                return res;
+            }
             fullscreen = false; pageFullscreen = false;
-            await Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", "{\"expression\":\"document.documentElement.requestFullscreen()\",\"userGesture\":true}");
-            await Until(() => pageFullscreen, 4000);
+            var fsAsk = await AskFullscreen();
             C("vidéo / page en plein écran : bulle « Appuie sur Échap pour quitter le plein écran »",
-                pageFullscreen && fullscreen && fsHint is { Visible: true } && fsHint.Message.Contains("Échap"), fsHint?.Message ?? "pas de bulle");
+                pageFullscreen && fullscreen && fsHint is { Visible: true } && fsHint.Message.Contains("Échap"), fsHint?.Message ?? "pas de bulle (demande : " + fsAsk + ")");
             if (fsHint is { Visible: true })
             {
                 using var hb = new Bitmap(fsHint.Width, fsHint.Height);
@@ -563,8 +718,7 @@ partial class BrowserForm
             C("F11 pendant la vidéo en plein écran : on en sort", !pageFullscreen && !fullscreen, string.Join(",", fsLog));
             ToggleF11();
             C("F11 : plein écran + bulle « Appuie sur F11 pour quitter »", fullscreen && fsHint is { Visible: true } && fsHint.Message.Contains("F11"), fsHint?.Message ?? "");
-            await Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", "{\"expression\":\"document.documentElement.requestFullscreen()\",\"userGesture\":true}");
-            await Until(() => pageFullscreen, 4000);
+            fsAsk = await AskFullscreen();
             await Js(Core, "document.exitFullscreen()");
             await Until(() => !pageFullscreen, 4000);
             C("sortir de la vidéo en plein écran garde le plein écran F11 d'avant", !pageFullscreen && fullscreen, string.Join(",", fsLog));
@@ -594,8 +748,16 @@ partial class BrowserForm
             C("téléchargement interrompu : toutes les raisons en français", english.Count == 0, english.Count == 0 ? DownloadReason(CoreWebView2DownloadInterruptReason.FileTooLarge) : string.Join(", ", english));
 
             // 12. Fenêtre rouverte depuis la barre des tâches / un lien d'une autre appli
-            C("lien d'une autre appli : la fenêtre revient dans son état d'avant (ici normale, pas agrandie d'office)",
-                shownState == WindowState && WindowState == FormWindowState.Normal, $"avant la correction : {prevState}, maintenant : {shownState}");
+            // Vrai chemin d'un lien venu d'une autre appli (OpenFromOutside). La fenêtre n'est pas réduite ici : réduite, elle
+            // laisserait une petite barre de titre visible sur l'écran de Ryan. On vérifie que l'état retenu est le bon.
+            int beforeOutside = tabs.Count;
+            var stateBefore = WindowState;
+            OpenFromOutside("https://example.net/");
+            await Until(() => tabs.Count == beforeOutside + 1 && Core?.Source?.Contains("example.net") == true, 10000);
+            C("lien d'une autre appli : nouvel onglet, la fenêtre garde son état (normale, pas agrandie d'office)",
+                tabs.Count == beforeOutside + 1 && Core.Source.Contains("example.net") && WindowState == stateBefore && shownState == stateBefore,
+                $"{tabs.Count - beforeOutside} onglet ouvert, {Core.Source}, état {WindowState}, retenu pour le retour {shownState} (avant la correction : toujours Maximized)");
+            Info("pas de réduction réelle de la fenêtre dans ce test (elle apparaîtrait à l'écran) : le retour utilise l'état retenu ci-dessus");
         }
         catch (Exception ex) { C("le test s'est déroulé sans erreur", false, ex.GetType().Name + " " + ex.Message + " " + ex.StackTrace?.Split('\n').FirstOrDefault()); }
         finally { notifyTest = null; fullscreenTest = null; }
