@@ -826,15 +826,21 @@ class BrowserTab
     public string LastUrl;
 }
 
-/// Barre d'onglets : onglets arrondis, icône du site, haut-parleur (son), bouton ✕, bouton +.
+/// Barre d'onglets : onglets arrondis, icône du site, haut-parleur (son), bouton ✕, bouton +, bouton liste.
+/// Beaucoup d'onglets : ils gardent une largeur lisible et la barre défile (molette, flèches aux bords), l'onglet affiché reste visible.
 class TabStrip : Control
 {
     public readonly List<BrowserTab> Tabs;
-    public int Selected = -1, SpinAngle;
+    int selected = -1;
+    /// Onglet affiché : la barre défile toute seule pour qu'il reste visible.
+    public int Selected { get => selected; set { selected = value; EnsureVisible(value); } }
+    public int SpinAngle;
     public Theme Theme = Theme.Light;
     public event Action<int> TabSelect, TabClose, TabMute;
     public event Action<int, Point> TabMenu;
     public event Action NewTabRequested, PrivateTabRequested;
+    /// Petit bouton liste à droite du + : recherche dans les onglets ouverts.
+    public event Action TabListRequested;
     /// Onglet survolé (-1 = aucun) : la fenêtre affiche une carte d'aperçu après un court instant.
     public event Action<int> HoverTab;
     /// Onglet glissé à une autre place ; onglet tiré hors de la barre (point écran où le lâcher).
@@ -844,15 +850,36 @@ class TabStrip : Control
     Point dragStart;
     bool dragging;
     public Rectangle TabBounds(int i) => TabRect(i);
+    public Rectangle ListBounds => ListRect();
+    public Rectangle PlusBounds => PlusRect();
+    public Rectangle LeftArrowBounds => LeftArrowShown ? LeftArrow() : Rectangle.Empty;
+    public Rectangle RightArrowBounds => RightArrowShown ? RightArrow() : Rectangle.Empty;
+    /// Les onglets ne tiennent plus tous : la barre défile.
+    public bool Overflowing => Overflows();
+    public float ScrollOffset => scrollX;
+    public int MinTabWidth => MinTabW;
+    public int CurrentTabWidth => (int)CurWidth();
+    public bool Animating => anim.Enabled;
+    /// L'onglet i est-il entièrement visible (pas coupé par un bord ni caché sous une flèche) ?
+    public bool IsFullyVisible(int i)
+    {
+        if (i < 0 || i >= Tabs.Count) return false;
+        if (Tabs[i].Pinned) return true;
+        var r = TabRect(i);
+        int l = ViewLeft + (LeftArrowShown ? ArrowW : 0), rr = ViewRight - (RightArrowShown ? ArrowW : 0);
+        return r.Left >= l - 1 && r.Right <= rr + 1;
+    }
 
     readonly Font icons;
     readonly ToolTip tip = new();
     int hover = -1;
-    bool hoverClose, hoverPlus, hoverAudio;
-    // Animation : la largeur des onglets glisse vers sa cible, le trou d'un onglet fermé se referme
+    bool hoverClose, hoverPlus, hoverAudio, hoverList, hoverLeft, hoverRight;
+    // Animation : la largeur des onglets glisse vers sa cible, le trou d'un onglet fermé se referme, la barre défile en douceur.
+    // Le minuteur ne tourne que pendant un mouvement.
     readonly System.Windows.Forms.Timer anim = new() { Interval = 15 };
     float curW, gapW;
     int gapIndex = -1;
+    float scrollX, scrollTarget;
 
     public TabStrip(List<BrowserTab> tabs, Font icons)
     {
@@ -865,26 +892,41 @@ class TabStrip : Control
     }
 
     int Sc(int v) => LogicalToDeviceUnits(v);
-    // Les onglets épinglés sont toujours regroupés à gauche, en version compacte (icône seule)
+    // Les onglets épinglés sont toujours regroupés à gauche, en version compacte (icône seule), et ne défilent pas
     int PinW => Sc(44);
+    /// Largeur minimale lisible d'un onglet (icône + une dizaine de lettres) : en dessous, la barre défile.
+    int MinTabW => Sc(120);
+    int BtnS => Sc(28);
+    int ArrowW => Sc(24);
     int PinnedCount() { int n = 0; while (n < Tabs.Count && Tabs[n].Pinned) n++; return n; }
+    /// Zone où défilent les onglets non épinglés : après les épinglés, avant le + et le bouton liste.
+    int ViewLeft => Sc(8) + PinnedCount() * PinW;
+    int ButtonsLeft => Width - Sc(8) - BtnS * 2 - Sc(2);
+    int ViewRight => Math.Max(ViewLeft, ButtonsLeft - Sc(6));
+    int ViewW => ViewRight - ViewLeft;
     int TabWidth()
     {
-        int p = PinnedCount();
-        int n = Math.Max(1, Tabs.Count - p);
-        int avail = Width - Sc(8) - Sc(48) - p * PinW;
-        return Math.Max(Sc(56), Math.Min(Sc(240), avail / n));
+        int n = Math.Max(1, Tabs.Count - PinnedCount());
+        return Math.Max(MinTabW, Math.Min(Sc(240), ViewW / n));
     }
+    float ContentW() => (Tabs.Count - PinnedCount()) * (float)TabWidth();
+    bool Overflows() => ContentW() > ViewW + .5f;
+    float MaxScroll() => Math.Max(0, ContentW() - ViewW);
+    bool LeftArrowShown => scrollX > .5f;
+    bool RightArrowShown => scrollX < MaxScroll() - .5f;
+    Rectangle LeftArrow() => new(ViewLeft, Sc(7), ArrowW, Height - Sc(7));
+    Rectangle RightArrow() => new(ViewRight - ArrowW, Sc(7), ArrowW, Height - Sc(7));
+
     float CurWidth()
     {
         if (!anim.Enabled || curW <= 0) curW = TabWidth();
         return curW;
     }
-    /// Bord gauche de l'onglet i (pour i = Tabs.Count : fin des onglets).
+    /// Bord gauche de l'onglet i (pour i = Tabs.Count : fin des onglets), défilement compris.
     float TabLeft(int i)
     {
         int p = PinnedCount();
-        float x = Sc(8) + p * PinW, w = CurWidth();
+        float x = ViewLeft - scrollX, w = CurWidth();
         for (int k = p; k < i && k < Tabs.Count; k++) x += w * Tabs[k].Grow;
         if (gapIndex >= 0 && i >= gapIndex) x += gapW;
         return x;
@@ -895,6 +937,51 @@ class TabStrip : Control
         if (i < p) return new Rectangle(Sc(8) + i * PinW, Sc(7), PinW, Height - Sc(7));
         return new Rectangle((int)TabLeft(i), Sc(7), (int)(CurWidth() * Tabs[i].Grow), Height - Sc(7));
     }
+
+    // ---------- Défilement ----------
+
+    void ClampTarget() => scrollTarget = Math.Clamp(scrollTarget, 0, MaxScroll());
+
+    /// Fait défiler la barre (en pixels, positif = vers la droite), en douceur.
+    public void ScrollBy(float dx)
+    {
+        scrollTarget += dx;
+        ClampTarget();
+        if (scrollTarget != scrollX) anim.Start();
+    }
+
+    /// Amène l'onglet i dans la zone visible (sans le laisser sous une flèche).
+    public void EnsureVisible(int i, bool instant = false)
+    {
+        int p = PinnedCount();
+        if (i < p || i >= Tabs.Count || Width <= 0) return;
+        float w = TabWidth(), cx = (i - p) * w;
+        float m = Overflows() ? ArrowW + Sc(4) : 0;
+        if (cx < m) m = 0; // premier onglet : collé au bord, pas de flèche à gauche
+        if (cx + w > ContentW() - .5f) m = Math.Min(m, 0); // dernier onglet : collé au bord droit
+        if (cx - m < scrollTarget) scrollTarget = cx - m;
+        else if (cx + w + m > scrollTarget + ViewW) scrollTarget = cx + w + m - ViewW;
+        ClampTarget();
+        if (instant || !SystemInformation.UIEffectsEnabled) { scrollX = scrollTarget; Invalidate(); }
+        else if (scrollTarget != scrollX) anim.Start();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        ClampTarget();
+        EnsureVisible(selected, instant: true);
+        scrollX = scrollTarget;
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (!Overflows()) return;
+        // molette vers le bas = onglets de droite (comme Edge et Brave)
+        ScrollBy(-e.Delta / 120f * Sc(110));
+    }
+
     /// Un onglet vient d'être ajouté : il s'ouvre en glissant.
     public void AnimateOpen(BrowserTab t)
     {
@@ -923,9 +1010,16 @@ class TabStrip : Control
             gapW *= .65f;
             if (gapW < .5f) { gapW = 0; gapIndex = -1; } else busy = true;
         }
+        ClampTarget();
+        if (scrollX != scrollTarget)
+        {
+            scrollX += (scrollTarget - scrollX) * .3f;
+            if (Math.Abs(scrollTarget - scrollX) < .5f) scrollX = scrollTarget; else busy = true;
+        }
         if (!busy) anim.Stop();
         Invalidate();
     }
+
     bool HasClose(int i) => !Tabs[i].Pinned && (i == Selected || i == hover);
     Rectangle CloseRect(Rectangle r) { int s = Sc(20); return new Rectangle(r.Right - s - Sc(8), r.Top + (r.Height - s) / 2, s, s); }
     /// Le haut-parleur se place juste avant la croix (ou au bord si la croix est masquée).
@@ -935,12 +1029,26 @@ class TabStrip : Control
         return HasClose(i) ? new Rectangle(c.Left - c.Width - Sc(2), c.Top, c.Width, c.Height) : c;
     }
     static bool HasAudio(BrowserTab t) => t.Audio || t.Muted;
+    /// Le + suit le dernier onglet ; quand la barre déborde, il reste collé à droite avec le bouton liste.
     Rectangle PlusRect()
     {
-        int s = Sc(28);
-        return new Rectangle((int)TabLeft(Tabs.Count) + Sc(6), Sc(7) + (Height - Sc(7) - s) / 2, s, s);
+        int s = BtnS;
+        int x = (int)Math.Min(TabLeft(Tabs.Count) + Sc(6), ButtonsLeft);
+        return new Rectangle(x, Sc(7) + (Height - Sc(7) - s) / 2, s, s);
     }
-    int Hit(Point p) { for (int i = 0; i < Tabs.Count; i++) if (TabRect(i).Contains(p)) return i; return -1; }
+    Rectangle ListRect() { var p = PlusRect(); return new Rectangle(p.Right + Sc(2), p.Top, p.Width, p.Height); }
+    bool InView(Point p) => p.X >= ViewLeft && p.X < ViewRight;
+    int Hit(Point p)
+    {
+        if (LeftArrowShown && LeftArrow().Contains(p) || RightArrowShown && RightArrow().Contains(p)) return -1;
+        int pc = PinnedCount();
+        for (int i = 0; i < Tabs.Count; i++)
+        {
+            if (i >= pc && !InView(p)) break;
+            if (TabRect(i).Contains(p)) return i;
+        }
+        return -1;
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -948,14 +1056,24 @@ class TabStrip : Control
         g.Clear(Theme.Strip);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         int isz = Sc(16);
+        if (scrollTarget > MaxScroll() + .5f) { ClampTarget(); anim.Start(); } // onglets fermés ou épinglés : la barre revient en place
+        int pc = PinnedCount();
+        var view = new Rectangle(ViewLeft, 0, ViewW, Height);
+        const TextFormatFlags cf = G.Center | TextFormatFlags.PreserveGraphicsClipping; // le texte respecte la zone qui défile
 
         for (int i = 0; i < Tabs.Count; i++)
         {
             var r = TabRect(i);
             var t = Tabs[i];
+            if (i >= pc && (r.Right < view.Left || r.Left > view.Right)) continue; // hors de la zone visible : rien à dessiner
             bool sel = i == Selected, hov = i == hover;
             g.ResetClip();
-            if (t.Grow < 1) g.SetClip(new Rectangle(r.X, 0, r.Width, Height)); // onglet en train de s'ouvrir
+            if (i >= pc)
+            {
+                var clip = view;
+                if (t.Grow < 1) clip.Intersect(new Rectangle(r.X, 0, r.Width, Height)); // onglet en train de s'ouvrir
+                g.SetClip(clip);
+            }
 
             if (sel || hov)
             {
@@ -985,11 +1103,11 @@ class TabStrip : Control
                 using var pen = new Pen(Theme.Accent, Math.Max(2, Sc(2))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
                 g.DrawArc(pen, Rectangle.Inflate(ir, -1, -1), SpinAngle, 270);
             }
-            else if (t.Private) TextRenderer.DrawText(g, Glyphs.Private, icons, ir, Theme.Text, G.Center);
-            else if (t.IsHome) TextRenderer.DrawText(g, Glyphs.Home, icons, ir, Theme.Sub, G.Center);
-            else if (t.LocalGlyph != null) TextRenderer.DrawText(g, t.LocalGlyph, icons, ir, sel ? Theme.Text : Theme.Sub, G.Center);
+            else if (t.Private) TextRenderer.DrawText(g, Glyphs.Private, icons, ir, Theme.Text, cf);
+            else if (t.IsHome) TextRenderer.DrawText(g, Glyphs.Home, icons, ir, Theme.Sub, cf);
+            else if (t.LocalGlyph != null) TextRenderer.DrawText(g, t.LocalGlyph, icons, ir, sel ? Theme.Text : Theme.Sub, cf);
             else if (t.Icon != null) { g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.DrawImage(t.Icon, ir); }
-            else TextRenderer.DrawText(g, Glyphs.Globe, icons, ir, Theme.Sub, G.Center);
+            else TextRenderer.DrawText(g, Glyphs.Globe, icons, ir, Theme.Sub, cf);
             if (t.Lazy && !sel)
             {
                 // onglet restauré pas encore chargé : petit point discret
@@ -1014,26 +1132,49 @@ class TabStrip : Control
             {
                 var ar = AudioRect(i, r);
                 if (hov && hoverAudio) { using var hb = new SolidBrush(Theme.Hover); g.FillEllipse(hb, ar); }
-                TextRenderer.DrawText(g, t.Muted ? Glyphs.Mute : Glyphs.Volume, icons, ar, t.Muted ? Theme.Sub : Theme.Text, G.Center);
+                TextRenderer.DrawText(g, t.Muted ? Glyphs.Mute : Glyphs.Volume, icons, ar, t.Muted ? Theme.Sub : Theme.Text, cf);
                 textRight = ar.Left - Sc(4);
             }
             int tx = ir.Right + Sc(8);
             var textRect = new Rectangle(tx, r.Top, Math.Max(0, textRight - tx), r.Height);
             TextRenderer.DrawText(g, t.Title, Font, textRect, sel ? Theme.Text : t.Lazy ? G.Mix(Theme.Sub, Theme.Strip, .4f) : Theme.Sub, // onglet libéré : titre estompé
                 TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix |
-                TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
 
             if (sel || hov)
             {
                 if (hov && hoverClose) { using var hb = new SolidBrush(Theme.Hover); g.FillEllipse(hb, cr); }
-                TextRenderer.DrawText(g, Glyphs.Close, icons, cr, Theme.Text, G.Center);
+                TextRenderer.DrawText(g, Glyphs.Close, icons, cr, Theme.Text, cf);
             }
         }
 
         g.ResetClip();
+        // Bords qui débordent : fondu discret + petite flèche
+        if (LeftArrowShown) DrawArrow(g, LeftArrow(), true, hoverLeft);
+        if (RightArrowShown) DrawArrow(g, RightArrow(), false, hoverRight);
+
         var pr = PlusRect();
         if (hoverPlus) { using var hb = new SolidBrush(G.Mix(Theme.Strip, Theme.Bar, .6f)); g.FillEllipse(hb, pr); }
         TextRenderer.DrawText(g, Glyphs.Add, icons, pr, Theme.Text, G.Center);
+        var lr = ListRect();
+        if (hoverList) { using var hb = new SolidBrush(G.Mix(Theme.Strip, Theme.Bar, .6f)); g.FillEllipse(hb, lr); }
+        TextRenderer.DrawText(g, "", icons, lr, hoverList ? Theme.Text : Theme.Sub, G.Center); // chevron vers le bas : liste des onglets
+    }
+
+    void DrawArrow(Graphics g, Rectangle a, bool left, bool hot)
+    {
+        // sous la flèche : fond plein ; puis fondu vers les onglets
+        int fade = Sc(28);
+        using (var sb = new SolidBrush(Theme.Strip)) g.FillRectangle(sb, a.Left, 0, a.Width, Height);
+        var fr = left ? new Rectangle(a.Right, 0, fade, Height) : new Rectangle(a.Left - fade, 0, fade, Height);
+        var solid = Theme.Strip; var clear = Color.FromArgb(0, Theme.Strip);
+        using (var lg = left ? new LinearGradientBrush(new Point(fr.Left - 1, 0), new Point(fr.Right + 1, 0), solid, clear)
+                             : new LinearGradientBrush(new Point(fr.Left - 1, 0), new Point(fr.Right + 1, 0), clear, solid))
+            g.FillRectangle(lg, fr);
+        int s = Sc(22);
+        var c = new Rectangle(a.Left + (a.Width - s) / 2, a.Top + (a.Height - s) / 2, s, s);
+        if (hot) { using var hb = new SolidBrush(G.Mix(Theme.Strip, Theme.Bar, .7f)); g.FillEllipse(hb, c); }
+        TextRenderer.DrawText(g, left ? "" : "", icons, c, hot ? Theme.Accent : Theme.Text, G.Center);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -1054,9 +1195,19 @@ class TabStrip : Control
                 return;
             }
             Cursor = Cursors.SizeWE;
+            // glissé contre un bord de la barre qui déborde : elle défile pour aller plus loin
+            if (!Tabs[dragIndex].Pinned && Overflows())
+            {
+                if (e.X < ViewLeft + ArrowW) ScrollBy(-Sc(16));
+                else if (e.X > ViewRight - ArrowW) ScrollBy(Sc(16));
+            }
             // glissé de côté : il prend la place de l'onglet survolé (les épinglés restent entre eux)
-            int over = -1;
-            for (int i = 0; i < Tabs.Count; i++) { var tr = TabRect(i); if (e.X >= tr.Left && e.X < tr.Right) { over = i; break; } }
+            int over = -1, pc = PinnedCount();
+            for (int i = 0; i < Tabs.Count; i++)
+            {
+                if (i >= pc && (e.X < ViewLeft || e.X >= ViewRight)) break;
+                var tr = TabRect(i); if (e.X >= tr.Left && e.X < tr.Right) { over = i; break; }
+            }
             if (over >= 0 && over != dragIndex && Tabs[over].Pinned == Tabs[dragIndex].Pinned)
             {
                 TabMove?.Invoke(dragIndex, over);
@@ -1067,23 +1218,27 @@ class TabStrip : Control
         int h = Hit(e.Location);
         bool hc = h >= 0 && !Tabs[h].Pinned && CloseRect(TabRect(h)).Contains(e.Location);
         bool hp = PlusRect().Contains(e.Location);
+        bool hl = ListRect().Contains(e.Location);
+        bool hal = LeftArrowShown && LeftArrow().Contains(e.Location);
+        bool har = RightArrowShown && RightArrow().Contains(e.Location);
         bool ha = h >= 0 && !Tabs[h].Pinned && HasAudio(Tabs[h]) && !hc && AudioRect(h, TabRect(h)).Contains(e.Location);
-        if (h != hover || hc != hoverClose || hp != hoverPlus || ha != hoverAudio)
+        if (h != hover || hc != hoverClose || hp != hoverPlus || ha != hoverAudio || hl != hoverList || hal != hoverLeft || har != hoverRight)
         {
-            bool tipChange = h != hover || hp != hoverPlus || ha != hoverAudio;
+            bool tipChange = h != hover || hp != hoverPlus || ha != hoverAudio || hl != hoverList;
             if (h != hover) HoverTab?.Invoke(h);
-            hover = h; hoverClose = hc; hoverPlus = hp; hoverAudio = ha;
+            hover = h; hoverClose = hc; hoverPlus = hp; hoverAudio = ha; hoverList = hl; hoverLeft = hal; hoverRight = har;
             Invalidate();
             if (tipChange) // le titre complet est dans la carte d'aperçu : pas de bulle en double
                 tip.SetToolTip(this, ha ? (Tabs[h].Muted ? "Réactiver le son de cet onglet" : "Couper le son de cet onglet")
-                    : hp ? "Nouvel onglet (Ctrl+T) · clic droit : onglet privé" : null);
+                    : hp ? "Nouvel onglet (Ctrl+T) · clic droit : onglet privé"
+                    : hl ? "Rechercher dans les onglets (Ctrl+Maj+A)" : null);
         }
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        hover = -1; hoverClose = hoverPlus = hoverAudio = false;
+        hover = -1; hoverClose = hoverPlus = hoverAudio = hoverList = hoverLeft = hoverRight = false;
         HoverTab?.Invoke(-1);
         Invalidate();
     }
@@ -1092,6 +1247,13 @@ class TabStrip : Control
     {
         base.OnMouseDown(e);
         HoverTab?.Invoke(-1);
+        if (e.Button == MouseButtons.Left)
+        {
+            // flèches des bords : la barre avance d'environ deux tiers de sa largeur
+            if (LeftArrowShown && LeftArrow().Contains(e.Location)) { ScrollBy(-Math.Max(TabWidth(), ViewW * 2 / 3)); return; }
+            if (RightArrowShown && RightArrow().Contains(e.Location)) { ScrollBy(Math.Max(TabWidth(), ViewW * 2 / 3)); return; }
+            if (ListRect().Contains(e.Location)) { TabListRequested?.Invoke(); return; }
+        }
         int h = Hit(e.Location);
         if (e.Button == MouseButtons.Middle) { if (h >= 0) TabClose?.Invoke(h); return; }
         if (e.Button == MouseButtons.Right)
@@ -1121,7 +1283,8 @@ class TabStrip : Control
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        if (e.Button == MouseButtons.Left && Hit(e.Location) < 0 && !PlusRect().Contains(e.Location))
+        if (e.Button == MouseButtons.Left && Hit(e.Location) < 0 && !PlusRect().Contains(e.Location) && !ListRect().Contains(e.Location)
+            && !(LeftArrowShown && LeftArrow().Contains(e.Location)) && !(RightArrowShown && RightArrow().Contains(e.Location)))
             NewTabRequested?.Invoke();
     }
 }
@@ -2033,6 +2196,7 @@ partial class BrowserForm : Form
         strip.HoverTab += TabHover;
         strip.TabMove += MoveTab;
         strip.TabTearOff += (i, pt) => DetachTab(i, pt);
+        strip.TabListRequested += ShowTabSearch;
         tabCardTimer.Tick += (_, _) => { tabCardTimer.Stop(); if (tabCardFor >= 0) ShowTabCard(tabCardFor); };
 
         favBar = new FavBar(iconSmall) { Dock = DockStyle.Top, Height = S(32), Font = new Font("Segoe UI", 9f) };
@@ -3508,6 +3672,7 @@ partial class BrowserForm : Form
         });
         right.Enabled = i < tabs.Count - 1;
         m.Items.Add(right);
+        m.Items.Add(DuplicatesMenuItem());
         m.Show(strip, pt);
     }
 
@@ -5824,6 +5989,7 @@ partial class BrowserForm : Form
                 if (parts[1] == "rebond") { await RebondTest(parts[0]); continue; }
                 if (parts[1] == "perf") { await PerfTest(parts[0]); continue; }
                 if (parts[1] == "streams") { await StreamsTest(parts[0]); continue; }
+                if (parts[1] == "onglets") { await TabsTest(parts[0]); continue; }
                 if (parts[1] == "fenetres")
                 {
                     var fr = new List<string>();
@@ -6798,6 +6964,7 @@ partial class BrowserForm : Form
         m.Items.Add(MI("Nouvel onglet privé", () => _ = NewTab(priv: true), "Ctrl+Maj+N"));
         m.Items.Add(MI(nurLiveUi != null ? "Multistream (Nur Live)" : "Multistream", () => OpenMulti(new List<string>(), chat: true), "Ctrl+Maj+M"));
         m.Items.Add(MI("Copier le texte à l'écran (Lens)", () => BeginInvoke(new Action(StartLens)), "Ctrl+Maj+L"));
+        m.Items.Add(MI("Rechercher dans les onglets", () => BeginInvoke(new Action(ShowTabSearch)), "Ctrl+Maj+A"));
         var reopen = MI("Rouvrir l'onglet fermé", ReopenClosed, "Ctrl+Maj+T");
         reopen.Enabled = closedTabs.Count > 0;
         m.Items.Add(reopen);
@@ -7046,6 +7213,7 @@ partial class BrowserForm : Form
             case Keys.Control | Keys.D: ToggleFavorite(); return true;
             case Keys.Control | Keys.Shift | Keys.B: ToggleFavBar(); return true;
             case Keys.Control | Keys.Shift | Keys.L: StartLens(); return true;
+            case Keys.Control | Keys.Shift | Keys.A: ShowTabSearch(); return true;
             case Keys.Control | Keys.Shift | Keys.M: OpenMulti(new List<string>(), chat: true); return true;
             case Keys.Control | Keys.M: ToggleMute(sel); return true;
             case Keys.F5:

@@ -35,6 +35,7 @@ static class Program
         ChannelTests();
         SearchTests();
         OmniTests();
+        TabTests();
         NurLiveTests();
         PrayerParsing();
         YouTube();
@@ -531,6 +532,42 @@ static class Program
                 if (File.Exists(f)) return f;
             }
         return null;
+    }
+
+    // ------------------------------------------------------------------
+    static void TabTests()
+    {
+        Section("Onglets : recherche et doublons");
+        Check("sans accents ni majuscules", TabTools.Fold("Électricité Œuvre") == "electricite oeuvre", TabTools.Fold("Électricité Œuvre"));
+        Check("recherche vide : tout correspond", TabTools.Matches("  ", "Peu importe", "https://a.fr/"));
+        Check("mot du titre, accents ignorés", TabTools.Matches("electricite", "Électricité — Wikipédia", "https://fr.wikipedia.org/wiki/%C3%89lectricit%C3%A9"));
+        Check("mot de l'adresse", TabTools.Matches("youtube", "Lofi girl", "https://www.youtube.com/watch?v=1"));
+        Check("plusieurs mots : tous requis", TabTools.Matches("wiki gentle", "Gentle Mates — Wikipédia", "https://fr.wikipedia.org/wiki/Gentle_Mates"));
+        Check("un mot absent : ne correspond pas", !TabTools.Matches("wiki twitch", "Gentle Mates — Wikipédia", "https://fr.wikipedia.org/wiki/Gentle_Mates"));
+        Check("« https » ne trouve pas tout", !TabTools.Matches("https", "Lofi", "https://www.youtube.com/"));
+        Check("même adresse, hôte en majuscules", TabTools.DuplicateKey("https://Example.com/a?x=1") == TabTools.DuplicateKey("https://example.com/a?x=1"));
+        Check("# vide ignoré", TabTools.DuplicateKey("https://example.com/#") == TabTools.DuplicateKey("https://example.com/"));
+        Check("autre page : pas un double", TabTools.DuplicateKey("https://example.com/a") != TabTools.DuplicateKey("https://example.com/b"));
+        Check("page intégrée : jamais un double", TabTools.DuplicateKey("https://litebrowser.home/index.html") == null && TabTools.DuplicateKey("") == null);
+        var tabs = new List<(string, bool, bool)>
+        {
+            ("https://a.fr/", false, false),   // 0
+            ("https://b.fr/", false, false),   // 1
+            ("https://a.fr/", false, false),   // 2
+            ("https://a.fr/", false, false),   // 3 (affiché)
+            ("https://b.fr/", true, false),    // 4 épinglé
+            ("https://c.fr/", false, true),    // 5 privé
+            ("https://c.fr/", false, false),   // 6 normal : pas le double du privé
+            ("https://litebrowser.home/index.html", false, false), // 7
+            ("https://litebrowser.home/index.html", false, false), // 8
+        };
+        var close = TabTools.DuplicatesToClose(tabs, 3);
+        Check("doublons : garde l'onglet affiché et l'épinglé", close.SequenceEqual(new[] { 0, 1, 2 }), string.Join(",", close));
+        var close2 = TabTools.DuplicatesToClose(tabs, 6);
+        Check("doublons : sinon garde le premier", close2.SequenceEqual(new[] { 1, 2, 3 }), string.Join(",", close2));
+        Check("aucun doublon : rien à fermer", TabTools.DuplicatesToClose(new List<(string, bool, bool)> { ("https://a.fr/", false, false), ("https://b.fr/", false, false) }, 0).Count == 0);
+        var pins = new List<(string, bool, bool)> { ("https://a.fr/", true, false), ("https://a.fr/", true, false) };
+        Check("deux épinglés identiques : jamais fermés", TabTools.DuplicatesToClose(pins, -1).Count == 0);
     }
 
     // ------------------------------------------------------------------
