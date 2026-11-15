@@ -37,6 +37,7 @@ static class Program
         SearchTests();
         OmniTests();
         TabTests();
+        WindowAndTabPlaceTests();
         NurLiveTests();
         PrayerParsing();
         YouTube();
@@ -621,6 +622,28 @@ static class Program
     }
 
     // ------------------------------------------------------------------
+    static void WindowAndTabPlaceTests()
+    {
+        Section("Fenêtre retenue et places des onglets");
+        var p1 = new System.Drawing.Rectangle(0, 0, 1920, 1040);
+        var p2 = new System.Drawing.Rectangle(1920, 0, 2560, 1400);
+        var min = new System.Drawing.Size(520, 320);
+        var r = new System.Drawing.Rectangle(150, 90, 1300, 800);
+        Check("format lu à l'identique", WindowPlace.TryParse(WindowPlace.Format(r, true), out var back, out bool max) && back == r && max);
+        Check("fichier abîmé ou trop petit : ignoré", !WindowPlace.TryParse("1;2;3", out _, out _) && !WindowPlace.TryParse("0;0;50;50;0", out _, out _) && !WindowPlace.TryParse(null, out _, out _));
+        Check("sur son écran : inchangée", WindowPlace.Fit(r, new[] { p1, p2 }, p1, min) == r);
+        Check("sur le 2e écran : y reste", WindowPlace.Fit(new System.Drawing.Rectangle(2000, 50, 1600, 1000), new[] { p1, p2 }, p1, min) == new System.Drawing.Rectangle(2000, 50, 1600, 1000));
+        var lost = WindowPlace.Fit(new System.Drawing.Rectangle(2000, 50, 1600, 1000), new[] { p1 }, p1, min);
+        Check("2e écran débranché : centrée sur l'écran principal", p1.Contains(lost) && lost.Size == new System.Drawing.Size(1600, 1000), lost.ToString());
+        Check("plus grande que l'écran : ramenée", WindowPlace.Fit(new System.Drawing.Rectangle(-10, -10, 5000, 3000), new[] { p1 }, p1, min) == p1);
+        var tabsX = new List<(int, int)> { (8, 44), (52, 200), (252, 200), (452, 200) };
+        Check("onglet lâché sur la moitié gauche d'un onglet : avant lui", TabPlace.DropIndex(tabsX, 100) == 1);
+        Check("onglet lâché sur la moitié droite : après lui", TabPlace.DropIndex(tabsX, 400) == 3);
+        Check("onglet lâché après le dernier : au bout", TabPlace.DropIndex(tabsX, 900) == 4);
+        Check("épinglé : reste dans le groupe des épinglés", TabPlace.InGroup(5, true, 2, 6) == 2 && TabPlace.InGroup(0, true, 2, 6) == 0);
+        Check("non épinglé : jamais au milieu des épinglés", TabPlace.InGroup(0, false, 2, 6) == 2 && TabPlace.InGroup(9, false, 2, 6) == 6);
+    }
+
     static void TabTests()
     {
         Section("Onglets : recherche et doublons");

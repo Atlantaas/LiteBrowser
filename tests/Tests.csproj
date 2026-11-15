@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="../Core.cs" Link="Core.cs" />
     <Compile Include="../M8.cs" Link="M8.cs" />
+    <Compile Include="../Features/PetitsSoucis_onglets.Logique.cs" Link="PetitsSoucis_onglets.Logique.cs" />
     <None Include="fixtures/**" CopyToOutputDirectory="PreserveNewest" />
     <None Include="youtube_test.js" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../nurbridge.js" Link="nurbridge.js" CopyToOutputDirectory="PreserveNewest" />
