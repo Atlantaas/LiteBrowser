@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -3682,6 +3682,7 @@ partial class BrowserForm : Form
     {
         if (first < 0 || MenuReclick(favBar)) return;
         var m = NewMenu(out _, out _);
+        m.Tag = favBar;
         m.ImageScalingSize = new Size(S(16), S(16));
         for (int i = first; i < favorites.Count; i++)
         {
@@ -6655,6 +6656,7 @@ partial class BrowserForm : Form
     {
         if (at == null && MenuReclick(prayerChip.Visible ? prayerChip : menuBtn)) return;
         var m = NewMenu(out var r, out var font);
+        if (at == null) m.Tag = prayerChip.Visible ? prayerChip : menuBtn;
 
         if (prayerDay != null)
         {

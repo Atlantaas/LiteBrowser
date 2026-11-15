@@ -64,6 +64,7 @@ partial class BrowserForm
     int menusOpen { get { openMenus.RemoveWhere(x => x.IsDisposed); return openMenus.Count; } }
     WebView2 menuReturnTo;          // page qui avait le clavier avant l'ouverture du menu
     Point menuCloseAt;              // où était la souris quand un clic à côté a refermé le dernier menu
+    Control menuCloseOwner;         // bouton du menu refermé par ce clic (Tag du menu)
 
     [StructLayout(LayoutKind.Sequential)]
     struct GuiThreadInfo { public int cbSize, flags; public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; public int l, t, r, b; }
@@ -111,7 +112,8 @@ partial class BrowserForm
 
     void MenuOpened(ToolStripDropDown m)
     {
-        if (openMenus.Add(m)) m.Disposed += (_, _) => openMenus.Remove(m);
+        // jeté sans Closed (menu remplacé) : le bouton ne doit pas rester allumé
+        if (openMenus.Add(m)) m.Disposed += (_, _) => { if (openMenus.Remove(m) && m.Tag is IconButton ob) ob.Open = false; };
         TabHover(-1);
         if (m.Tag is IconButton b) b.Open = true;
         // La page a le clavier : Échap, flèches et Entrée iraient à la page et le menu resterait ouvert.
@@ -136,7 +138,7 @@ partial class BrowserForm
     {
         openMenus.Remove(m);
         if (m.Tag is IconButton b) b.Open = false;
-        if (reason == ToolStripDropDownCloseReason.AppClicked) { Fade.LastOutsideClose = DateTime.Now; menuCloseAt = mouse; }
+        if (reason == ToolStripDropDownCloseReason.AppClicked) { Fade.LastOutsideClose = DateTime.Now; menuCloseAt = mouse; menuCloseOwner = m.Tag as Control; }
         var back = menuReturnTo;
         menuReturnTo = null;
         if (back == null || IsDisposed) return;
@@ -151,14 +153,16 @@ partial class BrowserForm
     }
 
     /// Clic sur le bouton d'un menu qui vient de le refermer (le clic à côté) : on ne le rouvre pas dans la foulée.
+    /// Seulement le bouton de CE menu : le clic qui ferme ⋯ en tombant sur le bouton des extensions ouvre les extensions.
     bool MenuReclick(Control btn) => MenuReclick(btn, Cursor.Position);
 
     bool MenuReclick(Control btn, Point mouse)
     {
-        if (btn == null || btn.IsDisposed || !btn.IsHandleCreated) return false;
+        if (btn == null || btn.IsDisposed || !btn.IsHandleCreated || btn != menuCloseOwner) return false;
         var r = btn.RectangleToScreen(btn.ClientRectangle);
         if ((DateTime.Now - Fade.LastOutsideClose).TotalMilliseconds > 600 || !r.Contains(menuCloseAt) || !r.Contains(mouse)) return false;
         Fade.LastOutsideClose = DateTime.MinValue; // un seul clic avalé : le suivant rouvre le menu
+        menuCloseOwner = null;
         return true;
     }
 
@@ -266,9 +270,35 @@ partial class BrowserForm
             C("bouclier re-cliqué menu ouvert : le menu se referme sans se rouvrir", swallowed, "clic avalé");
             C("le clic suivant rouvre bien le menu", !next);
             var extCenter = extBtn.PointToScreen(new Point(extBtn.Width / 2, extBtn.Height / 2));
-            MenuClosed(new ContextMenuStrip(), ToolStripDropDownCloseReason.AppClicked, shieldCenter);
-            C("menu refermé par un clic ailleurs : un clic sur un autre bouton ouvre son menu", !MenuReclick(extBtn, extCenter));
+            Point Mid(Control c) => c.PointToScreen(new Point(c.Width / 2, c.Height / 2));
+            // vrai cas : ⋯ ouvert, le clic qui le referme tombe sur le bouton d'un AUTRE menu, qui doit s'ouvrir du premier coup
+            foreach (var (btnB, label) in new (Control, string)[] { (extBtn, "extensions"), (addr.Shield, "bouclier"), (prayerChip, "pastille de prière"), (favBar, "» des favoris") })
+            {
+                var at = Mid(btnB);
+                MenuClosed(new ContextMenuStrip { Tag = menuBtn }, ToolStripDropDownCloseReason.AppClicked, at);
+                C($"⋯ refermé par un clic sur {label} : son menu s'ouvre du premier coup", btnB.IsHandleCreated && !MenuReclick(btnB, at));
+            }
+            // menu d'onglet ou de favori (sans Tag) refermé par un clic sur un bouton : son menu s'ouvre aussi
             MenuClosed(new ContextMenuStrip(), ToolStripDropDownCloseReason.AppClicked, extCenter);
+            C("menu d'onglet refermé par un clic sur les extensions : leur menu s'ouvre du premier coup", !MenuReclick(extBtn, extCenter));
+            // menu jeté sans Closed : son bouton s'éteint
+            var fake6 = new ContextMenuStrip { Tag = extBtn };
+            MenuOpened(fake6);
+            bool litOpen = extBtn.Open;
+            fake6.Dispose();
+            C("menu jeté sans se fermer : le bouton ne reste pas allumé", litOpen && !extBtn.Open, $"allumé {litOpen}, après {extBtn.Open}");
+            Cur?.View.Focus();
+            var menuCenter = Mid(menuBtn);
+            MenuClosed(new ContextMenuStrip { Tag = extBtn }, ToolStripDropDownCloseReason.AppClicked, menuCenter);
+            C("extensions refermées par un clic sur ⋯ : ⋯ s'ouvre du premier coup", !MenuReclick(menuBtn, menuCenter));
+            // le bouton du menu refermé, lui, avale bien son clic (menus prière et » compris, qui ont maintenant leur Tag)
+            foreach (var (own, label) in new (Control, string)[] { (prayerChip, "prière"), (favBar, "» des favoris"), (menuBtn, "⋯") })
+            {
+                var at = Mid(own);
+                MenuClosed(new ContextMenuStrip { Tag = own }, ToolStripDropDownCloseReason.AppClicked, at);
+                C($"menu {label} re-cliqué sur son bouton : refermé sans se rouvrir", MenuReclick(own, at));
+            }
+            MenuClosed(new ContextMenuStrip { Tag = extBtn }, ToolStripDropDownCloseReason.AppClicked, extCenter);
             await Task.Delay(700);
             C("clic sur le bouton bien après : le menu s'ouvre", !MenuReclick(extBtn, extCenter));
             Fade.LastOutsideClose = DateTime.MinValue;
