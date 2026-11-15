@@ -2784,6 +2784,7 @@ partial class BrowserForm : Form
         strip.Selected = i;
         strip.Invalidate();
         UpdateUi();
+        ToolsTabChanged();
         if (pageFullscreen && Core?.ContainsFullScreenElement != true) { pageFullscreen = false; SetFullscreen(false); }
         if (Cur.IsHome) addr.Box.Focus(); else Cur.View.Focus();
     }
@@ -5824,6 +5825,7 @@ partial class BrowserForm : Form
                 if (parts[1] == "rebond") { await RebondTest(parts[0]); continue; }
                 if (parts[1] == "perf") { await PerfTest(parts[0]); continue; }
                 if (parts[1] == "streams") { await StreamsTest(parts[0]); continue; }
+                if (parts[1] == "outils") { await ToolsTest(parts[0]); continue; }
                 if (parts[1] == "fenetres")
                 {
                     var fr = new List<string>();
@@ -6798,6 +6800,7 @@ partial class BrowserForm : Form
         m.Items.Add(MI("Nouvel onglet privé", () => _ = NewTab(priv: true), "Ctrl+Maj+N"));
         m.Items.Add(MI(nurLiveUi != null ? "Multistream (Nur Live)" : "Multistream", () => OpenMulti(new List<string>(), chat: true), "Ctrl+Maj+M"));
         m.Items.Add(MI("Copier le texte à l'écran (Lens)", () => BeginInvoke(new Action(StartLens)), "Ctrl+Maj+L"));
+        m.Items.Add(ToolsMenu());
         var reopen = MI("Rouvrir l'onglet fermé", ReopenClosed, "Ctrl+Maj+T");
         reopen.Enabled = closedTabs.Count > 0;
         m.Items.Add(reopen);
@@ -7027,6 +7030,7 @@ partial class BrowserForm : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys k)
     {
+        if (ToolsKey(k)) return true; // Features/Tools.cs : Ctrl+F, Ctrl+P, captures, image dans l'image
         switch (k)
         {
             case Keys.Control | Keys.T: _ = NewTab(); return true;

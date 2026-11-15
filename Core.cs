@@ -845,4 +845,95 @@ namespace LiteCore
             return (incoming ?? Enumerable.Empty<(string, string)>()).Where(x => seen.Add(x.Url)).ToList();
         }
     }
+
+    // ==================================================================
+    //  Outils de page : captures, recherche dans la page, image dans l'image
+    // ==================================================================
+    public static class PageTools
+    {
+        static readonly string[] Reserved = { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                                              "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
+
+        /// Texte utilisable dans un nom de fichier Windows (caractères interdits retirés, espaces resserrés).
+        public static string CleanFileName(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return "";
+            var sb = new StringBuilder(s.Length);
+            foreach (var c in s)
+                sb.Append(c < 32 || "<>:\"/\\|?*".IndexOf(c) >= 0 ? ' ' : c);
+            var r = Regex.Replace(sb.ToString(), @"\s+", " ").Trim().Trim('.', ' ');
+            return r;
+        }
+
+        /// « Titre de la page – 2026-11-15 à 10.42.07.png » (ou le site si la page n’a pas de titre).
+        public static string ShotFileName(string title, string url, DateTime when, bool full)
+        {
+            var name = CleanFileName(title);
+            if (name.Length == 0 && Uri.TryCreate(url ?? "", UriKind.Absolute, out var u) && !string.IsNullOrEmpty(u.Host))
+                name = CleanFileName(u.Host.StartsWith("www.") ? u.Host[4..] : u.Host);
+            if (name.Length == 0) name = "Page";
+            if (name.Length > 70) name = name[..70].TrimEnd(' ', '.', '-', '–', ',');
+            if (Reserved.Contains(name.ToUpperInvariant())) name = "_" + name;
+            return $"{name} – {when:yyyy-MM-dd} à {when:HH.mm.ss}{(full ? " (page entière)" : "")}.png";
+        }
+
+        /// Nom libre dans le dossier : « x.png », sinon « x (2).png », « x (3).png »…
+        public static string UniqueName(string file, Func<string, bool> taken)
+        {
+            if (!taken(file)) return file;
+            var ext = Path.GetExtension(file);
+            var stem = file[..^ext.Length];
+            for (int i = 2; i < 1000; i++)
+            {
+                var f = $"{stem} ({i}){ext}";
+                if (!taken(f)) return f;
+            }
+            return $"{stem} ({Guid.NewGuid():N}){ext}";
+        }
+
+        /// Compteur de la barre de recherche : « 3 / 12 », « Aucun résultat », ou rien tant qu’on n’a rien tapé.
+        public static string FindCounter(int active, int count, string term)
+        {
+            if (string.IsNullOrEmpty(term)) return "";
+            if (count <= 0) return "Aucun résultat";
+            return $"{Math.Clamp(active, 0, count)} / {count}";
+        }
+
+        /// Zone de la page entière à capturer (pixels CSS) et échelle : jamais plus de maxPx de haut ou de large
+        /// (limite du moteur), ni plus d’environ 150 millions de pixels (mémoire).
+        public static (double Width, double Height, double Scale, bool Cut) FullPageClip(double cssW, double cssH, double dpr, int maxPx = 16384)
+        {
+            double w = Math.Max(1, Math.Ceiling(double.IsFinite(cssW) ? cssW : 1));
+            double h = Math.Max(1, Math.Ceiling(double.IsFinite(cssH) ? cssH : 1));
+            double s = double.IsFinite(dpr) && dpr > 0 ? Math.Clamp(dpr, 1, 3) : 1;
+            bool cut = false;
+            if (w > maxPx) w = maxPx;
+            if (h * s > maxPx) s = Math.Max(1, maxPx / h);
+            if (h * s > maxPx) { h = Math.Floor(maxPx / s); cut = true; }
+            const double maxArea = 150_000_000;
+            if (w * h * s * s > maxArea) s = Math.Max(Math.Sqrt(maxArea / (w * h)), 0.5);
+            if (w * h * s * s > maxArea) { h = Math.Floor(maxArea / (w * s * s)); cut = true; }
+            return (w, h, Math.Floor(s * 1000) / 1000, cut); // arrondi vers le bas : on reste sous les limites
+        }
+
+        /// Message pour le résultat du script « image dans l’image » (null = tout s’est bien passé, rien à dire).
+        public static (string Title, string Text)? PipMessage(string code)
+        {
+            code ??= "";
+            if (code == "ok" || code == "okpaused" || code == "closed" || code.StartsWith("ok:")) return null;
+            if (code == "none") return ("Aucune vidéo sur cette page", "Lance une vidéo, puis réessaie.");
+            if (code == "noneframes") return ("Vidéo impossible à détacher", "La vidéo vient d’un autre site intégré à la page : ouvre-la directement sur son site pour la détacher.");
+            if (code == "notready") return ("La vidéo n’est pas encore prête", "Attends qu’elle démarre, puis réessaie.");
+            if (code == "refused") return ("Ce site refuse l’image dans l’image", "Le site a désactivé cette fonction pour sa vidéo.");
+            if (code == "disabled") return ("Image dans l’image indisponible", "Cette page ne permet pas de détacher une vidéo.");
+            if (code.StartsWith("error:"))
+            {
+                var parts = code.Split(':', 3);
+                var why = parts.Length > 1 && parts[1] == "NotAllowedError" ? "La page a refusé la demande. Clique dans la vidéo, puis réessaie."
+                        : parts.Length > 2 && parts[2].Length > 0 ? parts[2] : "Erreur inconnue.";
+                return ("Impossible de détacher la vidéo", why);
+            }
+            return ("Impossible de détacher la vidéo", "La page n’a pas répondu.");
+        }
+    }
 }

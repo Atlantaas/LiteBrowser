@@ -38,6 +38,7 @@ static class Program
         NurLiveTests();
         PrayerParsing();
         YouTube();
+        ToolsTests();
         if (online) await Online();
 
         Console.WriteLine($"\n{passed} réussis, {failures} échoués");
@@ -503,6 +504,45 @@ static class Program
         Check("adresse API correcte (point décimal)",
             Prayers.ApiUrl(new DateTime(2026, 11, 1), 49.205, 6.696, 12) ==
             "https://api.aladhan.com/v1/timings/01-11-2026?latitude=49.205&longitude=6.696&method=12");
+    }
+
+    // ------------------------------------------------------------------
+    static void ToolsTests()
+    {
+        Section("Outils de page");
+        var when = new DateTime(2026, 11, 15, 9, 5, 7);
+        Check("nom de capture : titre + date", PageTools.ShotFileName("Gentle Mates – Wikipédia", "https://fr.wikipedia.org/", when, false) == "Gentle Mates – Wikipédia – 2026-11-15 à 09.05.07.png",
+            PageTools.ShotFileName("Gentle Mates – Wikipédia", "https://fr.wikipedia.org/", when, false));
+        Check("nom de capture : page entière", PageTools.ShotFileName("Accueil", null, when, true).EndsWith("09.05.07 (page entière).png"));
+        Check("nom de capture : caractères interdits retirés", PageTools.ShotFileName("a/b:c*d?\"e<f>|g\\h", null, when, false).StartsWith("a b c d e f g h – "),
+            PageTools.ShotFileName("a/b:c*d?\"e<f>|g\\h", null, when, false));
+        Check("nom de capture : sans titre = le site", PageTools.ShotFileName("  ", "https://www.twitch.tv/gentlemates", when, false).StartsWith("twitch.tv – "));
+        Check("nom de capture : rien du tout", PageTools.ShotFileName(null, "about:blank", when, false).StartsWith("Page – "));
+        Check("nom de capture : nom réservé de Windows", PageTools.ShotFileName("con", null, when, false).StartsWith("_con – "));
+        var longName = PageTools.ShotFileName(new string('x', 300), null, when, false);
+        Check("nom de capture : titre trop long coupé", longName.Length < 110, longName.Length.ToString());
+        var taken = new HashSet<string> { "a.png", "a (2).png" };
+        Check("nom libre : (3)", PageTools.UniqueName("a.png", taken.Contains) == "a (3).png");
+        Check("nom libre : déjà libre", PageTools.UniqueName("b.png", taken.Contains) == "b.png");
+        Check("compteur : 3 / 12", PageTools.FindCounter(3, 12, "m8") == "3 / 12");
+        Check("compteur : aucun résultat", PageTools.FindCounter(-1, 0, "zz") == "Aucun résultat");
+        Check("compteur : rien tapé", PageTools.FindCounter(0, 0, "") == "");
+        Check("compteur : actif inconnu", PageTools.FindCounter(-1, 5, "a") == "0 / 5");
+        var c1 = PageTools.FullPageClip(1280.4, 3000, 1.25);
+        Check("page entière : taille normale", c1.Width == 1281 && c1.Height == 3000 && c1.Scale == 1.25 && !c1.Cut, c1.ToString());
+        var c2 = PageTools.FullPageClip(1280, 40000, 1.5);
+        Check("page entière : très longue, coupée à 16384 px", c2.Scale == 1 && c2.Height == 16384 && c2.Cut, c2.ToString());
+        var c3 = PageTools.FullPageClip(1280, 12000, 2);
+        Check("page entière : échelle réduite plutôt que coupée", c3.Height == 12000 && c3.Height * c3.Scale <= 16384 && !c3.Cut, c3.ToString());
+        var c4 = PageTools.FullPageClip(16000, 16000, 1);
+        Check("page entière : surface limitée", c4.Width * c4.Height * c4.Scale * c4.Scale <= 150_000_001, c4.ToString());
+        var c5 = PageTools.FullPageClip(double.NaN, 0, 0);
+        Check("page entière : mesures absurdes", c5.Width == 1 && c5.Height == 1 && c5.Scale == 1, c5.ToString());
+        Check("image dans l'image : réussite = pas de message", PageTools.PipMessage("ok") == null && PageTools.PipMessage("ok:playing:300") == null && PageTools.PipMessage("closed") == null);
+        Check("image dans l'image : pas de vidéo", PageTools.PipMessage("none")?.Title == "Aucune vidéo sur cette page");
+        Check("image dans l'image : refus du site", PageTools.PipMessage("refused")?.Title.Contains("refuse") == true);
+        Check("image dans l'image : refus du navigateur expliqué", PageTools.PipMessage("error:NotAllowedError:x")?.Text.Contains("Clique") == true);
+        Check("image dans l'image : erreur inconnue", PageTools.PipMessage("error:Foo:bar")?.Text == "bar" && PageTools.PipMessage(null) != null);
     }
 
     // ------------------------------------------------------------------
