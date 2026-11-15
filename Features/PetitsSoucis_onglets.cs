@@ -260,7 +260,7 @@ partial class BrowserForm
         try
         {
             Rectangle normal; bool max;
-            if (fullscreen) { normal = RestoreBounds; max = prevState == FormWindowState.Maximized; }
+            if (fullscreen) { normal = fullNormal.Width > 0 ? fullNormal : RestoreBounds; max = prevState == FormWindowState.Maximized; } // taille prise avant de retirer les bords
             else if (WindowState == FormWindowState.Normal) { normal = Bounds; max = false; }
             else if (WindowState == FormWindowState.Maximized) { normal = RestoreBounds; max = true; }
             else { normal = RestoreBounds; max = RestoresMaximized(this); }
@@ -326,10 +326,7 @@ partial class BrowserForm
 
     // ================== Test hors écran « pc-onglets » ==================
 
-    [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] s);
-    [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] s);
     [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     // (DwmSetWindowAttribute : Program.cs ; EnumChildWindows, GetClassName, PostMessage : Sites.cs ; SendMessage, StripClick : Tabs.cs)
 
@@ -369,7 +366,7 @@ partial class BrowserForm
             int vk = (int)(k & Keys.KeyCode);
             uint scan = MapVirtualKey((uint)vk, 0);
             long ext = vk is 0x21 or 0x22 or 0x24 or 0x2E ? 1 << 24 : 0; // Pg.préc, Pg.suiv, Origine, Suppr : touches étendues
-            long lp = 1 | (scan << 16) | ext | (alt ? 1 << 29 : 0);
+            long lp = 1L | ((long)scan << 16) | ext | (alt ? 1L << 29 : 0L);
             PostMessage(target, alt ? 0x0104 : 0x0100, (IntPtr)vk, (IntPtr)lp);
             await Task.Delay(150);
             PostMessage(target, alt ? 0x0105 : 0x0101, (IntPtr)vk, (IntPtr)unchecked((int)(lp | 0xC0000000)));

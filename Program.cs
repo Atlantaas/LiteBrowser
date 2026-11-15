@@ -1361,6 +1361,7 @@ class FavBar : Control
     readonly ToolTip tip = new();
     readonly List<(Rectangle R, int Index)> slots = new();
     Rectangle moreRect = Rectangle.Empty;
+    public Rectangle MoreRect => moreRect;
     int hover = -1, firstHidden = -1;
     bool hoverMore;
 
@@ -3681,7 +3682,7 @@ partial class BrowserForm : Form
 
     void ShowFavOverflow(int first, Point pt)
     {
-        if (first < 0 || MenuReclick(favBar)) return;
+        if (first < 0 || MenuReclick(favBar, Cursor.Position, favBar.MoreRect)) return;
         var m = NewMenu(out _, out _);
         m.Tag = favBar;
         m.ImageScalingSize = new Size(S(16), S(16));
@@ -6673,9 +6674,9 @@ partial class BrowserForm : Form
 
     void ShowPrayerMenu(Point? at)
     {
-        if (at == null && MenuReclick(prayerChip.Visible ? prayerChip : menuBtn)) return;
+        if (at == null && MenuReclick(prayerChip)) return;
         var m = NewMenu(out var r, out var font);
-        if (at == null) m.Tag = prayerChip.Visible ? prayerChip : menuBtn;
+        if (at == null) m.Tag = prayerChip;
 
         if (prayerDay != null)
         {

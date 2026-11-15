@@ -156,10 +156,13 @@ partial class BrowserForm
     /// Seulement le bouton de CE menu : le clic qui ferme ⋯ en tombant sur le bouton des extensions ouvre les extensions.
     bool MenuReclick(Control btn) => MenuReclick(btn, Cursor.Position);
 
-    bool MenuReclick(Control btn, Point mouse)
+    bool MenuReclick(Control btn, Point mouse) => MenuReclick(btn, mouse, Rectangle.Empty);
+
+    /// zone : partie du contrôle qui sert de bouton (ex. le » de la barre des favoris), sinon tout le contrôle.
+    bool MenuReclick(Control btn, Point mouse, Rectangle zone)
     {
         if (btn == null || btn.IsDisposed || !btn.IsHandleCreated || btn != menuCloseOwner) return false;
-        var r = btn.RectangleToScreen(btn.ClientRectangle);
+        var r = btn.RectangleToScreen(zone.IsEmpty ? btn.ClientRectangle : zone);
         if ((DateTime.Now - Fade.LastOutsideClose).TotalMilliseconds > 600 || !r.Contains(menuCloseAt) || !r.Contains(mouse)) return false;
         Fade.LastOutsideClose = DateTime.MinValue; // un seul clic avalé : le suivant rouvre le menu
         menuCloseOwner = null;
