@@ -20,6 +20,7 @@ partial class BrowserForm
     ZoomBadge zoomBadge;
     SitePermCard permCard;
     PermAsk permShown;
+    readonly HashSet<Form> permHooked = new();
     System.Windows.Forms.Timer sitesSaveTimer;
     readonly List<PermAsk> permQueue = new();
     /// Site vers lequel un onglet est en train de naviguer : un changement de zoom pendant ce temps n'est pas noté pour l'ancien site.
@@ -317,7 +318,8 @@ partial class BrowserForm
         if (permQueue.Count == 0 && permCard is not { Visible: true }) return;
         // onglets fermés entre-temps : demande refusée, sans rien retenir
         foreach (var gone in permQueue.Where(a => !tabs.Contains(a.Tab) && a.Tab.Window == null).ToList()) DecidePerm(gone, false, false);
-        var next = permQueue.FirstOrDefault(a => a.Tab.Window != null || (a.Tab == Cur && WindowState != FormWindowState.Minimized));
+        var next = permQueue.FirstOrDefault(a => a.Tab.Window != null ? a.Tab.Window.WindowState != FormWindowState.Minimized
+                                                                      : a.Tab == Cur && WindowState != FormWindowState.Minimized);
         if (next == null) { permShown = null; permCard?.Hide(); return; }
         if (permCard == null)
         {
@@ -325,6 +327,7 @@ partial class BrowserForm
             permCard.Chosen += (allow, remember) => { if (permShown != null) DecidePerm(permShown, allow, remember); };
         }
         Form owner = (Form)next.Tab.Window ?? this;
+        HookPermOwner(owner);
         if (permShown != next)
         {
             permShown = next;
@@ -342,12 +345,24 @@ partial class BrowserForm
         }
     }
 
+    /// Fenêtre détachée qui porte la carte : la carte la suit quand on la déplace, la redimensionne ou la réduit.
+    void HookPermOwner(Form f)
+    {
+        if (f == this || !permHooked.Add(f)) return;
+        f.LocationChanged += (_, _) => { if (permShown?.Tab.Window == f) PlacePermCard(); };
+        f.Resize += (_, _) => { if (permQueue.Any(a => a.Tab.Window == f)) ShowNextPerm(); };
+        f.FormClosed += (_, _) => permHooked.Remove(f);
+    }
+
     void PlacePermCard()
     {
         if (permCard == null || permShown == null) return;
         var w = permShown.Tab.Window;
-        // sous la barre d'adresse, alignée sur son bord gauche (fenêtre détachée : sous sa barre)
-        var p = w != null ? w.PointToScreen(new Point(S(110), S(50))) : addr.PointToScreen(new Point(S(4), addr.Height + S(8)));
+        // sous la barre d'adresse, alignée sur son bord gauche (fenêtre détachée : sous sa barre ;
+        // plein écran, barre masquée : en haut à gauche de la page)
+        var p = w != null ? w.PointToScreen(new Point(S(110), S(50)))
+              : toolbar.Visible ? addr.PointToScreen(new Point(S(4), addr.Height + S(8)))
+              : content.PointToScreen(new Point(S(12), S(12)));
         permCard.Location = p;
     }
 
@@ -636,6 +651,47 @@ partial class BrowserForm
             else r.Add("NOTE  micro : aucune demande du moteur (pas de micro sur ce PC ?)");
             await NavigateAndWait(c, "https://example.com/", 15000); // reste ouvert à 150 % pour l'essai des Réglages
             await Task.Delay(400);
+
+            // onglet détaché : la carte s'affiche sur SA fenêtre et la suit (déplacement, taille, réduction)
+            await NewTab("https://example.org/?detache=1");
+            await Until(() => Core?.Source?.Contains("detache") == true, 15000);
+            await Task.Delay(800);
+            var dt = Cur;
+            DetachTab(tabs.IndexOf(dt));
+            await Until(() => dt.Window is { Visible: true }, 5000);
+            await Task.Delay(500);
+            var dw = dt.Window;
+            C("onglet détaché dans sa propre fenêtre", dw != null && !tabs.Contains(dt));
+            if (dw != null)
+            {
+                var dc = dt.View.CoreWebView2;
+                await Js(dc, "window.__d=null;Notification.requestPermission().then(x=>window.__d=x)");
+                await Until(() => permCard is { Visible: true }, 6000);
+                Point Want() => dw.PointToScreen(new Point(S(110), S(50)));
+                C("fenêtre détachée : la carte apparaît sur elle", permCard is { Visible: true } && permShown?.Tab == dt && permCard.Owner == dw && permCard.Location == Want(),
+                    $"carte {permCard?.Location}, attendu {Want()}, propriétaire {(permCard?.Owner == dw ? "fenêtre détachée" : permCard?.Owner?.GetType().Name)}");
+                dw.Location = new Point(dw.Left + S(160), dw.Top + S(90));
+                await Task.Delay(200);
+                C("fenêtre détachée déplacée : la carte la suit", permCard is { Visible: true } && permCard.Location == Want(), $"carte {permCard?.Location}, attendu {Want()}");
+                dw.Size = new Size(dw.Width - S(120), dw.Height - S(80));
+                await Task.Delay(200);
+                C("fenêtre détachée redimensionnée : la carte reste à sa place", permCard is { Visible: true } && permCard.Location == Want(), $"carte {permCard?.Location}, attendu {Want()}");
+                dw.WindowState = FormWindowState.Minimized;
+                await Task.Delay(300);
+                C("fenêtre détachée réduite : la carte se cache", permCard is not { Visible: true } && permQueue.Count == 1);
+                dw.WindowState = FormWindowState.Normal;
+                await Task.Delay(300);
+                C("fenêtre détachée rouverte : la carte revient sur elle", permCard is { Visible: true } && permCard.Owner == dw && permCard.Location == Want(), $"carte {permCard?.Location}, attendu {Want()}");
+                permCard.Remember = false;
+                permCard.Choose(false);
+                var dres = await JsUntil(dc, "window.__d");
+                C("fenêtre détachée : Bloquer sans retenir", dres.Contains("denied") && sitePrefs.PermFor("https://example.org/", "notifications") == null && permCard is not { Visible: true }, dres);
+                dw.Location = new Point(dw.Left - S(40), dw.Top);
+                await Task.Delay(100);
+                C("carte fermée : déplacer la fenêtre détachée ne la rouvre pas", permCard is not { Visible: true });
+                dw.Close();
+                await Task.Delay(400);
+            }
 
             // ---------- 3. Réglages : « Autorisations des sites » ----------
             sitePrefs.SetZoom("https://fr.wikipedia.org/", 1.1); SaveSitePrefs();
