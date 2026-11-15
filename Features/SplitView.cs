@@ -77,9 +77,24 @@ partial class BrowserForm
         BrowserTab other = shownBefore != null && shownBefore != cur && tabs.Contains(shownBefore) ? shownBefore
             : sel + 1 < tabs.Count ? tabs[sel + 1] : sel > 0 ? tabs[sel - 1] : null;
         if (other != null) { SplitWith(other); return; }
+        // Aucun autre onglet : l'onglet actuel reste à gauche, un nouvel onglet s'ouvre à droite et devient actif
+        // (pour y taper une adresse). Pas de SplitWith(Cur) : après NewTab, Cur est déjà le nouvel onglet.
         await NewTab();
-        if (Cur != null && Cur != cur && tabs.Contains(cur)) SplitWith(Cur);
+        var fresh = Cur;
+        if (SplitOn || fresh == null || fresh == cur || !tabs.Contains(cur) || cur.Window != null || fresh.Window != null) return;
+        splitLeft = cur;
+        splitRight = fresh;
+        splitActive = fresh;
+        splitRatio = .5f;
+        SplitHook(splitLeft); SplitHook(splitRight);
+        // l'apparition douce du nouvel onglet n'a plus lieu d'être : il s'affiche tout de suite dans sa moitié
+        if (revealing == fresh) { revealing = null; revealTimer.Stop(); }
+        ShowTabViews(sel);
+        SaveSessionSoon();
     }
+
+    /// Texte du menu pour l'onglet actuel : ce que fait vraiment Ctrl+Maj+S (sans autre onglet, il en ouvre un nouveau).
+    string SplitToggleLabel => tabs.Count > 1 ? "Vue partagée avec l'onglet précédent" : "Vue partagée avec un nouvel onglet";
 
     void SplitExit()
     {
@@ -309,7 +324,7 @@ partial class BrowserForm
             m.Items.Add(MI("Quitter la vue partagée", SplitExit, "Ctrl+Maj+S"));
         }
         else if (t == Cur)
-            m.Items.Add(MI("Vue partagée avec l'onglet précédent", SplitToggle, "Ctrl+Maj+S"));
+            m.Items.Add(MI(SplitToggleLabel, SplitToggle, "Ctrl+Maj+S"));
         else
             m.Items.Add(MI("Afficher à côté de l'onglet actuel", () => SplitWith(t)));
     }
@@ -495,6 +510,41 @@ partial class BrowserForm
         }
         try
         {
+            // 0. Un seul onglet (dossier de données vierge) : Ctrl+Maj+S ouvre un nouvel onglet à DROITE, et c'est lui l'onglet actif
+            // Au 1er lancement, les extensions par défaut (NordPass, TrendTrack) ouvrent leur page d'accueil un peu après :
+            // on attend qu'aucun onglet n'arrive plus pendant 4 s (20 s au plus), puis on ne garde que le premier.
+            var stable = System.Diagnostics.Stopwatch.StartNew(); var all = System.Diagnostics.Stopwatch.StartNew();
+            for (int n = tabs.Count; all.ElapsedMilliseconds < 20_000 && stable.ElapsedMilliseconds < 4000; await Task.Delay(200))
+                if (tabs.Count != n) { n = tabs.Count; stable.Restart(); }
+            string extra = string.Join(" | ", tabs.Skip(1).Select(x => x.Title));
+            while (tabs.Count > 1) CloseTab(tabs.Count - 1);
+            await Task.Delay(800);
+            var only = Cur;
+            C("préparation : un seul onglet", tabs.Count == 1 && only != null, $"{tabs.Count} onglet(s) · fermés avant le test : {(extra.Length > 0 ? extra : "aucun")}");
+            using (var tm = new ContextMenuStrip())
+            {
+                SplitMenuItems(tm, only);
+                var lone = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.ShortcutKeyDisplayString == "Ctrl+Maj+S");
+                C("un seul onglet : le menu dit « Vue partagée avec un nouvel onglet »", lone?.Text == "Vue partagée avec un nouvel onglet",
+                    string.Join(" | ", tm.Items.OfType<ToolStripMenuItem>().Select(x => x.Text)));
+            }
+            var before0 = tabs.ToList();
+            var msg0 = new Message();
+            ProcessCmdKey(ref msg0, Keys.Control | Keys.Shift | Keys.S);
+            for (int w = 0; w < 50 && !SplitOn; w++) await Task.Delay(100); // SplitToggle attend la création du nouvel onglet
+            var fresh = tabs.Except(before0).FirstOrDefault();
+            C("un seul onglet : Ctrl+Maj+S ouvre un nouvel onglet", tabs.Count == 2 && fresh != null, $"{tabs.Count} onglet(s)");
+            C("… l'ancien onglet à gauche, le nouveau à droite", SplitOn && splitLeft == only && splitRight == fresh && SideBySide(), Desc(splitLeft) + " | " + Desc(splitRight));
+            C("… le nouvel onglet est la moitié active", fresh != null && Cur == fresh && splitActive == fresh, Desc(Cur));
+            await Task.Delay(1500);
+            C("… toujours actif 1,5 s après (focus en retard ignoré)", fresh != null && Cur == fresh && splitLeft == only && splitRight == fresh, Desc(Cur));
+            C("… les deux pages visibles et réveillées", SplitOn && Awake(only) && Awake(fresh));
+            await SplitShotAsync(name + "_0_nouvel_onglet");
+            SplitExit(); await Task.Delay(400);
+            if (fresh != null && tabs.Contains(fresh)) CloseTab(tabs.IndexOf(fresh));
+            await Task.Delay(800);
+            C("retour à un seul onglet, affiché en plein", !SplitOn && tabs.Count == 1 && Cur == only && only.View.Dock == DockStyle.Fill && only.View.Visible, Desc(Cur));
+
             await NewTab("https://example.com/"); await Task.Delay(3500);
             var ex = Cur;
             await NewTab("https://fr.wikipedia.org/wiki/Gentle_Mates"); await Task.Delay(4500);
