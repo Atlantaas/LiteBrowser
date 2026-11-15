@@ -31,6 +31,14 @@ partial class BrowserForm
     /// Onglet affiché dans la vue partagée (il reste visible et réveillé même s'il n'est pas l'onglet choisi).
     bool SplitShows(BrowserTab t) => SplitOn && t != null && (t == splitLeft || t == splitRight);
 
+    /// Onglet fermé (déjà retiré de la liste) : l'autre moitié de la vue partagée, à afficher à sa place, ou null.
+    BrowserTab SplitPartner(BrowserTab closed)
+    {
+        if (!SplitShows(closed)) return null;
+        var other = closed == splitLeft ? splitRight : splitLeft;
+        return tabs.Contains(other) && other.Window == null ? other : null;
+    }
+
     // ---------- Entrer / sortir ----------
 
     /// Affiche « other » à côté de l'onglet actuel ; il devient la moitié active.
@@ -241,6 +249,13 @@ partial class BrowserForm
     {
         if (t == null || !SplitShows(t) || t == Cur || !tabs.Contains(t)) return;
         sel = tabs.IndexOf(t);
+        if (revealing != null)
+        {
+            // un nouvel onglet se préparait dessous : il n'apparaîtra plus, il redevient un onglet caché normal
+            revealing = null;
+            revealTimer.Stop();
+            ShowTabViews(sel);
+        }
         splitActive = t;
         if (t != shownLast) { shownBefore = shownLast; shownLast = t; }
         addrEdited = false;
@@ -293,7 +308,7 @@ partial class BrowserForm
         else if (t == Cur)
             m.Items.Add(MI("Vue partagée avec l'onglet précédent", SplitToggle, "Ctrl+Maj+S"));
         else
-            m.Items.Add(MI("Afficher à côté de l'onglet actuel", () => SplitWith(t), "Ctrl+Maj+S"));
+            m.Items.Add(MI("Afficher à côté de l'onglet actuel", () => SplitWith(t)));
     }
 
     // ---------- Surface : fond, liseré de la page active, séparateur ----------
@@ -470,8 +485,16 @@ partial class BrowserForm
             using (var tm = new ContextMenuStrip())
             {
                 SplitMenuItems(tm, ex);
-                C("menu de l'onglet : « Afficher à côté de l'onglet actuel »", tm.Items.OfType<ToolStripMenuItem>().Any(x => x.Text == "Afficher à côté de l'onglet actuel"),
+                var side = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.Text == "Afficher à côté de l'onglet actuel");
+                C("menu de l'onglet : « Afficher à côté de l'onglet actuel »", side != null,
                     string.Join(" | ", tm.Items.OfType<ToolStripMenuItem>().Select(x => x.Text)));
+                C("… sans raccourci affiché (Ctrl+Maj+S fait autre chose)", side != null && string.IsNullOrEmpty(side.ShortcutKeyDisplayString), side?.ShortcutKeyDisplayString ?? "");
+            }
+            using (var tm = new ContextMenuStrip())
+            {
+                SplitMenuItems(tm, wiki);
+                var prev = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.Text == "Vue partagée avec l'onglet précédent");
+                C("onglet actuel : « Vue partagée avec l'onglet précédent » (Ctrl+Maj+S)", prev?.ShortcutKeyDisplayString == "Ctrl+Maj+S");
             }
 
             // 2. Vue partagée
@@ -555,12 +578,35 @@ partial class BrowserForm
                 content.Controls.GetChildIndex(multi.View) > content.Controls.GetChildIndex(splitSurface), Desc(multi));
             SplitWith(multi); await Task.Delay(1200);
 
-            // 9. Fermer un des deux onglets
-            var survivor = splitLeft == multi ? splitRight : splitLeft;
-            CloseTab(tabs.IndexOf(multi)); await Task.Delay(1500);
-            C("fermer un des deux onglets quitte la vue partagée", !SplitOn && !splitSurface.Visible && Cur != null && Cur.View.Dock == DockStyle.Fill &&
-                Cur.View.Bounds.Size == content.ClientSize && tabs.Count(x => x.View.Visible) == 1, $"affiché : {Desc(Cur)} (restant prévu : « {survivor.Title} »)");
+            // 8 bis. Nouvel onglet qui se prépare dessous (apparition douce) puis clic dans une moitié : il ne reste pas affiché dessous
+            SplitExit(); await Task.Delay(500);
+            SelectTab(tabs.IndexOf(ex)); await Task.Delay(800);
+            SplitWith(wiki); await Task.Delay(1200);
+            SelectTab(tabs.IndexOf(third), soft: true);
+            bool wasRevealing = revealing == third;
+            SplitActivate(ex); await Task.Delay(800);
+            C("apparition douce interrompue par un clic dans une moitié : l'onglet repart caché", wasRevealing && revealing == null && !third.View.Visible &&
+                Cur == ex && SplitShows(ex) && SplitShows(wiki) && SideBySide(), Desc(third));
+
+            // 9. Fermer la moitié ACTIVE (pas le dernier onglet, titres différents) : l'autre moitié reste affichée
+            SplitExit(); await Task.Delay(500);
+            SelectTab(tabs.IndexOf(ex)); await Task.Delay(800);
+            SplitWith(third); await Task.Delay(1500); // [.. ex, wiki, third, multi] : third active, ex à côté
+            var survivor = ex;
+            C("préparation : moitié active au milieu de la barre", Cur == third && SplitShows(ex) && tabs.IndexOf(third) < tabs.Count - 1 && tabs[tabs.IndexOf(third) + 1] != ex,
+                string.Join(" | ", tabs.Select(x => x.Title)));
+            CloseTab(sel); await Task.Delay(1500);
+            C("fermer la moitié active affiche l'autre moitié (pas le voisin)", !SplitOn && !splitSurface.Visible && Cur == survivor && Cur.View.Dock == DockStyle.Fill &&
+                Cur.View.Bounds.Size == content.ClientSize && survivor.View.Visible && Awake(survivor) && tabs.Count(x => x.View.Visible && !KeepsPlaying(x.View.CoreWebView2)) == 1,
+                $"affiché : {Desc(Cur)} (prévu : « {survivor.Title} » {survivor.View.CoreWebView2?.Source})");
             await SplitShotAsync(name + "_8_apres_fermeture");
+
+            // 9 bis. Fermer la moitié NON active : la moitié active reste affichée
+            SplitWith(wiki); await Task.Delay(1200); // wiki active, ex à côté
+            var keepActive = Cur;
+            CloseTab(tabs.IndexOf(ex)); await Task.Delay(1500);
+            C("fermer la moitié non active garde la moitié active", !SplitOn && Cur == keepActive && Cur == wiki && Cur.View.Dock == DockStyle.Fill &&
+                Cur.View.Bounds.Size == content.ClientSize && wiki.View.Visible, Desc(Cur));
 
             // 10. Sortir un onglet dans sa fenêtre
             SplitWith(tabs.First(x => x != Cur)); await Task.Delay(1200);

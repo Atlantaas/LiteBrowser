@@ -2933,6 +2933,7 @@ partial class BrowserForm : Form
         t.View.Dispose(); // libère réellement les processus du moteur
         t.Icon?.Dispose();
         if (tabs.Count == 0) { Close(); return; }
+        if (i == sel && SplitPartner(t) is BrowserTab half) { SelectTab(tabs.IndexOf(half)); return; } // vue partagée : l'autre moitié reste affichée
         // fenêtre ouverte par un site (connexion, extension…) : on revient à l'onglet qui l'a ouverte
         if (i == sel && t.Opener != null && tabs.Contains(t.Opener)) { SelectTab(tabs.IndexOf(t.Opener)); return; }
         if (i < sel) sel--;
@@ -3491,7 +3492,7 @@ partial class BrowserForm : Form
         tear.Enabled = tabs.Count > 1;
         m.Items.Add(tear);
         var free = MI("Libérer la mémoire de cet onglet", () => DiscardTab(t, force: true));
-        free.Enabled = t != Cur && !t.Lazy && !t.Private && t.View.CoreWebView2 != null;
+        free.Enabled = t != Cur && !SplitShows(t) && !t.Lazy && !t.Private && t.View.CoreWebView2 != null;
         m.Items.Add(free);
         if (!t.Private) m.Items.Add(MI(t.Pinned ? "Détacher l'onglet" : "Épingler l'onglet", () => TogglePin(t)));
         if (!t.Private && src != null && src.StartsWith("http") && !IsLocalPage(src))
