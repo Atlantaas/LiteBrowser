@@ -45,6 +45,16 @@ static class Program
             instanceMutex = new System.Threading.Mutex(true, Instance.Name, out bool first);
             if (!first && Instance.Send(StartUrl ?? "")) return;
         }
+        // Mise à jour téléchargée mais pas encore posée (fermeture précédente coupée) : on la pose et on la lance
+        if (!AppPaths.Dev && BrowserForm.SmokeReport == null && Updater.ApplyPending())
+        {
+            instanceMutex?.Dispose();
+            var np = new ProcessStartInfo(Environment.ProcessPath) { UseShellExecute = false };
+            foreach (var a in args ?? Array.Empty<string>()) np.ArgumentList.Add(a);
+            np.ArgumentList.Add("--attendre=" + Environment.ProcessId);
+            Process.Start(np);
+            return;
+        }
         if (!AppPaths.Dev && BrowserForm.SmokeReport == null) DefaultBrowser.Register();
         Updater.CleanupOld();
 
@@ -66,6 +76,8 @@ static class Program
         Application.SetCompatibleTextRenderingDefault(false);
         Application.Run(new BrowserForm());
 
+        // LiteBrowser fermé : la mise à jour téléchargée prend la place de l'ancienne version (rien ne tourne plus dessus)
+        if ((!AppPaths.Dev || Environment.GetEnvironmentVariable("LITEBROWSER_TEST_MAJ") == "1") && BrowserForm.SmokeReport == null) Updater.ApplyPending();
         if (RestartRequested)
         {
             System.Threading.Thread.Sleep(800); // laisse le moteur web se fermer proprement
@@ -332,19 +344,47 @@ static class Updater
         return VersionTools.NewerRelease(json, Current);
     }
 
-    /// Télécharge la nouvelle version et la met à la place de l'actuelle (prise en compte au prochain lancement).
+    static string Pending => Environment.ProcessPath + ".new";
+
+    /// Télécharge la nouvelle version À CÔTÉ de l'actuelle (LiteBrowser.exe.new), sans y toucher :
+    /// elle n'est mise en place qu'à la fermeture (ApplyPending). Remplacer l'exe pendant qu'il tourne cassait les menus.
     public static async Task InstallAsync(string url)
     {
-        var exe = Environment.ProcessPath;
-        string tmp = exe + ".new", old = exe + ".old";
+        string tmp = Environment.ProcessPath + ".download";
         using (var http = Net.Client(TimeSpan.FromMinutes(10)))
         using (var s = await http.GetStreamAsync(url))
         using (var f = File.Create(tmp))
             await s.CopyToAsync(f);
         if (new FileInfo(tmp).Length < 1_000_000) { File.Delete(tmp); throw new IOException("Téléchargement incomplet."); }
-        if (File.Exists(old)) File.Delete(old);
-        File.Move(exe, old);   // Windows autorise à renommer un exe en cours d'exécution
-        File.Move(tmp, exe);
+        File.Move(tmp, Pending, true);
+    }
+
+    /// Une version téléchargée attend-elle d'être mise en place ? (plus récente que celle qui tourne)
+    public static bool HasPending()
+    {
+        try
+        {
+            return File.Exists(Pending) && Version.TryParse(FileVersionInfo.GetVersionInfo(Pending).FileVersion, out var v) && Norm(v) > Current;
+        }
+        catch { return false; }
+    }
+
+    /// Met la version téléchargée à la place de l'actuelle. Appelé quand LiteBrowser se ferme (ou au démarrage si une
+    /// fermeture précédente n'a pas pu le faire). true = la nouvelle version est en place.
+    public static bool ApplyPending()
+    {
+        if (!HasPending()) { try { if (File.Exists(Pending)) File.Delete(Pending); } catch { } return false; }
+        var exe = Environment.ProcessPath;
+        string old = exe + ".old";
+        try
+        {
+            if (File.Exists(old)) File.Delete(old);
+            File.Move(exe, old);      // Windows autorise à renommer un exe en cours d'exécution
+            try { File.Move(Pending, exe); }
+            catch { File.Move(old, exe); throw; } // jamais sans exe
+            return true;
+        }
+        catch (Exception ex) { CrashLog.Write("Mise à jour", ex); return false; }
     }
 
     public static void CleanupOld()
@@ -773,6 +813,9 @@ class BrowserTab
     /// Économiseur de mémoire : moteur libéré après une longue absence (rechargé au clic, comme Brave et Chrome).
     public System.Windows.Forms.Timer DiscardTimer;
     public bool Discarded, HasInput;
+    /// Page bloquée en cours de réparation ; heure de début de la navigation en cours (chien de garde).
+    public bool Healing;
+    public DateTime NavStartedAt;
     /// Barre de chargement sous la barre d'adresse (0 à 1), qui s'efface en fondu une fois la page prête.
     public float Progress, ProgressTarget, ProgressAlpha;
     /// Adresse de la première navigation, réessayée une fois si elle est coupée net.
@@ -2046,6 +2089,7 @@ class BrowserForm : Form
             await Updater.InstallAsync(found.Value.Url);
             updateReady = true;
             updatePill.Text = $"v{found.Value.Version} prête · Redémarrer";
+            tip.SetToolTip(updatePill, "Clique pour l'installer maintenant. Sinon, elle s'installe toute seule la prochaine fois que tu fermes LiteBrowser.");
             updatePill.Visible = true;
             LayoutToolbar();
         }
@@ -2375,7 +2419,7 @@ class BrowserForm : Form
             t.AdsAllowed = SiteList.Contains(adblockAllow, e.Uri);
             if (t == Cur) UpdateShield();
             t.Loading = true;
-            if (!e.IsRedirected) { t.Progress = 0.02f; t.ProgressTarget = 0.3f; t.ProgressAlpha = 1; }
+            if (!e.IsRedirected) { t.Progress = 0.02f; t.ProgressTarget = 0.3f; t.ProgressAlpha = 1; t.NavStartedAt = DateTime.Now; }
             if (!spin.Enabled) spin.Start();
             strip.Invalidate();
             if (t == Cur) UpdateUi();
@@ -2720,11 +2764,43 @@ class BrowserForm : Form
             closingDone = true; // pas d'effacement des données pendant ce redémarrage
             Close();
         }
-        else if (kind is CoreWebView2ProcessFailedKind.RenderProcessExited or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
+        else if (kind == CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
         {
-            // un seul onglet planté : on le recharge (une fois), comme « Aïe, Snap ! » mais sans clic
+            // Page bloquée : la recharger tout de suite ne marche pas (elle ne lâche jamais la main : chargement sans fin).
+            _ = HealTab(t, "ne répond plus");
+        }
+        else if (kind == CoreWebView2ProcessFailedKind.RenderProcessExited)
+        {
+            // un seul onglet planté (ou processus bloqué arrêté par HealTab) : on le recharge, sans clic
             try { if (tabs.Contains(t)) t.View.CoreWebView2?.Reload(); } catch { }
         }
+    }
+
+    /// Répare une page bloquée : 8 s pour se reprendre seule, sinon son processus est arrêté et la page rechargée
+    /// (comme « Page ne répondant pas → Quitter » de Chrome, mais automatiquement). Les autres onglets ne sont pas touchés.
+    async Task HealTab(BrowserTab t, string why)
+    {
+        var core = t.View.CoreWebView2;
+        if (t.Healing || core == null || !tabs.Contains(t)) return;
+        t.Healing = true;
+        try
+        {
+            var probe = core.ExecuteScriptAsync("1");
+            if (await Task.WhenAny(probe, Task.Delay(8000)) == probe) { Trace($"« {t.Title} » {why}, mais répond encore : rien à faire"); return; }
+            var src = core.Source;
+            string host = Uri.TryCreate(src, UriKind.Absolute, out var su) ? su.Host : "";
+            var infos = await env.GetProcessExtendedInfosAsync();
+            var hung = infos.FirstOrDefault(i => i.ProcessInfo.Kind == CoreWebView2ProcessKind.Renderer &&
+                           i.AssociatedFrameInfos.Any(f => f.Source == src))
+                       ?? infos.FirstOrDefault(i => i.ProcessInfo.Kind == CoreWebView2ProcessKind.Renderer && host.Length > 0 &&
+                           i.AssociatedFrameInfos.Any(f => Uri.TryCreate(f.Source, UriKind.Absolute, out var fu) && fu.Host == host));
+            CrashLog.Write("Page bloquée", new Exception($"« {t.Title} » {why} : {(hung != null ? $"processus {hung.ProcessInfo.ProcessId} arrêté, page rechargée" : "rechargée")}"));
+            Trace($"« {t.Title} » bloquée ({why}) → {(hung != null ? "processus " + hung.ProcessInfo.ProcessId + " arrêté" : "rechargement")}");
+            if (hung != null) { try { using var pr = Process.GetProcessById(hung.ProcessInfo.ProcessId); pr.Kill(); } catch { core.Reload(); } }
+            else core.Reload();
+        }
+        catch (Exception ex) { CrashLog.Write("Page bloquée", ex); }
+        finally { t.Healing = false; }
     }
 
     /// Épingle / détache un onglet : les épinglés restent groupés à gauche et sont rouverts au démarrage.
@@ -5477,6 +5553,34 @@ class BrowserForm : Form
                 if (parts[1] == "rebond") { await RebondTest(parts[0]); continue; }
                 if (parts[1] == "perf") { await PerfTest(parts[0]); continue; }
                 if (parts[1] == "streams") { await StreamsTest(parts[0]); continue; }
+                if (parts[1] == "bloque")
+                {
+                    var br = new List<string>();
+                    await NewTab("https://example.com/");
+                    await Task.Delay(4000);
+                    var other = Cur;
+                    await NewTab("https://fr.wikipedia.org/wiki/Gentle_Mates");
+                    await Task.Delay(5000);
+                    var victim = Cur;
+                    var clock = Stopwatch.StartNew();
+                    _ = victim.View.CoreWebView2.ExecuteScriptAsync("setTimeout(() => { const e = Date.now() + 120000; while (Date.now() < e) {} }, 50)"); // page figée 2 min
+                    await Task.Delay(1500);
+                    var stuck = victim.View.CoreWebView2.ExecuteScriptAsync("1");
+                    br.Add($"page figée exprès : {(await Task.WhenAny(stuck, Task.Delay(3000)) != stuck ? "oui" : "NON")}");
+                    _ = HealTab(victim, "test");
+                    bool healed = false;
+                    for (int i = 0; i < 60 && !healed; i++)
+                    {
+                        await Task.Delay(1000);
+                        var p2 = victim.View.CoreWebView2.ExecuteScriptAsync("document.readyState");
+                        healed = await Task.WhenAny(p2, Task.Delay(800)) == p2 && p2.Result.Contains("complete") && clock.ElapsedMilliseconds > 3000;
+                    }
+                    br.Add((healed ? "OK    " : "ÉCHEC ") + $"page réparée toute seule en {clock.Elapsed.TotalSeconds:0} s · {victim.View.CoreWebView2.Source}");
+                    var o2 = other.View.CoreWebView2.ExecuteScriptAsync("document.title");
+                    br.Add((await Task.WhenAny(o2, Task.Delay(3000)) == o2 ? "OK    " : "ÉCHEC ") + "l'autre onglet répond toujours · " + (o2.IsCompleted ? o2.Result : "pas de réponse"));
+                    File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), br);
+                    continue;
+                }
                 if (parts[1] == "nlrepond")
                 {
                     // Nur Live répond-il ? (page bloquée = script qui ne revient jamais)
@@ -5889,6 +5993,12 @@ class BrowserForm : Form
 
     void MinuteTick()
     {
+        // Chien de garde : un chargement qui ne finit jamais (plus de 40 s) est vérifié, et réparé si la page ne répond plus
+        foreach (var t in tabs.Where(x => x.Loading && !x.Healing && x.NavStartedAt != default && DateTime.Now - x.NavStartedAt > TimeSpan.FromSeconds(40)).ToList())
+        {
+            t.NavStartedAt = DateTime.Now; // une vérification par tranche de 40 s
+            _ = HealTab(t, "chargement sans fin");
+        }
         if (blockedTotal - blockedSaved >= 50) { blockedSaved = blockedTotal; SaveSettings(); } // compteur gardé même en cas de plantage
         // Nouveau jour → nouveaux horaires ; échec précédent → nouvel essai toutes les 10 min
         if (prayerDay != null && prayerDay.Date != DateTime.Today && DateTime.Now - lastPrayerTry > TimeSpan.FromMinutes(2)) { _ = RefreshPrayers(); return; }
