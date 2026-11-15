@@ -24,6 +24,8 @@ partial class BrowserForm
     int findRun;                    // numéro de la dernière recherche lancée (les réponses plus anciennes sont ignorées)
     ToolStripMenuItem toolsMenu;    // sous-menu ouvert (pour les captures du test)
     string lastShotPath;
+    (double CssW, double Dpr, double PxW, double PxH) lastFullClip; // dernière capture « page entière » (pour le test)
+    string lastToolMessage;         // dernier message demandé, affiché ou non (pour le test)
 
     // ---------- Clavier et menu ----------
 
@@ -73,12 +75,28 @@ partial class BrowserForm
 
     void ToolMessage(string title, string text, Image thumb = null, string button = null, Action onButton = null)
     {
-        if (IsDisposed) return;
-        toolToast ??= new ToolToast(new Font("Segoe UI", 9.5f, FontStyle.Bold), new Font("Segoe UI", 9f));
+        if (IsDisposed) { thumb?.Dispose(); return; }
+        lastToolMessage = title;
+        // Sur Nur Live et le multistream, la notification reste sur la barre du haut : jamais au-dessus d’un lecteur Twitch.
+        // Sans barre du haut (plein écran F11 ou vidéo en plein écran), toute la fenêtre est aux lecteurs : pas de notification.
+        bool lives = KeepsPlaying(Core);
+        if (lives && (!toolbar.Visible || fullscreen))
+        {
+            thumb?.Dispose();
+            toolToast?.Hide();
+            return;
+        }
+        if (toolToast == null)
+        {
+            toolToast = new ToolToast(new Font("Segoe UI", 9.5f, FontStyle.Bold), new Font("Segoe UI", 9f));
+            // la fenêtre bouge, passe en plein écran ou perd sa barre : la notification s’en va (sinon elle resterait sur la page)
+            toolbar.VisibleChanged += (_, _) => { if (!toolbar.Visible) toolToast.Hide(); };
+            Resize += (_, _) => toolToast.Hide();
+            Move += (_, _) => toolToast.Hide();
+        }
         toolToast.Set(theme, title, text, thumb, button, onButton);
-        // Sur Nur Live et le multistream, la notification reste sur la barre du haut : jamais au-dessus d’un lecteur Twitch
         Rectangle place;
-        if (KeepsPlaying(Core) && toolbar.Visible)
+        if (lives)
         {
             var tb = toolbar.RectangleToScreen(toolbar.ClientRectangle);
             place = new Rectangle(tb.Right - toolToast.Width - S(56), tb.Bottom - toolToast.Height - S(3), toolToast.Width, toolToast.Height);
@@ -135,6 +153,7 @@ partial class BrowserForm
                 try { dpr = double.Parse(await core.ExecuteScriptAsync("window.devicePixelRatio"), System.Globalization.CultureInfo.InvariantCulture); } catch { }
                 var clip = PageTools.FullPageClip(w, h, dpr);
                 cut = clip.Cut;
+                lastFullClip = (w, dpr, clip.PixelWidth, clip.PixelHeight);
                 args = JsonSerializer.Serialize(new { format = "png", captureBeyondViewport = true, clip = new { x = 0, y = 0, width = clip.Width, height = clip.Height, scale = clip.Scale } });
             }
             else args = "{\"format\":\"png\"}";
@@ -197,7 +216,19 @@ partial class BrowserForm
     const string PipJs = @"(async (dry) => {
   if (document.pictureInPictureElement) { if (dry) return 'active'; await document.exitPictureInPicture(); return 'closed'; }
   const vids = [...document.querySelectorAll('video')];
-  if (!vids.length) return document.querySelector('iframe') ? 'noneframes' : 'none';
+  if (!vids.length) {
+    // une iframe ne compte comme vidéo intégrée que si elle vient d’un lecteur connu ou a la forme d’un lecteur
+    // (pas les cadres de pub 300×250 / 728×90, de consentement plein écran ou de suivi invisibles)
+    const player = f => {
+      const s = (f.getAttribute('src') || '').toLowerCase();
+      if (/(^|\/\/|\.)(youtube(-nocookie)?\.com|youtu\.be|player\.twitch\.tv|clips\.twitch\.tv|player\.vimeo\.com|dailymotion\.com|dai\.ly|streamable\.com|kick\.com)\//.test(s) || /\/\/player\.|\/embed\/|\/player\//.test(s)) return true;
+      const r = f.getBoundingClientRect(), cs = getComputedStyle(f);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity < 0.1 || cs.position === 'fixed') return false;
+      const k = r.width / Math.max(1, r.height);
+      return r.width >= 320 && r.height >= 180 && k >= 1.3 && k <= 2.4;
+    };
+    return [...document.querySelectorAll('iframe')].some(player) ? 'noneframes' : 'none';
+  }
   if (!document.pictureInPictureEnabled) return 'disabled';
   const area = v => { const r = v.getBoundingClientRect(); return Math.max(0, r.width) * Math.max(0, r.height); };
   const playing = vids.filter(v => !v.paused && !v.ended && v.readyState > 1);
@@ -534,6 +565,15 @@ const s=document.createElement('canvas').captureStream(5);document.getElementByI
             {
                 using var img = Image.FromFile(full);
                 Check("page entière : toute la hauteur (≈ 3 400 px CSS)", img.Height > tab.View.ClientSize.Height * 2 && img.Height >= 3000, $"{img.Width}×{img.Height}");
+                var fc = lastFullClip;
+                Check("page entière : agrandissement de l’écran appliqué une seule fois (CSS × dpr)",
+                    fc.CssW > 0 && Math.Abs(img.Width - fc.PxW) <= 2 && Math.Abs(img.Height - fc.PxH) <= 2 && Math.Abs(img.Width / fc.CssW - fc.Dpr) < 0.02,
+                    $"{img.Width}×{img.Height} pour {fc.CssW:0} px CSS de large à dpr {fc.Dpr:0.##} (attendu {fc.PxW:0}×{fc.PxH:0})");
+                if (vis != null)
+                {
+                    using var vimg = Image.FromFile(vis);
+                    Check("page entière : même netteté que la zone visible", Math.Abs(img.Width - vimg.Width) <= vimg.Width * 0.03, $"page entière {img.Width} px de large, zone visible {vimg.Width} px");
+                }
                 Check("nom du fichier « (page entière) »", Path.GetFileName(full).Contains("(page entière)"), Path.GetFileName(full));
                 try { File.Copy(full, Path.Combine(ShotsDir, name + "_page_entiere.png"), true); } catch { }
             }
@@ -551,9 +591,19 @@ const s=document.createElement('canvas').captureStream(5);document.getElementByI
             pip = await PictureInPicture(dry: true);
             Check("page sans vidéo : message clair", pip == "none" && toolToast?.Title == "Aucune vidéo sur cette page", $"{pip} · « {toolToast?.Title} » · {toolToast?.Body}");
             await ToolsShot(name + "_pip_sans_video");
-            await core.ExecuteScriptAsync("document.body.appendChild(document.createElement('iframe'))");
+            // cadres qui ne sont pas des vidéos : pub 300×250 et 728×90, cadre vide, consentement plein écran, suivi invisible
+            await core.ExecuteScriptAsync(@"(() => { const add = (w, h, css) => { const f = document.createElement('iframe'); f.className = 'pubtest'; f.width = w; f.height = h; if (css) f.style.cssText = css; f.srcdoc = '<p>pub</p>'; document.body.prepend(f); };
+              add(300, 250); add(728, 90); add(300, 150); add(1280, 720, 'position:fixed;inset:0;width:100%;height:100%'); add(640, 360, 'display:none'); add(1, 1); })()");
             pip = await PictureInPicture(dry: true);
-            Check("vidéo dans un cadre d’un autre site : expliqué", pip == "noneframes", $"{pip} · {toolToast?.Body}");
+            Check("article sans vidéo mais avec cadres de pub / consentement : « Aucune vidéo »", pip == "none" && toolToast?.Title == "Aucune vidéo sur cette page", $"{pip} · « {toolToast?.Title} »");
+            await core.ExecuteScriptAsync("document.querySelectorAll('.pubtest').forEach(f => f.remove())");
+            await core.ExecuteScriptAsync(@"(() => { const f = document.createElement('iframe'); f.className = 'vidtest'; f.width = 640; f.height = 360; f.srcdoc = '<p>lecteur</p>'; document.body.prepend(f); })()");
+            pip = await PictureInPicture(dry: true);
+            Check("cadre à la forme d’un lecteur (640×360) : expliqué", pip == "noneframes" && toolToast?.Title == "Vidéo impossible à détacher", $"{pip} · {toolToast?.Body}");
+            await core.ExecuteScriptAsync(@"document.querySelectorAll('.vidtest').forEach(f => f.remove()); (() => { const f = document.createElement('iframe'); f.className = 'vidtest'; f.width = 200; f.height = 120; f.setAttribute('src', 'https://www.youtube.com/embed/lbtest?autoplay=0'); document.body.prepend(f); })()");
+            pip = await PictureInPicture(dry: true);
+            Check("petit cadre YouTube intégré : expliqué", pip == "noneframes", pip);
+            await core.ExecuteScriptAsync("document.querySelectorAll('.vidtest').forEach(f => f.remove())");
 
             // --- Menu ☰ > Outils de la page ---
             // (jamais ShowMenu ici : Windows ramène un menu hors écran sur l’écran visible)
@@ -576,13 +626,54 @@ const s=document.createElement('canvas').captureStream(5);document.getElementByI
             toolsMenu = null;
 
             // --- Imprimer : l’aperçu du moteur s’ouvre dans la page (dans la fenêtre hors écran) ---
-            Exception perr = null;
-            try { Core.ShowPrintUI(CoreWebView2PrintDialogKind.Browser); } catch (Exception ex) { perr = ex; }
-            await Task.Delay(2500);
-            Check("Ctrl+P : aperçu d’impression demandé sans erreur", perr == null, perr?.Message ?? "");
+            // Preuve : la page reçoit « beforeprint » quand le moteur prépare l’aperçu (et pas autrement).
+            await core.ExecuteScriptAsync("window.__lbPrint = 0; addEventListener('beforeprint', () => window.__lbPrint++); addEventListener('afterprint', () => window.__lbAfter = 1)");
+            lastToolMessage = null;
+            var pmsg = new Message();
+            bool ph = ProcessCmdKey(ref pmsg, Keys.Control | Keys.P);
+            string printed = "0";
+            for (int i = 0; i < 40 && printed == "0"; i++) { await Task.Delay(150); try { printed = await core.ExecuteScriptAsync("window.__lbPrint"); } catch { } }
+            Check("Ctrl+P (ProcessCmdKey) : l’aperçu d’impression s’ouvre (la page reçoit « beforeprint »)", ph && printed != "0" && printed != "null" && lastToolMessage == null,
+                $"touche prise : {ph}, beforeprint ×{printed}, message : {lastToolMessage ?? "aucun"}");
+            await Task.Delay(1500);
             await ToolsShot(name + "_imprimer");
             var alive = core.ExecuteScriptAsync("1");
             Check("la page répond pendant l’aperçu", await Task.WhenAny(alive, Task.Delay(3000)) == alive);
+
+            // --- Nur Live / multistream : la notification ne se pose jamais sur les lecteurs ---
+            await NewTab(MultiUrl);
+            await Task.Delay(800);
+            var mtab = Cur;
+            for (int i = 0; i < 40 && !KeepsPlaying(Core); i++) await Task.Delay(150);
+            await Task.Delay(1500);
+            Check("multistream ouvert (lecteurs Twitch protégés)", KeepsPlaying(Core), Core?.Source ?? "");
+            var cap = await CapturePage(false);
+            var pageScreen = content.RectangleToScreen(content.ClientRectangle);
+            Check("multistream, fenêtre normale : notification sur la barre du haut, hors de la page",
+                cap != null && toolToast?.Visible == true && !toolToast.Bounds.IntersectsWith(pageScreen), $"notification {toolToast?.Bounds}, page {pageScreen}");
+            await ToolsShot(name + "_multi_notification");
+            // plein écran (F11) simulé sans agrandir la fenêtre sur l’écran : barres masquées comme dans SetFullscreen
+            bool oldFs = fullscreen;
+            fullscreen = true;
+            strip.Visible = toolbar.Visible = false;
+            favBar.Visible = false;
+            await Task.Delay(300);
+            Check("plein écran : la notification déjà affichée s’en va", toolToast?.Visible != true, $"visible : {toolToast?.Visible}");
+            lastToolMessage = null;
+            cap = await CapturePage(false);
+            Check("plein écran sur le multistream : capture faite, aucune notification sur les lecteurs", cap != null && File.Exists(cap) && lastToolMessage != null && toolToast?.Visible != true,
+                $"capture {Path.GetFileName(cap ?? "")}, message « {lastToolMessage} » visible : {toolToast?.Visible}");
+            var pipFs = await PictureInPicture(dry: true);
+            Check("plein écran : Alt+P sans vidéo détachable → pas de notification non plus", toolToast?.Visible != true, $"{pipFs} · visible : {toolToast?.Visible}");
+            await ToolsShot(name + "_multi_plein_ecran");
+            fullscreen = oldFs;
+            strip.Visible = toolbar.Visible = true;
+            favBar.Visible = showFavBar;
+            await Task.Delay(300);
+            CloseTab(tabs.IndexOf(mtab));
+            await Task.Delay(400);
+            SelectTab(tabs.IndexOf(tab));
+            await Task.Delay(300);
 
             // --- Raccourcis dans les réglages ---
             OpenSettings("raccourcis");

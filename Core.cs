@@ -899,21 +899,27 @@ namespace LiteCore
             return $"{Math.Clamp(active, 0, count)} / {count}";
         }
 
-        /// Zone de la page entière à capturer (pixels CSS) et échelle : jamais plus de maxPx de haut ou de large
-        /// (limite du moteur), ni plus d’environ 150 millions de pixels (mémoire).
-        public static (double Width, double Height, double Scale, bool Cut) FullPageClip(double cssW, double cssH, double dpr, int maxPx = 16384)
+        /// Zone de la page entière à capturer (pixels CSS) et clip.scale de Page.captureScreenshot.
+        /// Le moteur multiplie DÉJÀ par devicePixelRatio : Scale vaut donc 1 (netteté de l’écran) et ne descend
+        /// que si l’image réelle (CSS × dpr × Scale) dépasserait maxPx de haut ou de large (limite du moteur)
+        /// ou environ 150 millions de pixels (mémoire). PixelWidth/PixelHeight = taille réelle de l’image.
+        public static (double Width, double Height, double Scale, bool Cut, double PixelWidth, double PixelHeight) FullPageClip(double cssW, double cssH, double dpr, int maxPx = 16384)
         {
             double w = Math.Max(1, Math.Ceiling(double.IsFinite(cssW) ? cssW : 1));
             double h = Math.Max(1, Math.Ceiling(double.IsFinite(cssH) ? cssH : 1));
-            double s = double.IsFinite(dpr) && dpr > 0 ? Math.Clamp(dpr, 1, 3) : 1;
+            double d = double.IsFinite(dpr) && dpr > 0 ? Math.Clamp(dpr, 0.25, 5) : 1;
+            double e = d;                       // pixels réels par pixel CSS
+            double minE = Math.Min(1, d);       // on accepte de descendre jusqu’à 1 pixel par pixel CSS avant de couper
             bool cut = false;
-            if (w > maxPx) w = maxPx;
-            if (h * s > maxPx) s = Math.Max(1, maxPx / h);
-            if (h * s > maxPx) { h = Math.Floor(maxPx / s); cut = true; }
+            if (w * minE > maxPx) w = Math.Floor(maxPx / minE);
+            if (w * e > maxPx) e = maxPx / w;
+            if (h * e > maxPx) e = Math.Max(Math.Min(minE, e), maxPx / h);
+            if (h * e > maxPx) { h = Math.Floor(maxPx / e); cut = true; }
             const double maxArea = 150_000_000;
-            if (w * h * s * s > maxArea) s = Math.Max(Math.Sqrt(maxArea / (w * h)), 0.5);
-            if (w * h * s * s > maxArea) { h = Math.Floor(maxArea / (w * s * s)); cut = true; }
-            return (w, h, Math.Floor(s * 1000) / 1000, cut); // arrondi vers le bas : on reste sous les limites
+            if (w * h * e * e > maxArea) e = Math.Max(Math.Sqrt(maxArea / (w * h)), Math.Min(0.5, e));
+            if (w * h * e * e > maxArea) { h = Math.Floor(maxArea / (w * e * e)); cut = true; }
+            double s = e >= d ? 1 : Math.Floor(e / d * 1000) / 1000; // arrondi vers le bas : on reste sous les limites
+            return (w, h, s, cut, w * d * s, h * d * s);
         }
 
         /// Message pour le résultat du script « image dans l’image » (null = tout s’est bien passé, rien à dire).
