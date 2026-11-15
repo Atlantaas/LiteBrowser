@@ -510,6 +510,8 @@ class IconButton : Control
     protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
     protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    // Windows signale aussi les clics droit / du milieu comme un « clic » : seul le clic gauche actionne le bouton
+    protected override void OnClick(EventArgs e) { if (e is MouseEventArgs m && m.Button != MouseButtons.Left) return; base.OnClick(e); }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -558,6 +560,7 @@ class PillButton : Control
     public int PreferredWidth => TextRenderer.MeasureText(Text, Font).Width + LogicalToDeviceUnits(28);
     protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnClick(EventArgs e) { if (e is MouseEventArgs m && m.Button != MouseButtons.Left) return; base.OnClick(e); }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -2253,7 +2256,7 @@ partial class BrowserForm : Form
         favBar.Open += (url, newTab) =>
         {
             if (IsNurLivePage(url)) OpenMulti(new List<string>(), chat: true); // l'onglet Nur Live s'il existe, sinon un nouveau : jamais à la place de la page
-            else if (newTab || Core == null) _ = NewTab(url);
+            else if (newTab || Core == null) _ = NewTab(url, background: newTab && Core != null); // clic du milieu / Ctrl+clic : en arrière-plan, comme Chrome
             else { Core.Navigate(url); Cur.View.Focus(); }
         };
         favBar.ItemMenu += (i, pt) => ShowFavMenu(i, favBar, pt);
@@ -2303,7 +2306,7 @@ partial class BrowserForm : Form
                 addrEdited = false;
                 HideOmni();
                 if (row != null) OmniGo(row, e.Alt);
-                else Go(ResolveTyped(addr.Box.Text), e.Alt); // Alt+Entrée : dans un nouvel onglet
+                else Go((e.Control ? CtrlEnterUrl(addr.Box) : null) ?? ResolveTyped(addr.Box.Text), e.Alt); // Alt+Entrée : dans un nouvel onglet ; Ctrl+Entrée : www.….com
             }
             else if (e.KeyCode == Keys.Escape)
             {
@@ -2413,6 +2416,7 @@ partial class BrowserForm : Form
         ApplyTheme();
         UpdatePlaceholder();
         UpdateUi();
+        PagesInit(); // Features/PetitsSoucis_pages.cs
 
         Load += async (_, _) =>
         {
@@ -2657,7 +2661,7 @@ partial class BrowserForm : Form
         return t;
     }
 
-    async Task NewTab(string url = null, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null, bool priv = false)
+    async Task NewTab(string url = null, CoreWebView2NewWindowRequestedEventArgs popup = null, CoreWebView2Deferral deferral = null, bool priv = false, bool background = false)
     {
         if (env == null) { deferral?.Complete(); return; }
         var t = CreateTab(url == null && popup == null, priv);
@@ -2666,10 +2670,11 @@ partial class BrowserForm : Form
         // Le + et Ctrl+T ouvrent à la fin ; un lien s'ouvre à côté de la page dont il vient
         int idx = url == null && popup == null ? tabs.Count : sel >= 0 ? sel + 1 : tabs.Count;
         idx = Math.Max(idx, tabs.TakeWhile(x => x.Pinned).Count()); // jamais au milieu des onglets épinglés
+        if (background) idx = BackgroundIndex(idx); // Ctrl+clic / clic du milieu : à la suite des précédents, sans quitter la page
         tabs.Insert(idx, t);
         strip.AnimateOpen(t);
-        t.FadePending = true;
-        SelectTab(idx, soft: true);
+        if (background) KeepSelection(t, idx);
+        else { t.FadePending = true; SelectTab(idx, soft: true); }
         await StartTab(t, url, popup, deferral);
     }
 
@@ -2765,7 +2770,7 @@ partial class BrowserForm : Form
                 if (same >= 0) { e.Handled = true; BeginInvoke(new Action(() => SelectTab(same))); return; }
             }
             var d = e.GetDeferral();
-            _ = NewTab(e.Uri, e, d, priv: t.Private); // une fenêtre ouverte depuis un onglet privé reste privée
+            _ = NewTab(e.Uri, e, d, priv: t.Private, background: TakeBackgroundLink(t, e)); // une fenêtre ouverte depuis un onglet privé reste privée
         };
         // window.close() : comme dans Chrome, seulement pour un onglet ouvert par un script (popup de connexion…)
         core.WindowCloseRequested += (_, _) => { if (t.OpenedByScript) BeginInvoke(new Action(() => CloseTab(tabs.IndexOf(t)))); };
@@ -2788,25 +2793,9 @@ partial class BrowserForm : Form
             WatchDownload(e.DownloadOperation);
             smokeDownload?.TrySetResult(e.DownloadOperation);
             if (!downloadAsk || SmokeReport != null) return;
-            // « Demander où enregistrer » : choix du dossier et du nom, hors de l'évènement WebView2
+            // « Demander où enregistrer » : choix du dossier et du nom, hors de l'évènement WebView2 (Features/PetitsSoucis_pages.cs)
             var d = e.GetDeferral();
-            BeginInvoke(new Action(() =>
-            {
-                try
-                {
-                    using var dlg = new SaveFileDialog
-                    {
-                        FileName = Path.GetFileName(e.ResultFilePath),
-                        InitialDirectory = Path.GetDirectoryName(e.ResultFilePath),
-                        Title = "Enregistrer le fichier",
-                        OverwritePrompt = true,
-                    };
-                    if (dlg.ShowDialog(this) == DialogResult.OK) { e.ResultFilePath = dlg.FileName; e.Handled = true; }
-                    else e.Cancel = true;
-                }
-                catch { }
-                finally { d.Complete(); }
-            }));
+            BeginInvoke(new Action(() => { try { AskDownloadPath(e); } catch { } finally { d.Complete(); } }));
         };
 
         core.NavigationStarting += (_, e) =>
@@ -2922,8 +2911,7 @@ partial class BrowserForm : Form
         core.ContainsFullScreenElementChanged += (_, _) =>
         {
             if (t.Window != null) { t.Window.SetFullscreen(core.ContainsFullScreenElement); return; }
-            pageFullscreen = core.ContainsFullScreenElement;
-            SetFullscreen(core.ContainsFullScreenElement);
+            PageFullscreenChanged(core.ContainsFullScreenElement); // bulle « Échap », F11 d'avant gardé (Features/PetitsSoucis_pages.cs)
         };
 
         // Messages des pages intégrées (accueil, multistream)
@@ -2942,6 +2930,7 @@ partial class BrowserForm : Form
             BeginInvoke(new Action(() => HandlePageMessage(core, t, json)));
         };
         HookSites(t, core); // zoom retenu par site, autorisations (Features/Sites.cs)
+        await HookPages(t, core); // certificat invalide, liens en arrière-plan (Features/PetitsSoucis_pages.cs)
 
         if (forceDark) { try { await ApplyForceDark(t); } catch { } }
         Trace($"StartTab navigation « {t.Title} » → {(popup != null ? "popup" : string.IsNullOrEmpty(url) ? HomeUrl : url)}");
@@ -2998,7 +2987,7 @@ partial class BrowserForm : Form
         strip.Invalidate();
         UpdateUi();
         ToolsTabChanged();
-        if (pageFullscreen && Core?.ContainsFullScreenElement != true) { pageFullscreen = false; SetFullscreen(false); }
+        if (pageFullscreen && Core?.ContainsFullScreenElement != true) PageFullscreenChanged(false);
         if (Cur.IsHome) addr.Box.Focus(); else Cur.View.Focus();
     }
 
@@ -3749,7 +3738,7 @@ partial class BrowserForm : Form
         bool home = t == null || t.IsHome || src == "" || src == "about:blank";
 
         // L'adresse suit toujours l'onglet affiché, sauf si tu es en train de taper quelque chose
-        if (!addrEdited) SetAddress(home ? "" : LocalAlias(src) ?? (addr.Box.Focused ? src : Omni.Display(src)));
+        if (!addrEdited) SetAddress(home ? "" : LocalAlias(src) ?? (addr.Box.Focused ? src : PrettyAddress(src)));
         bool local = IsLocalPage(src);
         addr.BadgeGlyph = home ? Glyphs.Search : local ? (IsSettings(src) ? Glyphs.Settings : Glyphs.Lock)
             : src.StartsWith("https://") ? Glyphs.Lock : Glyphs.Warning;
@@ -3770,6 +3759,7 @@ partial class BrowserForm : Form
             (t == null ? "LiteBrowser" : t.Title + (t.Private ? " – LiteBrowser (privé)" : " – LiteBrowser"));
         UpdateShield();
         UpdateSiteUi();
+        PagesUi();
     }
 
     void UpdatePlaceholder() => addr.Box.PlaceholderText = $"Rechercher avec {Engine.Name} ou saisir une adresse  ·  :yt, :w, :tw…";
@@ -3892,7 +3882,7 @@ partial class BrowserForm : Form
         tabs.Insert(at, t);
         w.Close();
         SelectTab(at);
-        if (WindowState == FormWindowState.Minimized) WindowState = prevState;
+        if (WindowState == FormWindowState.Minimized) WindowState = shownState;
         if (!Offscreen) Activate();
         SaveSessionSoon();
     }
@@ -4194,7 +4184,7 @@ partial class BrowserForm : Form
     void OpenFromOutside(string url)
     {
         if (IsDisposed) return;
-        if (WindowState == FormWindowState.Minimized) WindowState = prevState;
+        if (WindowState == FormWindowState.Minimized) WindowState = shownState;
         if (!Offscreen) { Show(); Activate(); BringToFront(); }
         if (Launch.Allowed(url)) _ = NewTab(url);
         else if (tabs.Count == 0) _ = NewTab();
@@ -5197,7 +5187,7 @@ partial class BrowserForm : Form
     void ToggleFavorite()
     {
         var c = Core;
-        if (c == null || Cur.IsHome || string.IsNullOrEmpty(c.Source)) return;
+        if (c == null || Cur.IsHome || string.IsNullOrEmpty(c.Source) || IsLocalPage(c.Source)) return; // pas d'étoile sur les pages de LiteBrowser : pas de favori invisible
         int i = favorites.FindIndex(f => f.Url == c.Source);
         if (i >= 0) favorites.RemoveAt(i);
         else
@@ -6119,6 +6109,7 @@ partial class BrowserForm : Form
                     File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), fr);
                     continue;
                 }
+                if (parts[1] == "pc-pages") { await PagesTest(parts[0]); continue; } // Features/PetitsSoucis_pages.cs
                 if (parts[1] == "youtube")
                 {
                     var yr = new List<string>();
@@ -6459,13 +6450,14 @@ partial class BrowserForm : Form
 
     void Notify(string title, string text, Action onClick = null)
     {
+        if (NotifyQuiet(title, text)) return; // test hors écran : rien ne s'affiche
         try
         {
             if (tray == null)
             {
                 tray = new NotifyIcon { Icon = Icon ?? SystemIcons.Application, Text = "LiteBrowser", Visible = true };
                 tray.BalloonTipClicked += (_, _) => trayClick?.Invoke();
-                tray.Click += (_, _) => { if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized; Activate(); };
+                tray.Click += (_, _) => { if (WindowState == FormWindowState.Minimized) WindowState = shownState; Activate(); };
             }
             trayClick = onClick;
             tray.ShowBalloonTip(6000, title, text, ToolTipIcon.None);
@@ -6510,7 +6502,22 @@ partial class BrowserForm : Form
             => "le site refuse le téléchargement (connexion requise ?)",
         CoreWebView2DownloadInterruptReason.ServerBadContent or CoreWebView2DownloadInterruptReason.ServerNoRange
             => "fichier introuvable sur le serveur",
-        _ => "raison : " + r,
+        CoreWebView2DownloadInterruptReason.FileTooLarge => "fichier trop gros pour ce disque",
+        CoreWebView2DownloadInterruptReason.FileNameTooLong => "nom ou chemin du fichier trop long",
+        CoreWebView2DownloadInterruptReason.FileTooShort or CoreWebView2DownloadInterruptReason.FileHashMismatch
+            or CoreWebView2DownloadInterruptReason.ServerContentLengthMismatch => "fichier reçu incomplet, réessaie",
+        CoreWebView2DownloadInterruptReason.FileTransientError => "fichier occupé un instant (antivirus ?), réessaie",
+        CoreWebView2DownloadInterruptReason.FileFailed => "impossible d'écrire le fichier sur le disque",
+        CoreWebView2DownloadInterruptReason.NetworkServerDown => "le site ne répond pas",
+        CoreWebView2DownloadInterruptReason.NetworkInvalidRequest => "le site a refusé la demande",
+        CoreWebView2DownloadInterruptReason.ServerCertificateProblem => "certificat du site invalide",
+        CoreWebView2DownloadInterruptReason.ServerFailed or CoreWebView2DownloadInterruptReason.ServerUnexpectedResponse
+            => "le site a renvoyé une erreur",
+        CoreWebView2DownloadInterruptReason.UserPaused => "mis en pause",
+        CoreWebView2DownloadInterruptReason.UserCanceled => "annulé",
+        CoreWebView2DownloadInterruptReason.UserShutdown => "LiteBrowser a été fermé pendant le téléchargement",
+        CoreWebView2DownloadInterruptReason.DownloadProcessCrashed => "le moteur de téléchargement s'est arrêté, réessaie",
+        _ => "erreur inattendue, réessaie",
     };
 
     // ---------- Matchs Gentle Mates ----------
@@ -7101,7 +7108,7 @@ partial class BrowserForm : Form
 
         // Favoris
         var fav = MI("Favoris");
-        bool canFav = Cur != null && !Cur.IsHome;
+        bool canFav = Cur != null && !Cur.IsHome && !IsLocalPage(Core?.Source);
         bool isFav = canFav && favorites.Exists(f => f.Url == Core?.Source);
         var addFav = MI(isFav ? "Retirer cette page des favoris" : "Ajouter cette page aux favoris", ToggleFavorite, "Ctrl+D");
         addFav.Enabled = canFav;
@@ -7128,7 +7135,7 @@ partial class BrowserForm : Form
         m.Items.Add(th);
         m.Items.Add(MI("Afficher la barre de favoris", ToggleFavBar, "Ctrl+Maj+B", showFavBar));
         m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => SetAdblock(!adblock), null, adblock));
-        m.Items.Add(MI("Plein écran", () => SetFullscreen(!fullscreen), "F11"));
+        m.Items.Add(MI("Plein écran", ToggleF11, "F11"));
         m.Items.Add(ZoomMenuRow());
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Réglages", () => OpenSettings(), "Ctrl+,"));
@@ -7354,7 +7361,7 @@ partial class BrowserForm : Form
             case Keys.Alt | Keys.Left: Core?.GoBack(); return true;
             case Keys.Alt | Keys.Right: Core?.GoForward(); return true;
             case Keys.Alt | Keys.Home: Core?.Navigate(HomeUrl); return true;
-            case Keys.F11: SetFullscreen(!fullscreen); return true;
+            case Keys.F11: ToggleF11(); return true;
             case Keys.Control | Keys.Tab:
                 if (tabs.Count > 1) SelectTab((sel + 1) % tabs.Count);
                 return true;
