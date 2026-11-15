@@ -2148,7 +2148,7 @@ partial class BrowserForm : Form
     CoreWebView2Profile profile;
     bool extStarted, extBusy;
     ExtensionPopup extPopup;
-    bool updateReady, updateBusy;
+    bool updateReady, updateBusy, updateLoud;
     readonly System.Windows.Forms.Timer spin = new() { Interval = 40 };
     readonly Font iconFont, iconSmall;
     readonly string dataDir, favPath, histPath, settingsPath, homeDir;
@@ -2454,14 +2454,14 @@ partial class BrowserForm : Form
             return;
         }
         if (SmokeReport != null || AppPaths.Dev) return;
-        if (updateBusy) return;
-        updateBusy = true;
+        if (updateBusy) { updateLoud |= !silent; return; } // clic pendant la recherche automatique : sa réponse sera montrée
+        updateBusy = true; updateLoud = !silent;
         try
         {
             var found = await Updater.CheckAsync();
             if (found == null)
             {
-                if (!silent)
+                if (updateLoud)
                     MessageBox.Show(this, $"Tu as déjà la dernière version (v{Updater.Current}).", "Mises à jour",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
@@ -2475,11 +2475,11 @@ partial class BrowserForm : Form
         }
         catch (Exception ex)
         {
-            if (!silent)
+            if (updateLoud)
                 MessageBox.Show(this, "Impossible de vérifier les mises à jour.\n\n" + ex.Message, "Mises à jour",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-        finally { updateBusy = false; }
+        finally { updateBusy = updateLoud = false; }
     }
 
     IconButton Btn(string glyph, string tipText, Action a)

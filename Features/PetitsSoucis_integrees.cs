@@ -103,6 +103,7 @@ partial class BrowserForm
             Check("Réglages : « Tout effacer » vide aussi la liste affichée", listed == "true" && history.Count == 0 && !after.Contains("m8-historique"), "après : " + after);
 
             // Renommer un favori puis Échap : rien ne doit changer
+            favorites.RemoveAll(f => f.Url == "https://example.com/fav-m8"); // reste d'un essai précédent dans le même dossier de test
             favorites.Add(("Favori test M8", "https://example.com/fav-m8"));
             RefreshSettingsPages();
             await Task.Delay(700);
@@ -117,7 +118,7 @@ partial class BrowserForm
             favTitle = favorites.FirstOrDefault(f => f.Url == "https://example.com/fav-m8").Title;
             Check("Réglages : Entrée renomme le favori", favTitle == "Favori renommé", "titre : " + favTitle);
             favorites.RemoveAll(f => f.Url == "https://example.com/fav-m8");
-            RefreshSettingsPages();
+            SaveList(favPath, favorites); RefreshFavBar(); UpdateUi(); RefreshLocalPages(); RefreshSettingsPages();
 
             // Dossier des téléchargements : « Par défaut » s'applique tout de suite
             var tmp = Path.Combine(dataDir, "dl-test");
@@ -150,9 +151,42 @@ partial class BrowserForm
             await NewTab();
             await Task.Delay(2500);
             var hc = Core;
-            for (int i = 0; i < 50 && await PsJs(hc, "!!state") != "true"; i++) await Task.Delay(100);
-            var foc = await PsJs(hc, "(() => { const b = document.querySelector('.ch .ca button'); if (!b) return 'pas de chaîne'; b.focus(); tick(); const a = document.activeElement; return a && a.closest && a.closest('.ch') ? 'gardé' : 'perdu (' + (a && a.tagName) + ')'; })()");
-            Check("Accueil : la mise à jour de la page ne fait plus perdre le focus clavier", foc.Contains("gardé"), foc);
+            for (int i = 0; i < 100 && (hc == null || await PsJs(hc, "!!state") != "true"); i++) { await Task.Delay(100); hc = Core; }
+            // vraie minute qui passe (horloge décalée) : comptes à rebours des matchs et des prières qui changent, focus sur « Regarder » puis sur le bouton des prières
+            var foc = await PsJs(hc, @"(() => {
+              const RD = Date; let off = 0;
+              window.Date = class extends RD { constructor(...a) { if (a.length) super(...a); else super(RD.now() + off); } static now() { return RD.now() + off; } };
+              try {
+                const s0 = Math.floor(RD.now() / 1000);
+                const mk = (id, sec, opp) => ({ id, ts: s0 + sec, opp, oppShort: opp.slice(0, 3).toUpperCase(), game: 'lol', gameShort: 'LoL', gameLabel: 'League of Legends', tournament: 'Coupe de test', url: '#' });
+                state.m8 = Object.assign({}, state.m8, { loading: false, matches: [mk('lbt1', 2 * 3600 + 5 * 60 + 30, 'Karmine Corp'), mk('lbt2', 40 * 60 + 30, 'Vitality')] });
+                const T = [['Fajr','Fajr','05:00'],['Sunrise','Lever du soleil','07:00'],['Dhuhr','Dhuhr','12:30'],['Asr','Asr','15:30'],['Maghrib','Maghrib','18:00'],['Isha','Isha','19:30']];
+                state.prayers = Object.assign({}, state.prayers, { city: 'Ville de test', times: T.map(([key, name, time]) => ({ key, name, time })), error: null });
+                renderMatches(); renderPrayers();
+                const cd = () => document.querySelector('#matches .match .cd').firstChild.nodeValue.trim(), pin = () => document.querySelector('#prayers .in b').textContent;
+                const w = document.querySelector('#matches [data-watch=""lbt1""]'), bell = document.querySelector('#prayers .pfoot button');
+                const cd0 = cd(), pr0 = pin();
+                w.focus(); off = 61000; tick();
+                const m = document.activeElement === w && w.isConnected, cd1 = cd();
+                bell.focus(); off = 122000; tick();
+                const p = document.activeElement === bell && bell.isConnected, pr1 = pin();
+                return JSON.stringify({ match: m, priere: p, rebours: cd0 + ' → ' + cd1, prochaine: pr0 + ' → ' + pr1, change: cd0 !== cd1 && pr0 !== pr1 });
+              } finally { window.Date = RD; }
+            })()");
+            Check("Accueil : une minute qui passe (comptes à rebours) ne fait plus perdre le focus sur « Regarder » ni sur les prières", foc.Contains("\\\"match\\\":true") && foc.Contains("\\\"priere\\\":true") && foc.Contains("\\\"change\\\":true"), foc);
+            // spectateurs qui changent et chaîne qui remonte en tête : le focus reste sur le même bouton de la même chaîne
+            var foc2 = await PsJs(hc, @"(() => {
+              const keep = state.channels;
+              try {
+                state.channels = [{ id: 'twitch:lbalpha', key: 'lbalpha', name: 'Alpha', live: true, viewers: 900, notify: false }, { id: 'twitch:lbbeta', key: 'lbbeta', name: 'Beta', live: true, viewers: 50, notify: false }];
+                renderLives();
+                const b = document.querySelector('.ch[data-id=""twitch:lbbeta""] [data-act=""toggleNotify""]'); b.focus();
+                state.channels[1].viewers = 5000; renderLives();
+                const a = document.activeElement, first = document.querySelector('#chs .ch').dataset.id;
+                return JSON.stringify({ meme: a === b, chaine: a.closest('.ch') && a.closest('.ch').dataset.id, premiere: first, texte: a.closest('.ch').querySelector('.lv').textContent });
+              } finally { state.channels = keep; renderLives(); }
+            })()");
+            Check("Accueil : spectateurs qui changent et chaînes réordonnées gardent le focus clavier", foc2.Contains("\\\"meme\\\":true") && foc2.Contains("\\\"chaine\\\":\\\"twitch:lbbeta\\\"") && foc2.Contains("\\\"premiere\\\":\\\"twitch:lbbeta\\\""), foc2);
             var pr = await PsJs(hc, "(() => { const n = document.querySelector('#prayers .next'); return n ? getComputedStyle(n.querySelector('.n')).display + ' ' + getComputedStyle(n).borderRadius : 'absente'; })()");
             Check("Accueil : la carte « Prochaine prière » garde sa mise en page", pr == "\"flex 14px\"" || pr.Contains("absente"), pr);
             var kb = await PsJs(hc, "(() => { const ch = document.querySelector('.ch'); if (!ch) return 'pas de chaîne'; ch.focus(); return JSON.stringify({ tab: ch.tabIndex, focus: document.activeElement === ch }); })()");
@@ -193,6 +227,8 @@ partial class BrowserForm
             Check("Multistream : touche 2 en AZERTY (é) met le 2e live en grand", k1 == "\"kick:lbtestb\"", k1);
             var k2 = await PsJs(mc, "document.dispatchEvent(new KeyboardEvent('keydown', { key: ']', code: 'Minus', ctrlKey: true, altKey: true, bubbles: true })); S.focus");
             Check("Multistream : ] avec AltGr (AZERTY) passe au live suivant", k2 == "\"kick:lbtestc\"", k2);
+            var k2b = await PsJs(mc, "document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', code: 'Digit5', ctrlKey: true, altKey: true, bubbles: true })); S.focus");
+            Check("Multistream : [ avec AltGr+5 (AZERTY) revient au live précédent (pas au 5e)", k2b == "\"kick:lbtestb\"", k2b);
             var k3 = await PsJs(mc, "document.dispatchEvent(new KeyboardEvent('keydown', { key: '1', code: 'Numpad1', bubbles: true })); S.focus");
             Check("Multistream : pavé numérique 1 met le 1er live en grand", k3 == "\"kick:lbtesta\"", k3);
             await PsJs(mc, "location.hash = ''; S.ids = []; render()");

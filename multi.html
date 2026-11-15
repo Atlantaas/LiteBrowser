@@ -298,9 +298,10 @@ document.addEventListener('keydown', e => {
   // AZERTY : [ et ] viennent avec AltGr (Ctrl+Alt pour Windows), les chiffres de la rangée du haut donnent &, é, "… (e.code reste Digit1…)
   const altGr = e.ctrlKey && e.altKey && (k === '[' || k === ']');
   if ((e.ctrlKey || e.altKey) && !altGr) return;
-  const digit = /^(Digit|Numpad)([1-9])$/.exec(e.code || '');
-  if (digit || /^[1-9]$/.test(k)) { setFocus(S.ids[+(digit ? digit[2] : k) - 1]); }
-  else if (k === '[' || k === ']') { const i = S.ids.indexOf(S.focus); if (S.ids.length) setFocus(S.ids[(i + (k === ']' ? 1 : -1) + S.ids.length) % S.ids.length]); }
+  // [ et ] d'abord : en AZERTY, AltGr+5 donne « [ » avec e.code = Digit5, qui ne doit pas sauter au 5e live
+  const digit = altGr ? null : /^(Digit|Numpad)([1-9])$/.exec(e.code || '');
+  if (k === '[' || k === ']') { const i = S.ids.indexOf(S.focus); if (S.ids.length) setFocus(S.ids[(i + (k === ']' ? 1 : -1) + S.ids.length) % S.ids.length]); }
+  else if (digit || /^[1-9]$/.test(k)) { setFocus(S.ids[+(digit ? digit[2] : k) - 1]); }
   else if (k === 'm') { S.muted = !S.muted; applyAudio(); }
   else if (k === 'g') cycleLayout();
   else if (k === 'c') { S.chat = !S.chat; saveHash(); render(); }

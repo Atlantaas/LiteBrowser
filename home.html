@@ -309,8 +309,34 @@ function until(ms) {
   return 'dans ' + d + ' jour' + (d > 1 ? 's' : '');
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-// Ne remplace le contenu que s'il a changé : la mise à jour régulière ne fait plus perdre le focus clavier ni le survol
-function setHtml(el, html) { if (el.__html !== html) { el.__html = html; el.innerHTML = html; } }
+// Met à jour un bloc sans le réécrire : seuls les textes et attributs qui changent sont touchés (compte à rebours,
+// spectateurs…), les éléments restent les mêmes. Le focus clavier et le survol ne sautent plus à chaque minute.
+// Les lignes portant data-key (match, chaîne) suivent leur contenu même si l'ordre change.
+function setHtml(el, html) {
+  if (el.__html === html) return;
+  el.__html = html;
+  const t = document.createElement('template'); t.innerHTML = html;
+  const act = document.activeElement;
+  morphKids(el, t.content);
+  if (act && act !== document.activeElement && act.isConnected && el.contains(act)) act.focus({ preventScroll: true });
+}
+function morphKids(a, b) {
+  const keyed = new Map(), used = new Set(), news = Array.from(b.childNodes);
+  for (const n of a.childNodes) if (n.nodeType === 1 && n.dataset.key) keyed.set(n.dataset.key, n);
+  news.forEach((nb, i) => {
+    const cur = a.childNodes[i] || null, key = nb.nodeType === 1 ? nb.dataset.key : '';
+    let m = key ? keyed.get(key) : cur;
+    if (m && (used.has(m) || m.nodeType !== nb.nodeType || m.nodeName !== nb.nodeName || (!key && m.nodeType === 1 && m.dataset.key))) m = null;
+    if (!m) { a.insertBefore(nb, cur); used.add(nb); return; }
+    used.add(m);
+    if (m !== cur) a.insertBefore(m, cur);
+    if (m.nodeType !== 1) { if (m.nodeValue !== nb.nodeValue) m.nodeValue = nb.nodeValue; return; }
+    for (const at of Array.from(m.attributes)) if (!nb.hasAttribute(at.name)) m.removeAttribute(at.name);
+    for (const at of Array.from(nb.attributes)) if (m.getAttribute(at.name) !== at.value) m.setAttribute(at.name, at.value);
+    morphKids(m, nb);
+  });
+  while (a.childNodes.length > news.length) a.lastChild.remove();
+}
 
 // ---------- Horloge ----------
 function tick() {
@@ -403,7 +429,7 @@ function renderMatches() {
   setHtml(box, list.slice(0, 8).map(x => {
     const d = new Date(x.ts * 1000);
     const live = !x.timeUnknown && (x.status === 'live' || d.getTime() <= now);
-    return `<a class="match" href="${esc(x.url || '#')}" title="Voir sur Liquipedia">
+    return `<a class="match" data-key="${esc(x.id)}" href="${esc(x.url || '#')}" title="Voir sur Liquipedia">
       <div class="m-when"><div class="d">${esc(dayLabel(d))}</div><div class="t">${x.timeUnknown ? '<span class="tbd">horaire à venir</span>' : hm(d)}</div></div>
       <div class="m-vs"><span class="team gm">M8</span><span class="v">VS</span><span class="team opp" title="${esc(x.opp)}">${esc(x.oppShort || x.opp)}</span></div>
       <div class="cd">${live ? '<span class="live">EN DIRECT</span>' : x.timeUnknown ? 'alerte dès que l’heure est connue' : until(d - now)}
@@ -449,7 +475,7 @@ function renderLives() {
     const status = c.live === true
       ? `<span class="lv">● ${c.viewers ? c.viewers.toLocaleString('fr-FR') : 'EN LIVE'}</span>${c.game ? ' · ' + esc(c.game) : ''}`
       : c.live === false ? 'Hors ligne' : (c.platform === 'youtube' ? 'YouTube' : 'Statut inconnu');
-    return `<div class="ch ${c.live === true ? 'live' : c.live === false ? 'off' : ''}" data-id="${esc(c.id)}" title="${esc(c.title || '')}" tabindex="0" role="button" aria-label="Regarder ${esc(c.name || c.label)}">
+    return `<div class="ch ${c.live === true ? 'live' : c.live === false ? 'off' : ''}" data-key="${esc(c.id)}" data-id="${esc(c.id)}" title="${esc(c.title || '')}" tabindex="0" role="button" aria-label="Regarder ${esc(c.name || c.label)}">
       <div class="av">${c.avatar ? `<img src="${esc(c.avatar)}" alt="" onerror="this.parentNode.textContent='${initial}'">` : initial}</div>
       <div class="ci"><div class="cn">${esc(c.name || c.label)}${c.fav ? ' ★' : ''}</div><div class="cs">${status}</div>
         ${c.live === true && c.title ? `<div class="cs">${esc(c.title)}</div>` : ''}</div>

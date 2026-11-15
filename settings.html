@@ -529,7 +529,7 @@ $('favs').addEventListener('click', e => {
     tx.innerHTML = `<input value="${esc(old)}" maxlength="120">`;
     const inp = tx.querySelector('input'); inp.focus(); inp.select();
     let finished = false; // Échap remet le titre et retire le champ : le « blur » qui suit ne doit pas renommer quand même
-    const done = ok => { if (finished) return; finished = true; if (ok &&inp.value.trim() && inp.value.trim() !== old) { post({ type: 'favRename', url, title: inp.value.trim() }); toast('Favori renommé'); } else tx.textContent = old; };
+    const done = ok => { if (finished) return; finished = true; if (ok && inp.value.trim() && inp.value.trim() !== old) { post({ type: 'favRename', url, title: inp.value.trim() }); toast('Favori renommé'); } else tx.textContent = old; };
     inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') done(true); if (ev.key === 'Escape') { ev.preventDefault(); done(false); } });
     inp.addEventListener('blur', () => done(true));
   }
