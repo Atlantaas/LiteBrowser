@@ -1977,7 +1977,7 @@ sealed class OmniRow
         "fav" => Glyphs.StarFill,
         "history" => Glyphs.History,
         "tab" => "\uE8A7",
-        "cmd" => "\uE756",
+        "cmd" => "\uE945",
         "url" => Glyphs.Globe,
         _ => Glyphs.Search,
     };
