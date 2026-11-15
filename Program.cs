@@ -2946,8 +2946,10 @@ partial class BrowserForm : Form
         }
         if (t == Cur) UpdateUi();
 
-        // Les extensions vivent dans le profil normal, jamais dans le profil privé
-        if (!extStarted && !t.Private)
+        // Les extensions vivent dans le profil normal, jamais dans le profil privé.
+        // Tests hors écran : pas d'extensions (sauf LITEBROWSER_EXTENSIONS=1), sinon NordPass ouvre sa page d'accueil
+        // dans une vraie fenêtre visible sur l'écran de Ryan à chaque test.
+        if (!extStarted && !t.Private && (ShotsDir == null || Environment.GetEnvironmentVariable("LITEBROWSER_EXTENSIONS") == "1"))
         {
             extStarted = true;
             profile = core.Profile;
