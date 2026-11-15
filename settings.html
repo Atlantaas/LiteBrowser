@@ -181,6 +181,7 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
       <a class="n" href="#general"><i class="ic">&#xE713;</i>Général</a>
       <a class="n" href="#apparence"><i class="ic">&#xE790;</i>Apparence</a>
       <a class="n" href="#confidentialite"><i class="ic">&#xEA18;</i>Confidentialité</a>
+      <a class="n" href="#sites"><i class="ic">&#xE774;</i>Autorisations des sites</a>
       <a class="n" href="#onglets"><i class="ic">&#xE8A7;</i>Onglets et performances</a>
       <a class="n" href="#telechargements"><i class="ic">&#xE896;</i>Téléchargements</a>
       <a class="n" href="#prieres"><i class="ic">&#xE708;</i>Prières</a>
@@ -245,6 +246,16 @@ kbd{font-family:inherit;font-size:12px;background:var(--card2);border:1px solid 
         <div class="row"><div class="t"><b>Effacer les données de navigation</b><small>Historique, cookies et cache. Tes favoris sont conservés. <kbd>Ctrl+Maj+Suppr</kbd></small></div>
           <button class="btn danger" data-act="clearData">Effacer…</button></div>
         <div class="hint">Navigation privée : <kbd>Ctrl+Maj+N</kbd> ou clic droit sur le <b>+</b> des onglets. Les mots de passe restent dans NordPass : le navigateur ne propose jamais de les enregistrer.</div>
+      </div>
+    </section>
+
+    <section id="sites" data-k="autorisations des sites caméra micro microphone position localisation notifications presse-papiers capteurs téléchargements zoom agrandir taille page">
+      <h2><i class="ic">&#xE774;</i>Autorisations des sites</h2>
+      <div class="card">
+        <div class="row"><div class="t"><b>Choix retenus</b><small>Quand un site demande ta caméra, ton micro, ta position ou de t’envoyer des notifications, LiteBrowser te pose la question sous la barre d’adresse et retient ta réponse si tu le veux.</small></div></div>
+        <div class="list" id="sitePerms"></div>
+        <div class="row" style="border-top:1px solid var(--line)"><div class="t"><b>Zoom retenu par site</b><small>Chaque site garde son zoom à chaque visite. <kbd>Ctrl+molette</kbd>, <kbd>Ctrl++</kbd> / <kbd>Ctrl+−</kbd>, <kbd>Ctrl+0</kbd> pour revenir à 100&#8239;%.</small></div></div>
+        <div class="list" id="siteZooms"></div>
       </div>
     </section>
 
@@ -369,7 +380,7 @@ const act = (name, arg) => post({ type: 'action', name, arg });
 const KEYS = [
   ['Nouvel onglet', 'Ctrl+T'], ['Nouvel onglet privé', 'Ctrl+Maj+N'], ['Fermer l\'onglet', 'Ctrl+W'], ['Rouvrir l\'onglet fermé', 'Ctrl+Maj+T'],
   ['Onglet suivant / précédent', 'Ctrl+Tab'], ['Aller à l\'onglet n°', 'Ctrl+1…9'], ['Barre d\'adresse', 'Ctrl+L ou Ctrl+K'], ['Ouvrir la proposition dans un nouvel onglet', 'Alt+Entrée'], ['Retirer une page des propositions', 'Maj+Suppr'], ['Ajouter aux favoris', 'Ctrl+D'],
-  ['Barre de favoris', 'Ctrl+Maj+B'], ['Copier le texte à l'écran (Lens)', 'Ctrl+Maj+L'], ['Historique', 'Ctrl+H'], ['Téléchargements', 'Ctrl+J'], ['Réglages', 'Ctrl+,'],
+  ['Barre de favoris', 'Ctrl+Maj+B'], ['Copier le texte à l\'écran (Lens)', 'Ctrl+Maj+L'], ['Historique', 'Ctrl+H'], ['Téléchargements', 'Ctrl+J'], ['Réglages', 'Ctrl+,'],
   ['Effacer les données', 'Ctrl+Maj+Suppr'], ['Couper le son de l\'onglet', 'Ctrl+M'], ['Multistream', 'Ctrl+Maj+M'], ['Actualiser', 'F5'],
   ['Page précédente / suivante', 'Alt+← / →'], ['Plein écran', 'F11'], ['Rechercher dans la page', 'Ctrl+F'], ['Zoom', 'Ctrl+molette'],
 ];
@@ -557,6 +568,46 @@ if (window.chrome && chrome.webview) {
   });
   post({ type: 'ready' });
 }
+</script>
+<style>
+/* autorisations des sites */
+#sitePerms,#siteZooms{border-top:1px solid var(--line)}
+.pchips{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.pchip{display:inline-flex;align-items:center;gap:6px;border-radius:14px;padding:3px 4px 3px 10px;font-size:12px;border:1px solid var(--line);background:var(--card2)}
+.pchip i{font-style:normal;font-weight:700;font-size:11px;letter-spacing:.3px}
+.pchip.ok i{color:var(--ok)}
+.pchip.no i{color:var(--live)}
+.pchip .ib{width:20px;height:20px;font-size:9px;border-radius:50%}
+.zl{font-family:var(--head);font-weight:600;font-size:15px;color:var(--accent);font-variant-numeric:tabular-nums;flex:none}
+</style>
+<script>
+// ---------- Autorisations des sites (données envoyées par Features/Sites.cs) ----------
+(() => {
+  if (!(window.chrome && chrome.webview)) return;
+  const sites = m => post(Object.assign({ type: 'sites' }, m));
+  function renderSites(d) {
+    $('sitePerms').innerHTML = d.perms.length ? d.perms.map(s => `<div class="it">${fav('https://' + s.host + '/', s.host)}
+        <div class="tx"><b>${esc(s.host)}</b><div class="pchips">${s.items.map(p => `<span class="pchip ${p.allow ? 'ok' : 'no'}">${esc(p.label)} <i>${p.allow ? 'AUTORISÉ' : 'BLOQUÉ'}</i>
+          <button class="ib del" data-host="${esc(s.host)}" data-kind="${esc(p.kind)}" title="Oublier ce choix : le site redemandera">&#xE711;</button></span>`).join('')}</div></div></div>`).join('')
+      : '<div class="empty">Aucun choix retenu pour l’instant.</div>';
+    $('siteZooms').innerHTML = d.zooms.length ? d.zooms.map(z => `<div class="it">${fav('https://' + z.host + '/', z.host)}
+        <div class="tx"><b>${esc(z.host)}</b></div><span class="zl">${esc(z.label)}</span>
+        <button class="btn sm" data-zoom="${esc(z.host)}" title="Revenir à 100&#8239;% sur ce site">Revenir à 100&#8239;%</button></div>`).join('')
+      : '<div class="empty">Tous les sites s’affichent à 100&#8239;%.</div>';
+  }
+  $('sitePerms').addEventListener('click', e => {
+    const b = e.target.closest('[data-kind]'); if (!b) return;
+    sites({ op: 'permRemove', host: b.dataset.host, kind: b.dataset.kind });
+    toast('Choix oublié : ' + b.dataset.host + ' redemandera');
+  });
+  $('siteZooms').addEventListener('click', e => {
+    const b = e.target.closest('[data-zoom]'); if (!b) return;
+    sites({ op: 'zoomRemove', host: b.dataset.zoom });
+    toast(b.dataset.zoom + ' revient à 100 %');
+  });
+  chrome.webview.addEventListener('message', e => { if (e.data && e.data.type === 'sitesData') renderSites(e.data); });
+  sites({ op: 'get' });
+})();
 </script>
 </body>
 </html>

@@ -30,6 +30,7 @@ static class Program
         Urls();
         Updates();
         SessionAndSites();
+        SitePrefsTests();
         Extensions();
         M8Tests();
         ChannelTests();
@@ -97,6 +98,43 @@ static class Program
     }
 
     // ------------------------------------------------------------------
+    static void SitePrefsTests()
+    {
+        Section("Réglages par site (zoom, autorisations)");
+        Check("zoom + depuis 100 %", SitePrefs.NextZoom(1, 1) == 1.1);
+        Check("zoom - depuis 100 %", SitePrefs.NextZoom(1, -1) == 0.9);
+        Check("zoom + depuis un zoom hors liste (Ctrl+molette)", SitePrefs.NextZoom(1.2, 1) == 1.25);
+        Check("zoom - depuis un zoom hors liste", SitePrefs.NextZoom(1.2, -1) == 1.1);
+        Check("zoom bloqué à 500 %", SitePrefs.NextZoom(5, 1) == 5);
+        Check("zoom bloqué à 25 %", SitePrefs.NextZoom(0.25, -1) == 0.25);
+        Check("libellé 125 %", SitePrefs.ZoomLabel(1.25) == "125 %", SitePrefs.ZoomLabel(1.25));
+        Check("libellé 67 %", SitePrefs.ZoomLabel(0.6667) == "67 %");
+
+        var p = new SitePrefs();
+        Check("zoom retenu", p.SetZoom("https://www.youtube.com/watch?v=x", 1.25) && p.ZoomFor("https://youtube.com/") == 1.25);
+        Check("même site avec ou sans www.", p.ZoomFor("https://www.youtube.com/feed") == 1.25);
+        Check("autre site : 100 %", p.ZoomFor("https://example.com/") == 1);
+        Check("même valeur : rien à enregistrer", !p.SetZoom("https://youtube.com/", 1.25));
+        Check("retour à 100 % : le site est oublié", p.SetZoom("https://youtube.com/", 1.0) && p.Zoom.Count == 0);
+        Check("pas de zoom retenu pour une page non web", !p.SetZoom("about:blank", 1.5) && p.Zoom.Count == 0);
+
+        Check("autorisation retenue", p.SetPerm("https://meet.google.com/abc", "microphone", true) && p.PermFor("https://meet.google.com/x", "microphone") == true);
+        Check("autre autorisation du même site : pas encore choisie", p.PermFor("https://meet.google.com/", "camera") == null);
+        Check("blocage retenu", p.SetPerm("https://meet.google.com/", "camera", false) && p.PermFor("https://meet.google.com/", "camera") == false);
+        Check("même décision : rien à enregistrer", !p.SetPerm("https://meet.google.com/", "camera", false));
+        p.SetZoom("https://fr.wikipedia.org/wiki/M8", 1.5);
+        var back = SitePrefs.Parse(p.Serialize());
+        Check("enregistré puis relu (zoom)", back.ZoomFor("https://fr.wikipedia.org/") == 1.5, p.Serialize());
+        Check("enregistré puis relu (autorisations)", back.PermFor("https://meet.google.com/", "microphone") == true && back.PermFor("https://meet.google.com/", "camera") == false);
+        Check("retirer un choix", back.RemovePerm("meet.google.com", "camera") && back.PermFor("https://meet.google.com/", "camera") == null && back.Perms.Count == 1);
+        Check("retirer le dernier choix d'un site l'oublie", back.RemovePerm("meet.google.com", "microphone") && back.Perms.Count == 0);
+        Check("retirer un choix inexistant", !back.RemovePerm("exemple.fr", "camera"));
+        var bad = SitePrefs.Parse("{\"zoom\":{\"a.com\":\"x\",\"b.com\":99,\"c.com\":1,\"d.com\":1.5},\"perms\":{\"e.com\":{\"inconnue\":true,\"camera\":\"oui\",\"microphone\":false}}}");
+        Check("fichier abîmé : valeurs invalides ignorées", bad.Zoom.Count == 1 && bad.ZoomFor("https://d.com/") == 1.5 && bad.Perms["e.com"].Count == 1);
+        Check("fichier illisible : réglages vides", SitePrefs.Parse("{pas du json").Zoom.Count == 0 && SitePrefs.Parse(null).Perms.Count == 0);
+        Check("phrase de la carte", SitePrefs.PermAsk("microphone") == "veut utiliser ton micro" && SitePrefs.PermShort("geolocation") == "Position");
+    }
+
     static void SessionAndSites()
     {
         Section("Session (onglets rouverts au démarrage)");
