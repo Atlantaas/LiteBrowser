@@ -96,6 +96,50 @@ partial class BrowserForm
         return (k & Keys.Modifiers) == Keys.Control && code >= Keys.D1 && code <= Keys.D9;
     }
 
+    /// Comme Chrome : les autres raccourcis de LiteBrowser vont d'abord à la page ; si elle ne s'en sert pas
+    /// (pas de preventDefault), LiteBrowser les fait. Docs et Discord gardent donc les leurs, Ctrl+D marche partout ailleurs.
+    /// Ctrl+F, Ctrl+P, F5, zoom, Alt+←/→ restent au moteur. Lettres lues par e.key : justes en AZERTY.
+    internal const string PageKeysScript = @"(() => {
+  if (!window.chrome || !chrome.webview || window.top !== window) return;
+  const keys = { c: 'dhjkem,', cs: 'blamdxs', a: 'p' };
+  addEventListener('keydown', e => {
+    if (e.repeat || e.metaKey || !e.isTrusted) return;
+    const m = (e.ctrlKey ? 'c' : '') + (e.shiftKey ? 's' : '') + (e.altKey ? 'a' : '');
+    const k = (e.key || '').toLowerCase();
+    if (k.length !== 1 || !(keys[m] || '').includes(k)) return;
+    setTimeout(() => { if (!e.defaultPrevented) chrome.webview.postMessage('lbkey:' + m + ':' + k); }, 0);
+  });
+})();";
+
+    /// Raccourci laissé par la page (message de PageKeysScript). Seulement les touches de la liste, jamais de quoi effacer des données.
+    bool PageKeyMessage(BrowserTab t, string msg)
+    {
+        if (msg == null || !msg.StartsWith("lbkey:")) return false;
+        var p = msg.Split(':');
+        if (p.Length != 3 || p[2].Length != 1 || t.Window != null || t != Cur) return true;
+        char c = p[2][0];
+        Keys k = c == ',' ? Keys.Oemcomma : c is >= 'a' and <= 'z' ? Keys.A + (c - 'a') : Keys.None;
+        if (k == Keys.None) return true;
+        if (p[1].Contains('c')) k |= Keys.Control;
+        if (p[1].Contains('s')) k |= Keys.Shift;
+        if (p[1].Contains('a')) k |= Keys.Alt;
+        if (!PageFallbackKey(k)) return true;
+        BeginInvoke(new Action(() =>
+        {
+            if (IsDisposed || t != Cur) return;
+            var m = Message.Create(Handle, 0x0100, (IntPtr)(int)(k & Keys.KeyCode), IntPtr.Zero);
+            ProcessCmdKey(ref m, k);
+        }));
+        return true;
+    }
+
+    static bool PageFallbackKey(Keys k) => k is
+        (Keys.Control | Keys.D) or (Keys.Control | Keys.H) or (Keys.Control | Keys.J) or (Keys.Control | Keys.K) or
+        (Keys.Control | Keys.E) or (Keys.Control | Keys.M) or (Keys.Control | Keys.Oemcomma) or
+        (Keys.Control | Keys.Shift | Keys.B) or (Keys.Control | Keys.Shift | Keys.L) or (Keys.Control | Keys.Shift | Keys.A) or
+        (Keys.Control | Keys.Shift | Keys.M) or (Keys.Control | Keys.Shift | Keys.D) or (Keys.Control | Keys.Shift | Keys.X) or
+        (Keys.Control | Keys.Shift | Keys.S) or (Keys.Alt | Keys.P);
+
     static bool MainOnlyKey(Keys k) => k is (Keys.Control | Keys.T) or (Keys.Control | Keys.Shift | Keys.T) or (Keys.Control | Keys.Shift | Keys.N);
     static bool DetachedOwnKey(Keys k) => k is (Keys.Control | Keys.W) or (Keys.Control | Keys.L) or Keys.F6;
 
@@ -215,6 +259,17 @@ partial class BrowserForm
         int before = tabs.Count;
         _ = NewTab(url, priv: t.Private);
         if (tabs.Count != before + 1 || sel < 0) return;
+        if (t.Pinned)
+        {
+            // un onglet épinglé donne un double épinglé, juste à côté (comme Chrome)
+            var dup = tabs[sel];
+            tabs.RemoveAt(sel);
+            dup.Pinned = true;
+            tabs.Insert(tabs.IndexOf(t) + 1, dup);
+            SelectTab(tabs.IndexOf(dup));
+            SaveSessionSoon();
+            return;
+        }
         int pc = tabs.TakeWhile(x => x.Pinned).Count();
         MoveTab(sel, TabPlace.InGroup(tabs.IndexOf(t) + 1, false, pc, tabs.Count - 1));
     }
@@ -436,7 +491,7 @@ partial class BrowserForm
             await PcPageKey(ex.View, Keys.Control | Keys.K); await Task.Delay(300);
             C("Ctrl+K tapé dans la page : rien ne bouge côté LiteBrowser", tabs.Count == n && Cur == ex);
             // la page doit vraiment recevoir les raccourcis des sites (Discord : Ctrl+Maj+M coupe le micro ; Docs : Ctrl+H remplace)
-            await ex.View.CoreWebView2.ExecuteScriptAsync("window.__k=[];addEventListener('keydown',e=>__k.push((e.ctrlKey?'C':'')+(e.shiftKey?'S':'')+e.code),true)");
+            await ex.View.CoreWebView2.ExecuteScriptAsync("window.__k=[];addEventListener('keydown',e=>{if(window.__k){__k.push((e.ctrlKey?'C':'')+(e.shiftKey?'S':'')+e.code);e.preventDefault()}},true)"); // le site s'en sert
             ex.View.Focus();
             n = tabs.Count;
             string got = "";
@@ -449,6 +504,16 @@ partial class BrowserForm
                 }
             C("dans une page : Ctrl+H, Ctrl+Maj+M, Ctrl+Maj+D, Ctrl+Maj+L arrivent au site", got.Contains("CKeyH") && got.Contains("CSKeyM") && got.Contains("CSKeyD") && got.Contains("CSKeyL"), "page : " + got);
             C("… et LiteBrowser n'ouvre ni l'historique, ni le multistream, ni rien d'autre", tabs.Count == n && Cur == ex, $"{n} → {tabs.Count} onglets, affiché « {Cur.Title} »");
+            // touche dont la page ne se sert pas : LiteBrowser la fait (comme Chrome). Ctrl+Maj+B affiche/masque la barre de favoris.
+            await ex.View.CoreWebView2.ExecuteScriptAsync("window.__k=null");
+            bool favBefore = showFavBar;
+            for (int tr = 0; tr < 3 && showFavBar == favBefore; tr++)
+            {
+                ex.View.Focus(); await Task.Delay(200);
+                await PcPageKey(ex.View, Keys.Control | Keys.Shift | Keys.B); await Task.Delay(500);
+            }
+            C("dans une page qui ne s'en sert pas : Ctrl+Maj+B marche (barre de favoris)", showFavBar != favBefore, $"barre {favBefore} → {showFavBar}");
+            if (showFavBar != favBefore) ToggleFavBar();
             Save();
 
             // ---------- 2. Ctrl+Pg.suiv / Ctrl+Maj+Pg.suiv ----------

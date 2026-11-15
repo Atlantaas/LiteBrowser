@@ -28,7 +28,6 @@ partial class BrowserForm
     (BrowserTab Tab, DateTime At) lastBgClick;                           // dernier Ctrl+clic / clic du milieu sur un lien
     BrowserTab lastBgOpener, lastBgTab;                                  // pour ranger les onglets ouverts en arrière-plan à la suite
     bool f11Kept;                                                        // F11 était déjà actif quand la vidéo est passée en plein écran
-    FormWindowState shownState = FormWindowState.Maximized;              // état de la fenêtre avant d'être réduite
     FullscreenHint fsHint;
 
     // Points d'entrée des tests (jamais le vrai presse-papiers, ni une vraie boîte de dialogue, ni le vrai plein écran)
@@ -59,8 +58,6 @@ partial class BrowserForm
             addrEdited = true;
             addr.Box.SelectedText = PasteText(c);
         };
-        shownState = WindowState;
-        Resize += (_, _) => { if (WindowState != FormWindowState.Minimized && !fullscreen) shownState = WindowState; };
     }
 
     /// Appelé par StartTab pour chaque onglet, avant sa première page.
@@ -243,7 +240,7 @@ return 'ok';}catch(e){return 'erreur '+e.message;}}";
     void FillAddrMenu(ContextMenuStrip m)
     {
         m.Renderer = new MenuRenderer(theme, iconSmall);
-        m.Font = new Font("Segoe UI", 9.5f);
+        m.Font = navMenuFont;
         foreach (var old in m.Items.Cast<ToolStripItem>().ToList()) old.Dispose();
         m.Items.Clear();
         var b = addr.Box;
@@ -255,7 +252,7 @@ return 'ok';}catch(e){return 'erreur '+e.message;}}";
         var cut = MI("Couper", () => { CopyAddr(); Edit(() => b.SelectedText = ""); }, "Ctrl+X"); cut.Enabled = selected; m.Items.Add(cut);
         var copy = MI("Copier", CopyAddr, "Ctrl+C"); copy.Enabled = selected; m.Items.Add(copy);
         var paste = MI("Coller", () => Edit(() => b.SelectedText = PasteText(clip)), "Ctrl+V"); paste.Enabled = clip.Length > 0; m.Items.Add(paste);
-        var go = MI(PasteGoLabel(clip), () => PasteAndGo(clip)); go.Enabled = clip.Length > 0; go.Font = new Font(m.Font, FontStyle.Bold); m.Items.Add(go);
+        var go = MI(PasteGoLabel(clip), () => PasteAndGo(clip)); go.Enabled = clip.Length > 0; go.Font = navMenuBold; m.Items.Add(go);
         var del = MI("Supprimer", () => Edit(() => b.SelectedText = ""), "Suppr"); del.Enabled = selected; m.Items.Add(del);
         m.Items.Add(new ToolStripSeparator());
         var all = MI("Tout sélectionner", () => { b.Focus(); b.SelectAll(); }, "Ctrl+A"); all.Enabled = b.TextLength > 0; m.Items.Add(all);
@@ -320,8 +317,9 @@ return 'ok';}catch(e){return 'erreur '+e.message;}}";
         for (int i = h.Current + dir; i >= 0 && i < h.Entries.Count && picks.Count < 12; i += dir) picks.Add(h.Entries[i]);
         if (picks.Count == 0 || c != Core) return null;
         var r = new MenuRenderer(theme, iconSmall);
-        var m = new ContextMenuStrip { Renderer = r, Font = new Font("Segoe UI", 9.5f), ShowItemToolTips = true };
+        var m = new ContextMenuStrip { Renderer = r, Font = navMenuFont, ShowItemToolTips = true };
         Fade.In(m);
+        MenuHooks(m); // comme les autres menus : clavier au menu, bouton allumé, pas de carte d'aperçu par-dessus
         foreach (var p in picks)
         {
             string title = IsHome(p.Url) ? "Page d'accueil" : IsSettings(p.Url) ? "Réglages" : string.IsNullOrWhiteSpace(p.Title) ? Omni.Display(p.Url) : p.Title;
@@ -335,12 +333,16 @@ return 'ok';}catch(e){return 'erreur '+e.message;}}";
         return m;
     }
 
+    static readonly Font navMenuFont = new("Segoe UI", 9.5f), navMenuBold = new("Segoe UI", 9.5f, FontStyle.Bold); // polices partagées : ces menus sont remplis à chaque ouverture
+
     async Task ShowNavHistory(IconButton b, int dir)
     {
+        if (MenuReclick(b)) return; // re-clic sur le bouton : le menu se referme sans se rouvrir
         var m = await NavHistoryMenu(dir);
         if (m == null || IsDisposed) return;
         lastMenu?.Dispose();
         lastMenu = m;
+        m.Tag = b;
         m.Show(b, new Point(0, b.Height + S(4)));
     }
 
@@ -419,9 +421,8 @@ return 'ok';}catch(e){return 'erreur '+e.message;}}";
             try { _ = Core?.ExecuteScriptAsync("document.fullscreenElement && document.exitFullscreen()"); } catch { }
             return;
         }
-        FullscreenTo(!fullscreen);
-        if (fullscreen) ShowFsHint("Appuie sur F11 pour quitter le plein écran");
-        else fsHint?.Hide();
+        FullscreenTo(!fullscreen); // la bulle « Appuie sur F11 pour en sortir » vient de SetFullscreen (FullscreenHint)
+        if (!fullscreen) fsHint?.Hide();
     }
 
     /// Petite bulle en haut de l'écran pendant 2,5 s (jamais sur Nur Live ni le multistream : rien sur un lecteur Twitch).
@@ -755,8 +756,8 @@ return 'ok';}catch(e){return 'erreur '+e.message;}}";
             OpenFromOutside("https://example.net/");
             await Until(() => tabs.Count == beforeOutside + 1 && Core?.Source?.Contains("example.net") == true, 10000);
             C("lien d'une autre appli : nouvel onglet, la fenêtre garde son état (normale, pas agrandie d'office)",
-                tabs.Count == beforeOutside + 1 && Core.Source.Contains("example.net") && WindowState == stateBefore && shownState == stateBefore,
-                $"{tabs.Count - beforeOutside} onglet ouvert, {Core.Source}, état {WindowState}, retenu pour le retour {shownState} (avant la correction : toujours Maximized)");
+                tabs.Count == beforeOutside + 1 && Core.Source.Contains("example.net") && WindowState == stateBefore,
+                $"{tabs.Count - beforeOutside} onglet ouvert, {Core.Source}, état {WindowState}, avant {stateBefore} (avant la correction : toujours Maximized)");
             Info("pas de réduction réelle de la fenêtre dans ce test (elle apparaîtrait à l'écran) : le retour utilise l'état retenu ci-dessus");
         }
         catch (Exception ex) { C("le test s'est déroulé sans erreur", false, ex.GetType().Name + " " + ex.Message + " " + ex.StackTrace?.Split('\n').FirstOrDefault()); }

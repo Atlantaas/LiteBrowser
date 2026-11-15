@@ -2470,7 +2470,17 @@ partial class BrowserForm : Form
 
     // ---------- Mises à jour ----------
 
+    Task updateRun = Task.CompletedTask;
+
+    /// Le clic « Rechercher » pendant la recherche automatique attend sa fin : le bouton des Réglages reste « en cours » jusqu'à la réponse.
     async Task CheckUpdates(bool silent)
+    {
+        if (updateBusy) { updateLoud |= !silent; await updateRun; return; }
+        updateRun = CheckUpdatesCore(silent);
+        await updateRun;
+    }
+
+    async Task CheckUpdatesCore(bool silent)
     {
         if (updateReady)
         {
@@ -2724,6 +2734,7 @@ partial class BrowserForm : Form
         if (!tabs.Contains(t)) { if (popup != null) popup.Handled = true; deferral?.Complete(); return; } // fermé entre-temps
         var core = t.View.CoreWebView2;
         HookPageKeys(t.View); // raccourcis des onglets aussi quand la page a le focus (PetitsSoucis_onglets.cs)
+        try { await core.AddScriptToExecuteOnDocumentCreatedAsync(PageKeysScript); } catch { } // … et les autres si la page ne s'en sert pas
         Trace($"StartTab moteur prêt « {t.Title} »");
         if (ShotsDir != null) core.IsMuted = true; // les tests ne font jamais de bruit sur le PC
 
@@ -2946,6 +2957,8 @@ partial class BrowserForm : Form
                 else BeginInvoke(new Action(() => _ = NewTab(ChromeStoreSearch(core.DocumentTitle))));
                 return;
             }
+            string km = null; try { km = e.TryGetWebMessageAsString(); } catch { }
+            if (PageKeyMessage(t, km)) return; // raccourci dont la page ne s'est pas servie (PetitsSoucis_onglets.cs)
             if (!IsLocalPage(e.Source)) return;
             string json = e.WebMessageAsJson;
             // Hors de l'évènement WebView2 : on peut y ouvrir des fenêtres sans bloquer la page
@@ -3862,7 +3875,10 @@ partial class BrowserForm : Form
         // Tant que le bouton reste enfoncé, la fenêtre suit la souris (on la pose où on veut, même sur l'autre écran)
         if (screenPoint != null && !Offscreen && MouseButtons.HasFlag(MouseButtons.Left) || screenPoint != null && !Offscreen && FollowTest) FollowMouse(w, new Point(S(140), S(18)));
         // Fenêtre glissée par sa barre de titre et lâchée sur la barre d'onglets : l'onglet y revient
-        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && OverTabStrip(Cursor.Position)) ReattachAt(w, Cursor.Position); };
+        var sizeAtBegin = Size.Empty;
+        w.ResizeBegin += (_, _) => sizeAtBegin = w.Size;
+        // seulement après un déplacement : un redimensionnement fini au-dessus de la barre ne raccroche pas l'onglet
+        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && w.Size == sizeAtBegin && OverTabStrip(Cursor.Position)) ReattachAt(w, Cursor.Position); };
     }
 
     /// Tests : simule « bouton encore enfoncé » pour vérifier le suivi de la souris.
