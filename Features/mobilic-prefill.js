@@ -108,6 +108,7 @@
     endLocation: "Chronopost-Mondial Relay (Rombas)",
     vehicle: "175",
     reason: "1",
+    startTime: "06:00",
   };
 
   var MONTHS_FR = [
@@ -427,59 +428,185 @@
       : { ok: false, error: "la valeur n'a pas été prise (champ contrôlé ?)" };
   }
 
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function parseTimeHHmm(raw) {
+    var m = String(raw == null ? "" : raw).trim().match(/^(\d{1,2})\s*[h:]\s*(\d{2})$/);
+    if (!m) return { h: 6, m: 0 };
+    return { h: Math.min(23, Math.max(0, +m[1])), m: Math.min(59, Math.max(0, +m[2])) };
+  }
+
+  function formatHHmm(hm) {
+    hm = hm || { h: 6, m: 0 };
+    return pad2(hm.h) + ":" + pad2(hm.m);
+  }
+
+  function inputTypeOf(el) {
+    return String((el && (el.getAttribute("type") || el.type)) || "text").toLowerCase();
+  }
+
+  function isNativeDateInput(el) {
+    var t = inputTypeOf(el);
+    return t === "date" || t === "datetime-local" || t === "datetime" || t === "time";
+  }
+
+  function inputLooksLikeDate(el, date, hm) {
+    if (!el || !date) return false;
+    var v = String(el.value || "").trim();
+    if (!v) return false;
+    var iso = isoLocalDate(date);
+    if (v === iso || v.indexOf(iso) === 0) {
+      if (!hm) return true;
+      return v.indexOf(formatHHmm(hm)) !== -1;
+    }
+    var fr = formatFr(date);
+    if (normalize(v).indexOf(normalize(fr)) !== -1) {
+      if (!hm) return true;
+      return v.indexOf(formatHHmm(hm)) !== -1 || v.indexOf(String(hm.h) + ":" + pad2(hm.m)) !== -1;
+    }
+    return inputAlreadyLooksLike(el, fr);
+  }
+
+  function applyNativeDateValue(input, date, hm) {
+    var type = inputTypeOf(input);
+    var iso = isoLocalDate(date);
+    var value;
+    if (type === "datetime-local" || type === "datetime") {
+      hm = hm || { h: 0, m: 0 };
+      value = iso + "T" + formatHHmm(hm);
+    } else if (type === "date") {
+      value = iso;
+    } else if (type === "time") {
+      hm = hm || { h: 6, m: 0 };
+      value = formatHHmm(hm);
+    } else {
+      return null;
+    }
+    setNativeValue(input, value);
+    return value;
+  }
+
+  function isOutsideMonthDay(el) {
+    var c = String((el && el.className) || "");
+    if (/outsideCurrentMonth|dayOutsideMonth|outside-month|hiddenDaySpacingFiller|hiddenDayFiller|dayHidden/i.test(c)) return true;
+    if (el.getAttribute("aria-hidden") === "true") return true;
+    return false;
+  }
+
+  function isDisabledEl(el) {
+    return !!(
+      el.disabled ||
+      el.getAttribute("aria-disabled") === "true" ||
+      /Mui-disabled/.test(String(el.className || ""))
+    );
+  }
+
+  function listInMonthDayButtons(root) {
+    if (!root) return [];
+    var nodes = root.querySelectorAll(
+      "button.MuiPickersDay-root, button[class*='MuiPickersDay'], button[role='gridcell'], [role='gridcell']"
+    );
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var b = nodes[i];
+      if (b.tagName === "DIV" || isOutsideMonthDay(b) || isDisabledEl(b) || !visible(b)) continue;
+      if (!(b.textContent || "").trim() && !b.getAttribute("aria-label")) continue;
+      out.push(b);
+    }
+    return out;
+  }
+
+  function pickerHasCalendar(el) {
+    if (!el) return false;
+    return !!(
+      el.querySelector(
+        ".MuiDateCalendar-root, .MuiCalendarPicker-root, .MuiPickersDay-root, [class*='MuiDateCalendar'], [class*='MuiPickersDay'], .MuiMultiSectionDigitalClock-root, [class*='DigitalClock'], [class*='MuiDayCalendar']"
+      ) ||
+      listInMonthDayButtons(el).length
+    );
+  }
+
   function isPickerDialog(el) {
     if (!el || !visible(el)) return false;
-    if (el.getAttribute("role") === "dialog" || el.getAttribute("aria-modal") === "true") {
-      if (
-        el.querySelector(
-          ".MuiCalendarPicker-root, .MuiDateCalendar-root, .MuiPickersCalendar-root, .MuiPickersDay-root, [class*='MuiPickersDay'], [class*='MuiCalendarPicker'], [class*='MuiDateCalendar']"
-        )
-      ) {
-        return true;
-      }
-    }
-    if (el.classList && /Mui(Dialog|PickersModal|PickersPopper|CalendarPicker|DateCalendar)/.test(el.className)) {
-      return true;
-    }
-    return false;
+    return pickerHasCalendar(el);
   }
 
   function findDateDialog() {
     var nodes = document.querySelectorAll(
-      '[role="dialog"], [aria-modal="true"], .MuiDialog-root, .MuiPickersModalDialog-dialog, .MuiPickersPopper-root, .MuiCalendarPicker-root, .MuiDateCalendar-root'
+      '[role="dialog"], [aria-modal="true"], .MuiPickersPopper-root, .MuiPickersLayout-root, .MuiDialog-root, .MuiPickersModalDialog-dialog, .MuiDateCalendar-root, .MuiCalendarPicker-root'
     );
+    var found = [];
     for (var i = 0; i < nodes.length; i++) {
-      if (isPickerDialog(nodes[i]) || (visible(nodes[i]) && nodes[i].querySelector(".MuiPickersDay-root, [class*='MuiPickersDay']"))) {
-        return nodes[i];
-      }
+      if (isPickerDialog(nodes[i])) found.push(nodes[i]);
     }
-    // Parfois le calendrier est seul, sans role=dialog.
-    var cal = document.querySelector(
-      ".MuiCalendarPicker-root, .MuiDateCalendar-root, .MuiPickersCalendar-root, [class*='MuiCalendarPicker']"
+    if (!found.length) return null;
+    // Le formulaire « mission passée » est déjà dans un MuiDialog : on prend
+    // le nœud le plus précis (celui qui contient vraiment les jours).
+    found.sort(function (a, b) {
+      return listInMonthDayButtons(b).length - listInMonthDayButtons(a).length;
+    });
+    if (listInMonthDayButtons(found[0]).length) return found[0];
+    return found[0];
+  }
+
+  function getHeaderText(dialog) {
+    if (!dialog) return "";
+    var header = dialog.querySelector(
+      ".MuiPickersCalendarHeader-label, [class*='MuiPickersCalendarHeader-label']"
     );
-    return cal && visible(cal) ? cal : null;
+    return ((header && (header.innerText || header.textContent)) || "").trim();
+  }
+
+  function parseHeader(text) {
+    var t = normalize(text).replace(/\./g, " ").replace(/\s+/g, " ");
+    for (var i = 0; i < MONTHS_FR.length; i++) {
+      var full = normalize(MONTHS_FR[i]);
+      var shortn = SHORT_MONTHS_FR[i];
+      var re = new RegExp("(?:^|\\s)(?:" + full + "|" + shortn + ")\\s+(\\d{4})");
+      var hit = t.match(re);
+      if (hit) return { m: i, y: +hit[1] };
+    }
+    return null;
   }
 
   function headerShowsMonth(dialog, date) {
-    var wantMonth = MONTHS_FR[date.getMonth()];
+    var parsed = parseHeader(getHeaderText(dialog) || (dialog.innerText || ""));
+    if (parsed) return parsed.m === date.getMonth() && parsed.y === date.getFullYear();
+    var wantMonth = normalize(MONTHS_FR[date.getMonth()]);
     var wantYear = String(date.getFullYear());
     var txt = normalize(dialog.innerText || "");
-    return txt.indexOf(normalize(wantMonth)) !== -1 && txt.indexOf(wantYear) !== -1;
+    return txt.indexOf(wantMonth) !== -1 && txt.indexOf(wantYear) !== -1;
   }
 
   async function goToMonth(dialog, date) {
     if (headerShowsMonth(dialog, date)) return true;
-    // Vue année : cliquer le mois si visible.
-    var monthBtns = dialog.querySelectorAll("button, .PrivatePickersMonth-root, [class*='PrivatePickersMonth'], [class*='MuiMonth']");
+    // Vue année / mois : ne cliquer que dans ces grilles, pas tous les boutons du dialogue.
+    var yearBtns = dialog.querySelectorAll(
+      "[class*='MuiYearCalendar'] button, [class*='PrivatePickersYear'] button, button[class*='MuiPickersYear']"
+    );
+    var wantYear = String(date.getFullYear());
+    for (var y = 0; y < yearBtns.length; y++) {
+      if (normalize(yearBtns[y].textContent || "") === wantYear && !isDisabledEl(yearBtns[y])) {
+        clickEl(yearBtns[y]);
+        await sleep(200);
+        break;
+      }
+    }
+    var monthBtns = dialog.querySelectorAll(
+      "[class*='MuiMonthCalendar'] button, [class*='PrivatePickersMonth'] button, button[class*='MuiPickersMonth']"
+    );
     var wantM = normalize(MONTHS_FR[date.getMonth()]);
+    var wantShort = SHORT_MONTHS_FR[date.getMonth()];
     for (var i = 0; i < monthBtns.length; i++) {
-      if (normalize(monthBtns[i].textContent || "") === wantM) {
+      var t = normalize(monthBtns[i].textContent || "").replace(/\./g, "");
+      if ((t === wantM || t === wantShort || t.indexOf(wantM) === 0) && !isDisabledEl(monthBtns[i])) {
         clickEl(monthBtns[i]);
         await sleep(200);
         break;
       }
     }
-    // Flèches précédent / suivant (max 14 mois, le formulaire n'autorise que J-30).
     for (var step = 0; step < 14; step++) {
       if (headerShowsMonth(dialog, date)) return true;
       var prev = dialog.querySelector(
@@ -488,71 +615,62 @@
       var next = dialog.querySelector(
         'button[aria-label*="suivant" i], button[title*="suivant" i], button[aria-label*="next" i], button[title*="Next" i]'
       );
-      // Si le header a une date, comparer.
-      var header = dialog.querySelector(
-        ".MuiPickersCalendarHeader-label, [class*='MuiPickersCalendarHeader-label'], [class*='MuiPickersFadeTransition']"
-      );
-      var headerText = header ? normalize(header.textContent) : normalize(dialog.innerText);
-      var shown = parseHeader(headerText);
+      var shown = parseHeader(getHeaderText(dialog) || (dialog.innerText || ""));
       var btn = null;
       if (shown) {
         var shownIdx = shown.y * 12 + shown.m;
         var wantIdx = date.getFullYear() * 12 + date.getMonth();
+        if (shownIdx === wantIdx) return true;
         btn = wantIdx < shownIdx ? prev : next;
       } else {
         btn = prev || next;
       }
-      if (!btn) break;
+      if (!btn || isDisabledEl(btn)) break;
       clickEl(btn);
       await sleep(180);
     }
     return headerShowsMonth(dialog, date);
   }
 
-  function parseHeader(text) {
-    var t = normalize(text);
-    for (var i = 0; i < MONTHS_FR.length; i++) {
-      var m = normalize(MONTHS_FR[i]);
-      var re = new RegExp(m + "\\s+(\\d{4})");
-      var hit = t.match(re);
-      if (hit) return { m: i, y: +hit[1] };
-    }
-    return null;
+  function ariaLabelMatchesDate(al, date) {
+    if (!al) return false;
+    var compact = normalize(al).replace(/\./g, " ").replace(/\s+/g, " ");
+    var year = String(date.getFullYear());
+    if (compact.indexOf(year) === -1) return false;
+    var day = String(date.getDate());
+    var full = normalize(MONTHS_FR[date.getMonth()]);
+    var shortn = SHORT_MONTHS_FR[date.getMonth()];
+    var hasMonth = compact.indexOf(full) !== -1 || compact.indexOf(shortn) !== -1;
+    var hasDay =
+      compact.indexOf(day + " ") !== -1 ||
+      compact.indexOf(" " + day + " ") !== -1 ||
+      compact.indexOf(pad2(date.getDate())) !== -1 ||
+      compact.indexOf(formatFr(date)) !== -1;
+    return hasMonth && hasDay;
   }
 
   function findDayButton(dialog, date) {
     var day = date.getDate();
-    var monthName = MONTHS_FR[date.getMonth()];
-    var year = date.getFullYear();
-    var wantLabel = normalize(day + " " + monthName + " " + year);
-    var buttons = dialog.querySelectorAll(
-      'button.MuiPickersDay-root, .MuiPickersDay-root, button[role="gridcell"], [role="gridcell"]'
-    );
+    var buttons = listInMonthDayButtons(dialog);
     var byLabel = [];
     var byNumber = [];
     for (var i = 0; i < buttons.length; i++) {
       var b = buttons[i];
-      if (b.disabled || b.getAttribute("aria-disabled") === "true" || /Mui-disabled/.test(b.className)) {
-        continue;
-      }
-      if (/dayOutsideMonth|outsideMonth|outside-month/i.test(b.className)) continue;
-      var al = normalize(b.getAttribute("aria-label") || "");
-      if (al && al.indexOf(wantLabel) !== -1) byLabel.push(b);
-      var num = parseInt((b.textContent || "").trim(), 10);
+      if (ariaLabelMatchesDate(b.getAttribute("aria-label") || "", date)) byLabel.push(b);
+      var num = parseInt(String(b.textContent || "").replace(/\D+/g, " ").trim(), 10);
       if (num === day) byNumber.push(b);
     }
     if (byLabel.length) return byLabel[0];
     if (byNumber.length === 1) return byNumber[0];
-    // Aujourd'hui : marqueur MUI.
     if (
       date.getDate() === new Date().getDate() &&
       date.getMonth() === new Date().getMonth() &&
       date.getFullYear() === new Date().getFullYear()
     ) {
-      var today = dialog.querySelector(
-        '.MuiPickersDay-today, [class*="MuiPickersDay-today"], [aria-current="date"]'
+      var todayBtn = dialog.querySelector(
+        "button.MuiPickersDay-today, button[class*='MuiPickersDay-today'], button[aria-current='date']"
       );
-      if (today) return today;
+      if (todayBtn && !isOutsideMonthDay(todayBtn) && !isDisabledEl(todayBtn)) return todayBtn;
     }
     return byNumber[0] || null;
   }
@@ -561,13 +679,14 @@
     var buttons = dialog.querySelectorAll("button");
     for (var i = 0; i < buttons.length; i++) {
       var t = (buttons[i].textContent || "").trim();
-      if (/^(OK|Valider)$/i.test(t)) {
+      if (/^(OK|Valider|Accept)$/i.test(t)) {
         clickEl(buttons[i]);
         return true;
       }
     }
-    // Actions en bas du dialogue MUI v5 (le dernier bouton est souvent OK).
-    var actions = dialog.querySelector(".MuiDialogActions-root, [class*='MuiDialogActions']");
+    var actions = dialog.querySelector(
+      ".MuiDialogActions-root, [class*='MuiDialogActions'], [class*='PickersActionBar']"
+    );
     if (actions) {
       var actBtns = actions.querySelectorAll("button");
       if (actBtns.length) {
@@ -578,49 +697,161 @@
     return false;
   }
 
-  async function fillDate(input, date) {
+  function clickClockSection(dialog, value, sectionHint) {
+    var want = pad2(value);
+    var wantAlt = String(value);
+    var items = dialog.querySelectorAll(
+      "[role='option'], .MuiMultiSectionDigitalClockSection-item, [class*='MultiSectionDigitalClockSection-item'], [class*='DigitalClockSection-item'], [class*='MuiMultiSectionDigitalClock'] li, [class*='MuiMultiSectionDigitalClock'] button"
+    );
+    var pool = [];
+    for (var i = 0; i < items.length; i++) {
+      if (sectionHint && items[i].closest && sectionHint(items[i]) === false) continue;
+      pool.push(items[i]);
+    }
+    if (!pool.length) pool = Array.prototype.slice.call(items);
+    for (var j = 0; j < pool.length; j++) {
+      var t = (pool[j].textContent || "").trim();
+      if (t === want || t === wantAlt) {
+        clickEl(pool[j]);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function describePicker(dialog) {
+    if (!dialog) return "dialog=non";
+    var header = getHeaderText(dialog) || "(sans en-tête)";
+    var days = listInMonthDayButtons(dialog);
+    var samples = [];
+    for (var i = 0; i < days.length && samples.length < 6; i++) {
+      samples.push((days[i].getAttribute("aria-label") || (days[i].textContent || "").trim()));
+    }
+    var parts = ["dialog=oui", 'header="' + header.replace(/\s+/g, " ") + '"', "boutonsJour=" + days.length];
+    if (samples.length) parts.push("ex=[" + samples.join(", ") + "]");
+    var clock = dialog.querySelector("[class*='DigitalClock'], [role='listbox']");
+    if (clock) parts.push("horloge=oui");
+    return parts.join(", ");
+  }
+
+  function logPicker(msg, extra) {
+    try {
+      console.log("[LiteBrowser Mobilic]", msg, extra || "");
+    } catch (e) {}
+  }
+
+  function openPickerField(input) {
+    if (!input) return;
+    input.scrollIntoView({ block: "center", inline: "nearest" });
+    var root =
+      input.closest(".MuiFormControl-root, .MuiTextField-root, .MuiPickersTextField-root") ||
+      input.parentElement;
+    var icon = root
+      ? root.querySelector(
+          "button[aria-label*='choisir' i], button[aria-label*='date' i], button[aria-label*='calendar' i], button[aria-label*='ouvrir' i], .MuiInputAdornment-root button"
+        )
+      : null;
+    clickEl(icon || input);
+  }
+
+  async function tryTypeMuiSections(input, date, hm) {
+    var root =
+      input.closest(".MuiFormControl-root, .MuiTextField-root, .MuiPickersTextField-root") ||
+      input.parentElement;
+    if (!root) return { ok: false };
+    var sections = root.querySelectorAll(
+      "[data-sectionindex], .MuiPickersSectionList-section, [class*='MuiPickersSectionList-section']"
+    );
+    if (!sections.length) return { ok: false };
+    var digits = pad2(date.getDate()) + pad2(date.getMonth() + 1) + String(date.getFullYear());
+    if (hm) digits += formatHHmm(hm).replace(":", "");
+    clickEl(sections[0]);
+    await sleep(30);
+    var target = document.activeElement || sections[0];
+    for (var i = 0; i < digits.length; i++) {
+      var ev = { key: digits[i], code: "Digit" + digits[i], keyCode: 48 + Number(digits[i]), which: 48 + Number(digits[i]), bubbles: true, cancelable: true };
+      target.dispatchEvent(new KeyboardEvent("keydown", ev));
+      target.dispatchEvent(new KeyboardEvent("keyup", ev));
+      if (typeof document.execCommand === "function") {
+        try { document.execCommand("insertText", false, digits[i]); } catch (e) {}
+      }
+      await sleep(20);
+    }
+    await sleep(80);
+    return { ok: inputLooksLikeDate(input, date, hm), method: "sections" };
+  }
+
+  async function fillDate(input, date, hm) {
     if (!input) return { ok: false, error: "champ date introuvable" };
     var expected = formatFr(date);
-    if (inputAlreadyLooksLike(input, expected)) return { ok: true, already: true };
+    if (inputLooksLikeDate(input, date, hm)) return { ok: true, already: true };
 
-    input.scrollIntoView({ block: "center", inline: "nearest" });
-    await sleep(40);
-    clickEl(input);
-    var dialog = await waitFor(findDateDialog, 2500, 50);
-    if (!dialog) {
-      // Repli : saisie directe si le champ n'est pas en lecture seule
-      // (MobileDatePicker est souvent readOnly — ça peut échouer).
-      if (!input.readOnly && !input.disabled) {
-        var typed = await fillPlain(input, expected);
-        if (typed.ok) return { ok: true, method: "input" };
-      }
+    // 1) Champ natif (date / datetime-local / time). Le calendrier Chromium
+    //    est dans le shadow DOM du navigateur : on ne peut pas cliquer les jours.
+    if (isNativeDateInput(input)) {
+      applyNativeDateValue(input, date, hm);
+      await sleep(40);
+      if (inputLooksLikeDate(input, date, hm)) return { ok: true, method: "native" };
       return {
         ok: false,
-        error: "calendrier introuvable (MobileDatePicker). Choisis la date à la main si besoin.",
+        error: "valeur native refusée pour " + expected + (hm ? " " + formatHHmm(hm) : ""),
+      };
+    }
+
+    // 2) Champ MUI à sections (DateField / DateTimeField v6) : taper les chiffres.
+    var typed = await tryTypeMuiSections(input, date, hm);
+    if (typed.ok) return typed;
+
+    // 3) Saisie directe si le champ n'est pas en lecture seule.
+    if (!input.readOnly && !input.disabled && inputTypeOf(input) !== "hidden") {
+      var asText = expected + (hm ? " " + formatHHmm(hm) : "");
+      var plain = await fillPlain(input, asText);
+      if (plain.ok || inputLooksLikeDate(input, date, hm)) return { ok: true, method: "input" };
+    }
+
+    // 4) Calendrier MUI (dialogue ou popover) — pas le dialogue du formulaire.
+    input.scrollIntoView({ block: "center", inline: "nearest" });
+    await sleep(40);
+    openPickerField(input);
+    var dialog = await waitFor(findDateDialog, 2500, 50);
+    var diag = describePicker(dialog);
+    logPicker("calendrier", diag);
+    if (!dialog) {
+      return {
+        ok: false,
+        error: "calendrier introuvable (MobileDatePicker). " + diag + ". Choisis la date à la main si besoin.",
       };
     }
     await goToMonth(dialog, date);
+    dialog = findDateDialog() || dialog;
+    diag = describePicker(dialog);
     var dayBtn = await waitFor(function () {
       return findDayButton(dialog, date);
     }, 2000, 50);
     if (!dayBtn) {
-      return { ok: false, error: "jour " + expected + " introuvable dans le calendrier (hors J-30 ?)" };
+      logPicker("jour introuvable", diag);
+      return {
+        ok: false,
+        error: "jour " + expected + " introuvable dans le calendrier (" + diag + ")",
+      };
     }
     clickEl(dayBtn);
     await sleep(80);
+    if (hm) {
+      clickClockSection(dialog, hm.h);
+      await sleep(50);
+      clickClockSection(dialog, hm.m);
+      await sleep(50);
+    }
     clickPickerOk(dialog);
     var ok = await waitFor(function () {
-      return inputAlreadyLooksLike(input, expected) ? true : null;
+      return inputLooksLikeDate(input, date, hm) ? true : null;
     }, 2000, 50);
     if (ok) return { ok: true, method: "picker" };
-    // Parfois le format affiché diffère légèrement (d/m/yyyy).
-    var loose = await waitFor(function () {
-      var v = (input.value || "").replace(/\s/g, "");
-      var want = expected.replace(/\s/g, "");
-      return v.indexOf(want) !== -1 || v.indexOf(String(date.getFullYear())) !== -1 ? true : null;
-    }, 800, 50);
-    if (loose) return { ok: true, method: "picker" };
-    return { ok: false, error: "le calendrier a été cliqué mais la date affichée n'est pas " + expected };
+    return {
+      ok: false,
+      error: "le calendrier a été cliqué mais la date affichée n'est pas " + expected + " (" + diag + ")",
+    };
   }
 
   async function fillVehicle(input, value) {
@@ -699,6 +930,12 @@
     if (dateInput && date) rec("jour de la mission (" + dateLabel + ")", await fillDate(dateInput, date));
     else if (!dateInput) rec("jour de la mission", { ok: false, error: "champ introuvable" });
     else rec("jour de la mission", { ok: false, error: "date invalide" });
+
+    var startHm = parseTimeHHmm(settings.startTime || "06:00");
+    var startInput = findField("Début");
+    if (startInput && date) {
+      rec("heure de début (" + formatHHmm(startHm) + ")", await fillDate(startInput, date, startHm));
+    }
 
     var startInput = findField("Lieu de prise de service");
     if (startInput && startInput.disabled) {
@@ -916,7 +1153,8 @@
       startLocation: (panel.querySelector("#mp-start") || {}).value ? panel.querySelector("#mp-start").value.trim() : "",
       endLocation: (panel.querySelector("#mp-end") || {}).value ? panel.querySelector("#mp-end").value.trim() : "",
       vehicle: (panel.querySelector("#mp-veh") || {}).value ? panel.querySelector("#mp-veh").value.trim() : "",
-      reason: panel.querySelector("#mp-reason") ? panel.querySelector("#mp-reason").value : ""
+      reason: panel.querySelector("#mp-reason") ? panel.querySelector("#mp-reason").value : "",
+      startTime: (panel.querySelector("#mp-start-time") && panel.querySelector("#mp-start-time").value) || "06:00"
     });
   }
 
@@ -992,6 +1230,8 @@
       "<p class='hint'>Doit correspondre à une adresse enregistrée. L'outil clique l'option, il ne tape pas l'adresse.</p>" +
       "<label for='mp-end'>Lieu de fin de service</label><input id='mp-end' type='text' autocomplete='off'>" +
       "<label for='mp-veh'>Nom ou immatriculation du véhicule</label><input id='mp-veh' type='text' autocomplete='off'>" +
+      "<label for='mp-start-time'>Heure de début</label><input id='mp-start-time' type='time' step='60'>" +
+      "<p class='hint'>Pré-remplie sur le champ Début (étape des horaires), par défaut 06:00.</p>" +
       "<label for='mp-reason'>Raison de l'ajout d'une mission passée</label><textarea id='mp-reason' maxlength='48'></textarea>" +
       "<div class='actions'>" +
       "<button type='button' class='primary' id='mp-save-fill'>Enregistrer et pré-remplir</button>" +
@@ -1006,6 +1246,7 @@
     panel.querySelector("#mp-end").value = s.endLocation || "";
     panel.querySelector("#mp-veh").value = s.vehicle || "";
     panel.querySelector("#mp-reason").value = s.reason == null ? "" : s.reason;
+    panel.querySelector("#mp-start-time").value = s.startTime || "06:00";
     var dateEl = panel.querySelector("#mp-date");
     dateEl.value = (s.useToday !== false && !s.missionDate) ? todayISO() : (s.missionDate || todayISO());
     dateEl.min = daysAgoISO(30);

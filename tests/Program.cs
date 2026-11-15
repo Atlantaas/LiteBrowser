@@ -633,6 +633,11 @@ static class Program
         Check("clic d'un jour d'historique enregistré", js.Contains("onHistoryDayClick") && js.Contains("addEventListener(\"click\", onHistoryDayClick, true)"));
         Check("toast Date enregistrée", js.Contains("Date enregistrée :"));
         Check("limites Mobilic J-30", js.Contains("isMobilicDateAllowed") && js.Contains("J-30"));
+        Check("heure de début par défaut 06:00", js.Contains("startTime: \"06:00\"") && js.Contains("Heure de début") && js.Contains("id='mp-start-time'"));
+        Check("ne prend pas un MuiDialog de formulaire pour le calendrier", js.Contains("pickerHasCalendar") && js.Contains("listInMonthDayButtons") && js.Contains("boutonsJour="));
+        Check("saisie native datetime-local (Début)", js.Contains("datetime-local") && js.Contains("applyNativeDateValue") && js.Contains("findField(\"Début\")"));
+        Check("diagnostics du sélecteur de date", js.Contains("[LiteBrowser Mobilic]") && js.Contains("describePicker") && js.Contains("tryTypeMuiSections"));
+        Check("ne pré-remplit pas l'heure de fin", !js.Contains("findField(\"Fin\")"));
     }
     static string FindNode()
     {
