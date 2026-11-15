@@ -880,7 +880,7 @@ class BrowserTab
 
 /// Barre d'onglets : onglets arrondis, icône du site, haut-parleur (son), bouton ✕, bouton +, bouton liste.
 /// Beaucoup d'onglets : ils gardent une largeur lisible et la barre défile (molette, flèches aux bords), l'onglet affiché reste visible.
-class TabStrip : Control
+partial class TabStrip : Control
 {
     public readonly List<BrowserTab> Tabs;
     int selected = -1;
@@ -959,6 +959,7 @@ class TabStrip : Control
     int ViewW => ViewRight - ViewLeft;
     int TabWidth()
     {
+        if (closeFreezeW > 0) return closeFreezeW; // fermetures en rafale : la croix reste sous la souris (PetitsSoucis_onglets.cs)
         int n = Math.Max(1, Tabs.Count - PinnedCount());
         return Math.Max(MinTabW, Math.Min(Sc(240), ViewW / n));
     }
@@ -1022,6 +1023,7 @@ class TabStrip : Control
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        EndCloseFreeze();
         ClampTarget();
         EnsureVisible(selected, instant: true);
         scrollX = scrollTarget;
@@ -1038,6 +1040,7 @@ class TabStrip : Control
     /// Un onglet vient d'être ajouté : il s'ouvre en glissant.
     public void AnimateOpen(BrowserTab t)
     {
+        EndCloseFreeze();
         t.Grow = 0;
         CurWidth();
         anim.Start();
@@ -1293,6 +1296,7 @@ class TabStrip : Control
     {
         base.OnMouseLeave(e);
         hover = -1; hoverClose = hoverPlus = hoverAudio = hoverList = hoverLeft = hoverRight = false;
+        EndCloseFreeze(); // la souris quitte la barre : les onglets reprennent leur largeur, en glissant
         HoverTab?.Invoke(-1);
         Invalidate();
     }
@@ -1309,7 +1313,7 @@ class TabStrip : Control
             if (ListRect().Contains(e.Location)) { TabListRequested?.Invoke(); return; }
         }
         int h = Hit(e.Location);
-        if (e.Button == MouseButtons.Middle) { if (h >= 0) TabClose?.Invoke(h); return; }
+        if (e.Button == MouseButtons.Middle) { if (h >= 0) { FreezeForClose(h); TabClose?.Invoke(h); } return; }
         if (e.Button == MouseButtons.Right)
         {
             if (h >= 0) TabMenu?.Invoke(h, e.Location);
@@ -1322,7 +1326,7 @@ class TabStrip : Control
         var r = TabRect(h);
         dragIndex = h; dragStart = e.Location; dragging = false;
         if (Tabs[h].Pinned) TabSelect?.Invoke(h);
-        else if (CloseRect(r).Contains(e.Location)) TabClose?.Invoke(h);
+        else if (CloseRect(r).Contains(e.Location)) { FreezeForClose(h); TabClose?.Invoke(h); }
         else if (HasAudio(Tabs[h]) && AudioRect(h, r).Contains(e.Location)) TabMute?.Invoke(h);
         else TabSelect?.Invoke(h);
     }
@@ -1876,8 +1880,13 @@ sealed class DetachedWindow : Form
             case Keys.Control | Keys.L: case Keys.F6: address.Focus(); address.SelectAll(); return true;
             case Keys.Escape when fullscreen: Core?.ExecuteScriptAsync("document.exitFullscreen && document.exitFullscreen()"); return true;
         }
+        if (MainKey?.Invoke(k) == true) return true; // Ctrl+T, Ctrl+Maj+T, Ctrl+Maj+N : dans la fenêtre principale
         return base.ProcessCmdKey(ref msg, k);
     }
+
+    /// Raccourcis de la fenêtre principale (nouvel onglet…) ; touche tapée dans la page de cette fenêtre.
+    public Func<Keys, bool> MainKey;
+    public bool PageKey(Keys k) { var m = new Message(); return ProcessCmdKey(ref m, k); }
 
     /// Rend le lecteur de la page (pour le remettre dans la fenêtre principale).
     public void Release()
@@ -2220,6 +2229,7 @@ partial class BrowserForm : Form
         WindowState = FormWindowState.Maximized;
         if (ShotsDir != null) { WindowState = FormWindowState.Normal; Size = new Size(1600, 900); } // captures : fenêtre discrète
         if (Offscreen) { StartPosition = FormStartPosition.Manual; Location = new Point(-4000, -4000); ShowInTaskbar = false; } // test sans toucher à l'écran
+        RestoreWindowPlacement(); // taille, position et écran de la dernière fois (PetitsSoucis_onglets.cs)
         if ((ShotsDir == null && SmokeReport == null) || Offscreen) Fade.In(this, 180);
         MinimumSize = new Size(S(520), S(320));
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
@@ -2634,7 +2644,10 @@ partial class BrowserForm : Form
         try { (list, selected) = Session.Parse(File.ReadAllText(sessionPath)); } catch { return false; }
         // une seule page d'accueil vide : autant ouvrir normalement
         if (list.Count == 0 || (list.Count == 1 && list[0].Url == "")) return false;
-        foreach (var s in list.OrderByDescending(x => x.Pinned))
+        // l'onglet affiché se retrouve par sa place (deux onglets peuvent avoir la même adresse, ex. deux pages d'accueil)
+        int first = tabs.Count;
+        var order = list.Select((s, k) => (s, k)).OrderByDescending(x => x.s.Pinned).ToList();
+        foreach (var (s, _) in order)
         {
             var t = CreateTab(s.Url == "", priv: false);
             t.Lazy = true;
@@ -2645,9 +2658,7 @@ partial class BrowserForm : Form
             if (s.Url != "") t.Icon = CachedIcon(s.Url);
             tabs.Add(t);
         }
-        var want = list[selected];
-        int idx = tabs.FindIndex(t => t.PendingUrl == want.Url && t.Pinned == want.Pinned);
-        SelectTab(Math.Max(0, idx));
+        SelectTab(first + Math.Max(0, order.FindIndex(x => x.k == selected)));
         return true;
     }
 
@@ -2711,6 +2722,7 @@ partial class BrowserForm : Form
         catch (Exception ex) { CrashLog.Write("Démarrage d'un onglet", ex); if (popup != null) popup.Handled = true; deferral?.Complete(); return; }
         if (!tabs.Contains(t)) { if (popup != null) popup.Handled = true; deferral?.Complete(); return; } // fermé entre-temps
         var core = t.View.CoreWebView2;
+        HookPageKeys(t.View); // raccourcis des onglets aussi quand la page a le focus (PetitsSoucis_onglets.cs)
         Trace($"StartTab moteur prêt « {t.Title} »");
         if (ShotsDir != null) core.IsMuted = true; // les tests ne font jamais de bruit sur le PC
 
@@ -3137,7 +3149,7 @@ partial class BrowserForm : Form
         if (SmokeReport != null || ShotsDir != null)
             CrashLog.Write($"CloseTab {i}/{tabs.Count} {t.View.CoreWebView2?.Source} script={t.OpenedByScript}", new Exception(Environment.StackTrace));
         var src = t.View.CoreWebView2?.Source ?? t.PendingUrl;
-        if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
+        if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) { closedTabs.Add(src); RememberClosedPlace(src, i, t.Pinned); }
         StopSuspend(t);
         StopDiscard(t);
         SaveSessionSoon();
@@ -3159,7 +3171,7 @@ partial class BrowserForm : Form
         if (closedTabs.Count == 0) return;
         var u = closedTabs[^1];
         closedTabs.RemoveAt(closedTabs.Count - 1);
-        _ = NewTab(u);
+        ReopenAtPlace(u); // à sa place d'origine, épinglé s'il l'était (PetitsSoucis_onglets.cs)
     }
 
     bool engineRestarting;
@@ -3705,7 +3717,7 @@ partial class BrowserForm : Form
         m.Items.Add(MI("Nouvel onglet privé", () => _ = NewTab(priv: true), "Ctrl+Maj+N"));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Actualiser", () => t.View.CoreWebView2?.Reload(), "F5"));
-        m.Items.Add(MI("Dupliquer", () => { if (src != null) _ = NewTab(IsLocalPage(src) ? null : src, priv: t.Private); }));
+        m.Items.Add(MI("Dupliquer", () => DuplicateTab(t)));
         var tear = MI("Ouvrir dans une nouvelle fenêtre", () => DetachTab(tabs.IndexOf(t)));
         tear.Enabled = tabs.Count > 1;
         m.Items.Add(tear);
@@ -3718,18 +3730,12 @@ partial class BrowserForm : Form
         m.Items.Add(MI(t.Muted ? "Réactiver le son de l'onglet" : "Couper le son de l'onglet", () => ToggleMute(tabs.IndexOf(t)), "Ctrl+M"));
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Fermer", () => CloseTab(tabs.IndexOf(t)), "Ctrl+W"));
-        var others = MI("Fermer les autres onglets", () =>
-        {
-            foreach (var x in tabs.Where(x => x != t).ToList()) CloseTab(tabs.IndexOf(x));
-        });
-        others.Enabled = tabs.Count > 1;
+        // les onglets épinglés restent (comme Chrome et Brave) : PetitsSoucis_onglets.cs
+        var others = MI("Fermer les autres onglets", () => CloseOtherTabs(t));
+        others.Enabled = OtherTabsToClose(t).Count > 0;
         m.Items.Add(others);
-        var right = MI("Fermer les onglets à droite", () =>
-        {
-            int k = tabs.IndexOf(t);
-            foreach (var x in tabs.Skip(k + 1).ToList()) CloseTab(tabs.IndexOf(x));
-        });
-        right.Enabled = i < tabs.Count - 1;
+        var right = MI("Fermer les onglets à droite", () => CloseTabsToRight(t));
+        right.Enabled = TabsToRight(t).Count > 0;
         m.Items.Add(right);
         m.Items.Add(DuplicatesMenuItem());
         if (tabs.Count > 1 || t == Cur) { m.Items.Add(new ToolStripSeparator()); SplitMenuItems(m, t); }
@@ -3833,6 +3839,7 @@ partial class BrowserForm : Form
         var size = new Size(Math.Min(Width * 4 / 5, scr.Width - 40), Math.Min(Height * 4 / 5, scr.Height - 40));
         w.Bounds = new Rectangle(Math.Clamp(pt.X - size.Width / 2, scr.Left, scr.Right - size.Width), Math.Clamp(pt.Y - S(20), scr.Top, scr.Bottom - size.Height), size.Width, size.Height);
         w.Reattach += ReattachWindow;
+        w.MainKey = DetachedMainKey;
         w.FormClosed += (_, _) =>
         {
             detached.Remove(w);
@@ -3840,7 +3847,7 @@ partial class BrowserForm : Form
             if (w.Reattaching || IsDisposed) return;
             // fenêtre fermée = onglet fermé (rouvrable avec Ctrl+Maj+T)
             var src = t.View.CoreWebView2?.Source;
-            if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
+            if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) { closedTabs.Add(src); RememberClosedPlace(src, tabs.Count, t.Pinned); }
             try { t.View.Dispose(); } catch { }
             SaveSessionSoon();
         };
@@ -3854,7 +3861,7 @@ partial class BrowserForm : Form
         // Tant que le bouton reste enfoncé, la fenêtre suit la souris (on la pose où on veut, même sur l'autre écran)
         if (screenPoint != null && !Offscreen && MouseButtons.HasFlag(MouseButtons.Left) || screenPoint != null && !Offscreen && FollowTest) FollowMouse(w, new Point(S(140), S(18)));
         // Fenêtre glissée par sa barre de titre et lâchée sur la barre d'onglets : l'onglet y revient
-        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && OverTabStrip(Cursor.Position)) ReattachWindow(w); };
+        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && OverTabStrip(Cursor.Position)) ReattachAt(w, Cursor.Position); };
     }
 
     /// Tests : simule « bouton encore enfoncé » pour vérifier le suivi de la souris.
@@ -3873,7 +3880,7 @@ partial class BrowserForm : Form
             w.Location = new Point(c.X - grab.X, c.Y - grab.Y);
             if ((MouseButtons & MouseButtons.Left) != 0) return;
             timer.Stop(); timer.Dispose();
-            if (OverTabStrip(c)) ReattachWindow(w); // relâchée sur la barre d'onglets : l'onglet y retourne
+            if (OverTabStrip(c)) ReattachAt(w, c); // relâchée sur la barre d'onglets : l'onglet y retourne, là où tu l'as lâché
             else
             {
                 var wa = Screen.FromPoint(c).WorkingArea; // jamais hors de l'écran
@@ -3893,11 +3900,11 @@ partial class BrowserForm : Form
         t.Window = null;
         t.View.Visible = false;
         content.Controls.Add(t.View);
-        int at = Math.Min(tabs.Count, sel + 1);
+        int at = ReattachIndex(t); // lâché sur la barre : à cet endroit ; épinglé : avec les épinglés
         tabs.Insert(at, t);
         w.Close();
         SelectTab(at);
-        if (WindowState == FormWindowState.Minimized) WindowState = shownState;
+        RestoreFromMinimized();
         if (!Offscreen) Activate();
         SaveSessionSoon();
     }
@@ -4201,7 +4208,7 @@ partial class BrowserForm : Form
     void OpenFromOutside(string url)
     {
         if (IsDisposed) return;
-        if (WindowState == FormWindowState.Minimized) WindowState = shownState;
+        RestoreFromMinimized();
         if (!Offscreen) { Show(); Activate(); BringToFront(); }
         if (Launch.Allowed(url)) _ = NewTab(url);
         else if (tabs.Count == 0) _ = NewTab();
@@ -4325,17 +4332,20 @@ partial class BrowserForm : Form
         if (on)
         {
             prevState = WindowState;
+            fullNormal = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; // avant de retirer les bords
             FormBorderStyle = FormBorderStyle.None;
             WindowState = FormWindowState.Normal;
-            WindowState = FormWindowState.Maximized;
+            if (Offscreen) OffscreenFullscreen(); else WindowState = FormWindowState.Maximized;
         }
         else
         {
             FormBorderStyle = FormBorderStyle.Sizable;
             WindowState = FormWindowState.Normal;
+            if (prevState == FormWindowState.Normal && fullNormal.Width > 0) Bounds = fullNormal; // F11 aller-retour : même taille, même place
             if (prevState == FormWindowState.Maximized) WindowState = FormWindowState.Maximized;
         }
         ResumeLayout();
+        if (on && !pageFullscreen) FullscreenHint(); // F11 : comment en sortir (vidéo en plein écran : le site le dit déjà)
     }
 
     // ---------- Page d'accueil ----------
@@ -5092,7 +5102,7 @@ partial class BrowserForm : Form
                 pendingNlWatch = ids.Count > 0 ? ids : null;
                 _ = NewTab(NurLive.Url);
             }
-            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized;
+            RestoreFromMinimized();
             Activate();
             _ = RefreshStatus();
             return;
@@ -5106,7 +5116,7 @@ partial class BrowserForm : Form
             Core?.Navigate(url);
         }
         else _ = NewTab(url);
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized;
+        RestoreFromMinimized();
         Activate();
         _ = RefreshStatus();
     }
@@ -6129,6 +6139,7 @@ partial class BrowserForm : Form
                 if (parts[1] == "pc-pages") { await PagesTest(parts[0]); continue; } // Features/PetitsSoucis_pages.cs
                 if (parts[1] == "pc-integrees") { await IntegreesTest(parts[0]); continue; }
                 if (parts[1] == "pc-menus") { await PcMenusTest(parts[0]); continue; }
+                if (parts[1] == "pc-onglets") { await PcOngletsTest(parts[0]); continue; }
                 if (parts[1] == "youtube")
                 {
                     var yr = new List<string>();
@@ -6476,7 +6487,7 @@ partial class BrowserForm : Form
             {
                 tray = new NotifyIcon { Icon = Icon ?? SystemIcons.Application, Text = "LiteBrowser", Visible = true };
                 tray.BalloonTipClicked += (_, _) => trayClick?.Invoke();
-                tray.Click += (_, _) => { if (WindowState == FormWindowState.Minimized) WindowState = shownState; Activate(); };
+                tray.Click += (_, _) => { RestoreFromMinimized(); Activate(); };
             }
             trayClick = onClick;
             tray.ShowBalloonTip(6000, title, text, ToolTipIcon.None);
@@ -7357,6 +7368,7 @@ partial class BrowserForm : Form
     {
         if (ToolsKey(k)) return true; // Features/Tools.cs : Ctrl+F, Ctrl+P, captures, image dans l'image
         if (SiteZoomKey(k)) return true;
+        if (TabKey(k)) return true; // Ctrl+Pg.préc/Pg.suiv (+ Maj : déplacer l'onglet), PetitsSoucis_onglets.cs
         switch (k)
         {
             case Keys.Control | Keys.T: _ = NewTab(); return true;
