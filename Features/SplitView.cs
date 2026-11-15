@@ -68,7 +68,7 @@ partial class BrowserForm
         SaveSessionSoon();
     }
 
-    /// Ctrl+Maj+S : quitte la vue partagée, ou l'ouvre avec l'onglet vu juste avant (sinon le voisin, sinon un nouvel onglet).
+    /// Ctrl+Maj+D : quitte la vue partagée, ou l'ouvre avec l'onglet vu juste avant (sinon le voisin, sinon un nouvel onglet).
     async void SplitToggle()
     {
         if (SplitOn) { SplitExit(); return; }
@@ -93,7 +93,7 @@ partial class BrowserForm
         SaveSessionSoon();
     }
 
-    /// Texte du menu pour l'onglet actuel : ce que fait vraiment Ctrl+Maj+S (sans autre onglet, il en ouvre un nouveau).
+    /// Texte du menu pour l'onglet actuel : ce que fait vraiment Ctrl+Maj+D (sans autre onglet, il en ouvre un nouveau).
     string SplitToggleLabel => tabs.Count > 1 ? "Vue partagée avec l'onglet précédent" : "Vue partagée avec un nouvel onglet";
 
     void SplitExit()
@@ -321,10 +321,10 @@ partial class BrowserForm
         if (SplitShows(t))
         {
             m.Items.Add(MI("Échanger les côtés", SplitSwap));
-            m.Items.Add(MI("Quitter la vue partagée", SplitExit, "Ctrl+Maj+S"));
+            m.Items.Add(MI("Quitter la vue partagée", SplitExit, "Ctrl+Maj+D"));
         }
         else if (t == Cur)
-            m.Items.Add(MI(SplitToggleLabel, SplitToggle, "Ctrl+Maj+S"));
+            m.Items.Add(MI(SplitToggleLabel, SplitToggle, "Ctrl+Maj+D"));
         else
             m.Items.Add(MI("Afficher à côté de l'onglet actuel", () => SplitWith(t)));
     }
@@ -406,7 +406,7 @@ partial class BrowserForm
             if (dragging) { f.SplitDragTo(e.X); return; }
             bool inGap = Gap.Contains(e.Location), inClose = CloseRect.Contains(e.Location);
             Cursor = inClose ? Cursors.Hand : inGap ? Cursors.SizeWE : Cursors.Default;
-            string want = inClose ? "Quitter la vue partagée (Ctrl+Maj+S)" : inGap ? "Glisse pour régler la largeur · double-clic : moitié-moitié" : null;
+            string want = inClose ? "Quitter la vue partagée (Ctrl+Maj+D)" : inGap ? "Glisse pour régler la largeur · double-clic : moitié-moitié" : null;
             if (want != tipShown) { tipShown = want; tip.SetToolTip(this, want); }
             if (inGap != hoverGap || inClose != hoverClose) { hoverGap = inGap && !inClose; hoverClose = inClose; Invalidate(); }
         }
@@ -510,7 +510,7 @@ partial class BrowserForm
         }
         try
         {
-            // 0. Un seul onglet (dossier de données vierge) : Ctrl+Maj+S ouvre un nouvel onglet à DROITE, et c'est lui l'onglet actif
+            // 0. Un seul onglet (dossier de données vierge) : Ctrl+Maj+D ouvre un nouvel onglet à DROITE, et c'est lui l'onglet actif
             // Au 1er lancement, les extensions par défaut (NordPass, TrendTrack) ouvrent leur page d'accueil un peu après :
             // on attend qu'aucun onglet n'arrive plus pendant 4 s (20 s au plus), puis on ne garde que le premier.
             var stable = System.Diagnostics.Stopwatch.StartNew(); var all = System.Diagnostics.Stopwatch.StartNew();
@@ -524,16 +524,16 @@ partial class BrowserForm
             using (var tm = new ContextMenuStrip())
             {
                 SplitMenuItems(tm, only);
-                var lone = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.ShortcutKeyDisplayString == "Ctrl+Maj+S");
+                var lone = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.ShortcutKeyDisplayString == "Ctrl+Maj+D");
                 C("un seul onglet : le menu dit « Vue partagée avec un nouvel onglet »", lone?.Text == "Vue partagée avec un nouvel onglet",
                     string.Join(" | ", tm.Items.OfType<ToolStripMenuItem>().Select(x => x.Text)));
             }
             var before0 = tabs.ToList();
             var msg0 = new Message();
-            ProcessCmdKey(ref msg0, Keys.Control | Keys.Shift | Keys.S);
+            ProcessCmdKey(ref msg0, Keys.Control | Keys.Shift | Keys.D);
             for (int w = 0; w < 50 && !SplitOn; w++) await Task.Delay(100); // SplitToggle attend la création du nouvel onglet
             var fresh = tabs.Except(before0).FirstOrDefault();
-            C("un seul onglet : Ctrl+Maj+S ouvre un nouvel onglet", tabs.Count == 2 && fresh != null, $"{tabs.Count} onglet(s)");
+            C("un seul onglet : Ctrl+Maj+D ouvre un nouvel onglet", tabs.Count == 2 && fresh != null, $"{tabs.Count} onglet(s)");
             C("… l'ancien onglet à gauche, le nouveau à droite", SplitOn && splitLeft == only && splitRight == fresh && SideBySide(), Desc(splitLeft) + " | " + Desc(splitRight));
             C("… le nouvel onglet est la moitié active", fresh != null && Cur == fresh && splitActive == fresh, Desc(Cur));
             await Task.Delay(1500);
@@ -558,13 +558,13 @@ partial class BrowserForm
                 var side = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.Text == "Afficher à côté de l'onglet actuel");
                 C("menu de l'onglet : « Afficher à côté de l'onglet actuel »", side != null,
                     string.Join(" | ", tm.Items.OfType<ToolStripMenuItem>().Select(x => x.Text)));
-                C("… sans raccourci affiché (Ctrl+Maj+S fait autre chose)", side != null && string.IsNullOrEmpty(side.ShortcutKeyDisplayString), side?.ShortcutKeyDisplayString ?? "");
+                C("… sans raccourci affiché (Ctrl+Maj+D fait autre chose)", side != null && string.IsNullOrEmpty(side.ShortcutKeyDisplayString), side?.ShortcutKeyDisplayString ?? "");
             }
             using (var tm = new ContextMenuStrip())
             {
                 SplitMenuItems(tm, wiki);
                 var prev = tm.Items.OfType<ToolStripMenuItem>().FirstOrDefault(x => x.Text == "Vue partagée avec l'onglet précédent");
-                C("onglet actuel : « Vue partagée avec l'onglet précédent » (Ctrl+Maj+S)", prev?.ShortcutKeyDisplayString == "Ctrl+Maj+S");
+                C("onglet actuel : « Vue partagée avec l'onglet précédent » (Ctrl+Maj+D)", prev?.ShortcutKeyDisplayString == "Ctrl+Maj+D");
             }
 
             // 2. Vue partagée
@@ -633,13 +633,13 @@ partial class BrowserForm
             C("onglet choisi dans la barre : il remplace la moitié active", SplitShows(wiki) && SplitShows(ex) && !SplitShows(third) && Cur == wiki && Awake(wiki) && Awake(ex), Desc(splitLeft) + " | " + Desc(splitRight));
             await SplitShotAsync(name + "_6_remplace");
 
-            // 7. Ctrl+Maj+S
+            // 7. Ctrl+Maj+D
             var msg = new Message();
-            ProcessCmdKey(ref msg, Keys.Control | Keys.Shift | Keys.S); await Task.Delay(800);
-            C("Ctrl+Maj+S quitte la vue partagée", !SplitOn && Cur.View.Dock == DockStyle.Fill && Cur.View.Visible && tabs.Count(x => x.View.Visible) == 1 && !splitSurface.Visible,
+            ProcessCmdKey(ref msg, Keys.Control | Keys.Shift | Keys.D); await Task.Delay(800);
+            C("Ctrl+Maj+D quitte la vue partagée", !SplitOn && Cur.View.Dock == DockStyle.Fill && Cur.View.Visible && tabs.Count(x => x.View.Visible) == 1 && !splitSurface.Visible,
                 $"{tabs.Count(x => x.View.Visible)} page(s) visible(s)");
-            ProcessCmdKey(ref msg, Keys.Control | Keys.Shift | Keys.S); await Task.Delay(1200);
-            C("Ctrl+Maj+S la rouvre avec l'onglet vu juste avant", SplitOn && SplitShows(wiki) && SideBySide(), Desc(splitLeft) + " | " + Desc(splitRight));
+            ProcessCmdKey(ref msg, Keys.Control | Keys.Shift | Keys.D); await Task.Delay(1200);
+            C("Ctrl+Maj+D la rouvre avec l'onglet vu juste avant", SplitOn && SplitShows(wiki) && SideBySide(), Desc(splitLeft) + " | " + Desc(splitRight));
 
             // 8. Multistream (KeepsPlaying) : jamais caché, ni à côté ni dessous
             var multi = await OpenInSplit(MultiUrl, "multistream");

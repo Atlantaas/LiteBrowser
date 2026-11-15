@@ -505,6 +505,124 @@ namespace LiteCore
     }
 
     // ==================================================================
+    //  Réglages par site : zoom retenu et autorisations (caméra, micro…)
+    // ==================================================================
+    public sealed class SitePrefs
+    {
+        /// Niveaux de zoom (les mêmes que Chrome et Edge).
+        public static readonly double[] ZoomSteps = { 0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5 };
+
+        /// Zoom par site (www. retiré) ; un site à 100 % n'est pas noté.
+        public readonly SortedDictionary<string, double> Zoom = new(StringComparer.OrdinalIgnoreCase);
+        /// Autorisations retenues : site → (autorisation → autorisé ?).
+        public readonly SortedDictionary<string, SortedDictionary<string, bool>> Perms = new(StringComparer.OrdinalIgnoreCase);
+
+        public static bool IsDefaultZoom(double z) => Math.Abs(z - 1) < 0.005;
+
+        /// Niveau suivant (dir = +1) ou précédent (dir = -1), même depuis un zoom « hors liste » (Ctrl+molette).
+        public static double NextZoom(double cur, int dir)
+        {
+            if (dir == 0) return 1;
+            if (dir > 0) { foreach (var s in ZoomSteps) if (s > cur + 0.005) return s; return ZoomSteps[^1]; }
+            for (int i = ZoomSteps.Length - 1; i >= 0; i--) if (ZoomSteps[i] < cur - 0.005) return ZoomSteps[i];
+            return ZoomSteps[0];
+        }
+
+        /// « 125 % » (espace fine insécable, comme en typographie française).
+        public static string ZoomLabel(double z) => Math.Round(z * 100).ToString(CultureInfo.InvariantCulture) + " %";
+
+        public double ZoomFor(string url)
+        {
+            var h = SiteList.Host(url);
+            return h != null && Zoom.TryGetValue(h, out var z) ? z : 1;
+        }
+
+        /// Retient le zoom d'un site. true si quelque chose a changé (à enregistrer).
+        public bool SetZoom(string url, double z)
+        {
+            var h = SiteList.Host(url);
+            if (h == null || double.IsNaN(z) || z <= 0) return false;
+            z = Math.Round(Math.Clamp(z, 0.25, 5), 3);
+            if (IsDefaultZoom(z)) return Zoom.Remove(h);
+            if (Zoom.TryGetValue(h, out var old) && Math.Abs(old - z) < 0.0005) return false;
+            Zoom[h] = z;
+            return true;
+        }
+
+        /// Décision retenue pour ce site : true autorisé, false bloqué, null pas encore choisi.
+        public bool? PermFor(string url, string kind)
+        {
+            var h = SiteList.Host(url);
+            return h != null && kind != null && Perms.TryGetValue(h, out var d) && d.TryGetValue(kind, out var v) ? v : null;
+        }
+
+        public bool SetPerm(string url, string kind, bool allow)
+        {
+            var h = SiteList.Host(url);
+            if (h == null || string.IsNullOrEmpty(kind)) return false;
+            if (!Perms.TryGetValue(h, out var d)) Perms[h] = d = new SortedDictionary<string, bool>(StringComparer.Ordinal);
+            if (d.TryGetValue(kind, out var old) && old == allow) return false;
+            d[kind] = allow;
+            return true;
+        }
+
+        /// Retire un choix (host tel qu'affiché dans les réglages).
+        public bool RemovePerm(string host, string kind)
+        {
+            if (host == null || !Perms.TryGetValue(host, out var d) || !d.Remove(kind ?? "")) return false;
+            if (d.Count == 0) Perms.Remove(host);
+            return true;
+        }
+
+        public string Serialize() => JsonSerializer.Serialize(new { zoom = Zoom, perms = Perms }, new JsonSerializerOptions { WriteIndented = true });
+
+        public static SitePrefs Parse(string json)
+        {
+            var p = new SitePrefs();
+            if (string.IsNullOrWhiteSpace(json)) return p;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("zoom", out var z) && z.ValueKind == JsonValueKind.Object)
+                    foreach (var kv in z.EnumerateObject())
+                        if (kv.Value.ValueKind == JsonValueKind.Number && kv.Value.TryGetDouble(out var v) && v >= 0.25 && v <= 5 && !IsDefaultZoom(v) && kv.Name.Contains('.'))
+                            p.Zoom[kv.Name.ToLowerInvariant()] = v;
+                if (root.TryGetProperty("perms", out var ps) && ps.ValueKind == JsonValueKind.Object)
+                    foreach (var site in ps.EnumerateObject())
+                    {
+                        if (site.Value.ValueKind != JsonValueKind.Object) continue;
+                        var d = new SortedDictionary<string, bool>(StringComparer.Ordinal);
+                        foreach (var k in site.Value.EnumerateObject())
+                            if (k.Value.ValueKind is JsonValueKind.True or JsonValueKind.False && PermKinds.ContainsKey(k.Name)) d[k.Name] = k.Value.GetBoolean();
+                        if (d.Count > 0) p.Perms[site.Name.ToLowerInvariant()] = d;
+                    }
+            }
+            catch (JsonException) { }
+            return p;
+        }
+
+        /// Autorisations connues : (nom court pour les réglages, fin de phrase « site veut … »).
+        public static readonly Dictionary<string, (string Short, string Ask)> PermKinds = new()
+        {
+            ["camera"] = ("Caméra", "veut utiliser ta caméra"),
+            ["microphone"] = ("Micro", "veut utiliser ton micro"),
+            ["geolocation"] = ("Position", "veut connaître ta position"),
+            ["notifications"] = ("Notifications", "veut t’envoyer des notifications"),
+            ["clipboard"] = ("Presse-papiers", "veut lire ton presse-papiers"),
+            ["sensors"] = ("Capteurs", "veut utiliser les capteurs de ton appareil"),
+            ["downloads"] = ("Téléchargements multiples", "veut télécharger plusieurs fichiers"),
+            ["files"] = ("Fichiers", "veut modifier des fichiers sur ton PC"),
+            ["fonts"] = ("Polices", "veut voir les polices installées"),
+            ["midi"] = ("Appareils MIDI", "veut contrôler tes appareils MIDI"),
+            ["windows"] = ("Fenêtres et écrans", "veut gérer tes fenêtres sur tous tes écrans"),
+        };
+
+        public static string PermShort(string kind) => PermKinds.TryGetValue(kind ?? "", out var k) ? k.Short : kind;
+        public static string PermAsk(string kind) => PermKinds.TryGetValue(kind ?? "", out var k) ? k.Ask : "veut une autorisation";
+    }
+
+    // ==================================================================
     //  Session : onglets rouverts au démarrage
     // ==================================================================
     public sealed record SessionTab(string Url, string Title, bool Pinned);

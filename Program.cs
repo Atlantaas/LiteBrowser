@@ -1414,6 +1414,10 @@ class AddressBox : Panel
     /// Icône à gauche (loupe, cadenas…), dessinée directement dans le champ pour ne jamais mordre sur l'arrondi.
     public string BadgeGlyph { get => badge; set { if (badge != value) { badge = value; Invalidate(); } } }
 
+    /// Petit badge en plus dans le champ (zoom « 125 % »), placé juste avant le bouclier. Sa largeur est fixée par son propriétaire.
+    Control extra;
+    public Control Extra { get => extra; set { extra = value; Controls.Add(value); PerformLayout(); } }
+
     public AddressBox(Font iconFont, Font iconSmall, Font textFont)
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
@@ -1453,6 +1457,7 @@ class AddressBox : Panel
         int bh = Box.PreferredHeight;
         int left = BadgeRect.Right + Sc(8);
         int right = Shield.Visible ? Shield.Left - Sc(4) : Star.Visible ? Star.Left - Sc(4) : Width - h / 2;
+        if (extra is { Visible: true }) { int eh = h - Sc(12); extra.SetBounds(right - extra.Width, (h - eh) / 2, extra.Width, eh); right = extra.Left - Sc(6); }
         Box.SetBounds(left, (h - bh) / 2, Math.Max(10, right - left), bh);
     }
 
@@ -1492,6 +1497,7 @@ class AddressBox : Panel
         Invalidate();
         Star.Invalidate();
         Shield.Invalidate();
+        extra?.Invalidate();
     }
 }
 
@@ -2895,6 +2901,7 @@ partial class BrowserForm : Form
             // Hors de l'évènement WebView2 : on peut y ouvrir des fenêtres sans bloquer la page
             BeginInvoke(new Action(() => HandlePageMessage(core, t, json)));
         };
+        HookSites(t, core); // zoom retenu par site, autorisations (Features/Sites.cs)
 
         if (forceDark) { try { await ApplyForceDark(t); } catch { } }
         Trace($"StartTab navigation « {t.Title} » → {(popup != null ? "popup" : string.IsNullOrEmpty(url) ? HomeUrl : url)}");
@@ -3058,6 +3065,7 @@ partial class BrowserForm : Form
         if (!(IsHome(url) || Omni.IsWeb(url))) return false;
         StopSuspend(t);
         StopDiscard(t);
+        DropPermAsks(t); // demande d'autorisation en attente : abandonnée, elle serait périmée au retour
         var old = t.View;
         t.View = new WebView2 { Dock = DockStyle.Fill, Visible = false, DefaultBackgroundColor = theme.Bar };
         content.Controls.Add(t.View);
@@ -3720,6 +3728,7 @@ partial class BrowserForm : Form
         Text = (ShotsDir != null ? "TEST – ne pas fermer (2 min) – " : "") +
             (t == null ? "LiteBrowser" : t.Title + (t.Private ? " – LiteBrowser (privé)" : " – LiteBrowser"));
         UpdateShield();
+        UpdateSiteUi();
     }
 
     void UpdatePlaceholder() => addr.Box.PlaceholderText = $"Rechercher avec {Engine.Name} ou saisir une adresse  ·  :yt, :w, :tw…";
@@ -4366,6 +4375,7 @@ partial class BrowserForm : Form
                     else { SendMultiData(core); multiReady?.TrySetResult(true); }
                     break;
                 case "openSettings": OpenSettings(Str("section")); break;
+                case "sites" when IsSettings(core.Source): SitesMessage(core, root); break;
                 // ---- page Réglages ----
                 case "set" when IsSettings(core.Source):
                     ApplySetting(Str("key"), root.TryGetProperty("value", out var sv) ? sv.Clone() : default);
@@ -6000,6 +6010,7 @@ partial class BrowserForm : Form
                 if (parts[1] == "onglets") { await TabsTest(parts[0]); continue; }
                 if (parts[1] == "outils") { await ToolsTest(parts[0]); continue; }
                 if (parts[1] == "partage") { await SplitTest(parts[0]); continue; }
+                if (parts[1] == "sites") { await SitesTest(parts[0]); continue; }
                 if (parts[1] == "fenetres")
                 {
                     var fr = new List<string>();
@@ -7011,6 +7022,7 @@ partial class BrowserForm : Form
         m.Items.Add(MI("Afficher la barre de favoris", ToggleFavBar, "Ctrl+Maj+B", showFavBar));
         m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => SetAdblock(!adblock), null, adblock));
         m.Items.Add(MI("Plein écran", () => SetFullscreen(!fullscreen), "F11"));
+        m.Items.Add(ZoomMenuRow());
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Réglages", () => OpenSettings(), "Ctrl+,"));
         m.Items.Add(MI("Effacer les données de navigation…", ClearData, "Ctrl+Maj+Suppr"));
@@ -7206,6 +7218,7 @@ partial class BrowserForm : Form
     protected override bool ProcessCmdKey(ref Message msg, Keys k)
     {
         if (ToolsKey(k)) return true; // Features/Tools.cs : Ctrl+F, Ctrl+P, captures, image dans l'image
+        if (SiteZoomKey(k)) return true;
         switch (k)
         {
             case Keys.Control | Keys.T: _ = NewTab(); return true;
@@ -7226,7 +7239,7 @@ partial class BrowserForm : Form
             case Keys.Control | Keys.Shift | Keys.B: ToggleFavBar(); return true;
             case Keys.Control | Keys.Shift | Keys.L: StartLens(); return true;
             case Keys.Control | Keys.Shift | Keys.A: ShowTabSearch(); return true;
-            case Keys.Control | Keys.Shift | Keys.S: SplitToggle(); return true;
+            case Keys.Control | Keys.Shift | Keys.D: SplitToggle(); return true; // D comme « diviser » (Ctrl+Maj+S = capture de la page entière)
             case Keys.Control | Keys.Shift | Keys.M: OpenMulti(new List<string>(), chat: true); return true;
             case Keys.Control | Keys.M: ToggleMute(sel); return true;
             case Keys.F5:
