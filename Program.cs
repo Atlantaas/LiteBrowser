@@ -3844,7 +3844,7 @@ partial class BrowserForm : Form
             if (w.Reattaching || IsDisposed) return;
             // fenêtre fermée = onglet fermé (rouvrable avec Ctrl+Maj+T)
             var src = t.View.CoreWebView2?.Source;
-            if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
+            if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) { closedTabs.Add(src); RememberClosedPlace(src, tabs.Count, t.Pinned); }
             try { t.View.Dispose(); } catch { }
             SaveSessionSoon();
         };
@@ -4327,14 +4327,16 @@ partial class BrowserForm : Form
         if (on)
         {
             prevState = WindowState;
+            fullNormal = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; // avant de retirer les bords
             FormBorderStyle = FormBorderStyle.None;
             WindowState = FormWindowState.Normal;
-            WindowState = FormWindowState.Maximized;
+            if (Offscreen) OffscreenFullscreen(); else WindowState = FormWindowState.Maximized;
         }
         else
         {
             FormBorderStyle = FormBorderStyle.Sizable;
             WindowState = FormWindowState.Normal;
+            if (prevState == FormWindowState.Normal && fullNormal.Width > 0) Bounds = fullNormal; // F11 aller-retour : même taille, même place
             if (prevState == FormWindowState.Maximized) WindowState = FormWindowState.Maximized;
         }
         ResumeLayout();
@@ -5095,7 +5097,7 @@ partial class BrowserForm : Form
                 pendingNlWatch = ids.Count > 0 ? ids : null;
                 _ = NewTab(NurLive.Url);
             }
-            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized;
+            RestoreFromMinimized();
             Activate();
             _ = RefreshStatus();
             return;
@@ -5109,7 +5111,7 @@ partial class BrowserForm : Form
             Core?.Navigate(url);
         }
         else _ = NewTab(url);
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized;
+        RestoreFromMinimized();
         Activate();
         _ = RefreshStatus();
     }
@@ -6476,7 +6478,7 @@ partial class BrowserForm : Form
             {
                 tray = new NotifyIcon { Icon = Icon ?? SystemIcons.Application, Text = "LiteBrowser", Visible = true };
                 tray.BalloonTipClicked += (_, _) => trayClick?.Invoke();
-                tray.Click += (_, _) => { if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Maximized; Activate(); };
+                tray.Click += (_, _) => { RestoreFromMinimized(); Activate(); };
             }
             trayClick = onClick;
             tray.ShowBalloonTip(6000, title, text, ToolTipIcon.None);

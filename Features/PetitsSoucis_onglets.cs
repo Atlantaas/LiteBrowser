@@ -65,9 +65,11 @@ partial class BrowserForm
         v.KeyDown += (_, e) => { if (PageShortcut(v, e.KeyData)) { e.Handled = true; e.SuppressKeyPress = true; } };
     }
 
-    /// Raccourcis de la fenêtre que la page ne garde pas pour elle (ceux que Chrome et Brave réservent au navigateur).
-    /// Restent à la page : Ctrl+D, Ctrl+E, Ctrl+K, Ctrl+M (Meet, Discord, Slack… s'en servent), et ce que le moteur
-    /// fait déjà lui-même (F5, Alt+←/→, zoom, Ctrl+F, Ctrl+P). AltGr (Ctrl+Alt) n'est jamais pris : é, @, € s'écrivent.
+    /// Raccourcis de la fenêtre que la page ne garde pas pour elle : seulement onglets, plein écran et barre d'adresse
+    /// (ce que Chrome et Brave ne laissent pas aux sites). Tout le reste va à la page, comme avant : Ctrl+H (Docs :
+    /// rechercher et remplacer), Ctrl+, (Docs : indice), Ctrl+Maj+L (Docs : aligner à gauche), Ctrl+Maj+M / Ctrl+Maj+D
+    /// (Discord : micro / casque), Ctrl+Maj+A (Slack), Ctrl+D, Ctrl+E, Ctrl+K, Ctrl+M… et ce que le moteur fait déjà
+    /// lui-même (F5, Alt+←/→, zoom, Ctrl+F, Ctrl+P). AltGr (Ctrl+Alt) n'est jamais pris : é, @, € s'écrivent.
     static bool TabShortcutFromPage(Keys k)
     {
         switch (k)
@@ -87,14 +89,6 @@ partial class BrowserForm
             case Keys.Control | Keys.L:
             case Keys.Alt | Keys.D:
             case Keys.F6:
-            case Keys.Control | Keys.H:
-            case Keys.Control | Keys.Oemcomma:
-            case Keys.Control | Keys.Shift | Keys.A:
-            case Keys.Control | Keys.Shift | Keys.B:
-            case Keys.Control | Keys.Shift | Keys.D:
-            case Keys.Control | Keys.Shift | Keys.L:
-            case Keys.Control | Keys.Shift | Keys.M:
-            case Keys.Control | Keys.Shift | Keys.Delete:
             case Keys.Alt | Keys.Home:
                 return true;
         }
@@ -179,8 +173,9 @@ partial class BrowserForm
     {
         int k = tabs.IndexOf(t);
         if (k < 0) return;
-        if (sel > k) SelectTab(k); // l'onglet affiché va être fermé : c'est celui choisi qui reste
-        foreach (var x in TabsToRight(t)) { int i = tabs.IndexOf(x); if (i >= 0) CloseTab(i); }
+        var right = TabsToRight(t);
+        if (right.Contains(Cur)) SelectTab(k); // l'onglet affiché va être fermé : c'est celui choisi qui reste (un épinglé affiché reste affiché)
+        foreach (var x in right) { int i = tabs.IndexOf(x); if (i >= 0) CloseTab(i); }
     }
 
     // ---------- 5. Ctrl+Maj+T à sa place ----------
@@ -245,13 +240,19 @@ partial class BrowserForm
         FormClosing += (_, _) => SaveWindowPlacement();
         try
         {
-            if (!File.Exists(PlacementPath) || !WindowPlace.TryParse(File.ReadAllText(PlacementPath), out var saved, out bool max)) return;
-            var fit = WindowPlace.Fit(saved, Screen.AllScreens.Select(s => s.WorkingArea).ToArray(), Screen.PrimaryScreen.WorkingArea, new Size(520, 320));
-            StartPosition = FormStartPosition.Manual;
-            Bounds = fit;
-            WindowState = max ? FormWindowState.Maximized : FormWindowState.Normal; // agrandie sur l'écran où elle était
+            if (File.Exists(PlacementPath)) ApplyWindowPlacement(this, File.ReadAllText(PlacementPath), Screen.AllScreens.Select(s => s.WorkingArea).ToArray(), Screen.PrimaryScreen.WorkingArea);
         }
         catch { }
+    }
+
+    /// Pose une fenêtre pas encore affichée à la place lue dans fenetre.txt (testé sur une fenêtre jamais montrée).
+    static bool ApplyWindowPlacement(Form f, string text, Rectangle[] screens, Rectangle primary)
+    {
+        if (!WindowPlace.TryParse(text, out var saved, out bool max)) return false;
+        f.StartPosition = FormStartPosition.Manual;
+        f.Bounds = WindowPlace.Fit(saved, screens, primary, new Size(520, 320));
+        f.WindowState = max ? FormWindowState.Maximized : FormWindowState.Normal; // agrandie sur l'écran où elle était
+        return true;
     }
 
     void SaveWindowPlacement()
@@ -311,6 +312,17 @@ partial class BrowserForm
         if (!IsDisposed && fullscreen && !pageFullscreen) ShowFullscreenHint();
     }
     void ShowFullscreenHint() => ToolMessage("Plein écran", "Appuie sur F11 pour en sortir.");
+
+    /// Test hors écran : le plein écran ne doit jamais agrandir la fenêtre sur ton écran. Elle prend la taille d'un écran
+    /// en restant hors de vue : mêmes changements de taille et de place qu'un vrai plein écran (ceux qui ferment la notification).
+    void OffscreenFullscreen()
+    {
+        var a = Screen.PrimaryScreen.Bounds;
+        Bounds = new Rectangle(-4000 - a.Width, -4000, a.Width, a.Height);
+    }
+
+    /// Taille de la fenêtre normale avant F11 : retirer les bords la rétrécit, on la remet telle quelle en sortant.
+    Rectangle fullNormal;
 
     // ================== Test hors écran « pc-onglets » ==================
 
@@ -416,13 +428,30 @@ partial class BrowserForm
             await PcPageKey(cur.View.CoreWebView2 != null ? cur.View : ex.View, Keys.Control | Keys.Shift | Keys.T); await Task.Delay(900);
             org = tabs.FirstOrDefault(t => Url(t).Contains("example.org"));
             C("page qui a le focus : Ctrl+Maj+T rouvre l'onglet fermé", tabs.Count == n + 1 && org != null, $"{n} → {tabs.Count}");
-            C("touches laissées à la page : Ctrl+D, Ctrl+K, Ctrl+E, Ctrl+M (Meet, Discord…), Ctrl+C, AltGr+E (€)",
-                !new[] { Keys.Control | Keys.D, Keys.Control | Keys.K, Keys.Control | Keys.E, Keys.Control | Keys.M, Keys.Control | Keys.C, Keys.Control | Keys.Alt | Keys.E, Keys.Control | Keys.Alt | Keys.D0 }.Any(TabShortcutFromPage));
-            C("touches prises même dans une page : F11, Ctrl+9, Ctrl+Maj+A, Alt+D, F6", new[] { Keys.F11, Keys.Control | Keys.D9, Keys.Control | Keys.Shift | Keys.A, Keys.Alt | Keys.D, Keys.F6 }.All(TabShortcutFromPage));
+            var siteKeys = new[] { Keys.Control | Keys.D, Keys.Control | Keys.K, Keys.Control | Keys.E, Keys.Control | Keys.M, Keys.Control | Keys.C, Keys.Control | Keys.Alt | Keys.E, Keys.Control | Keys.Alt | Keys.D0,
+                Keys.Control | Keys.H, Keys.Control | Keys.Oemcomma, Keys.Control | Keys.Shift | Keys.L, Keys.Control | Keys.Shift | Keys.M, Keys.Control | Keys.Shift | Keys.D,
+                Keys.Control | Keys.Shift | Keys.A, Keys.Control | Keys.Shift | Keys.B, Keys.Control | Keys.Shift | Keys.Delete };
+            C("touches laissées à la page : Ctrl+D/K/E/M/C, AltGr, Ctrl+H et Ctrl+, (Docs), Ctrl+Maj+L (Docs), Ctrl+Maj+M/D (Discord), Ctrl+Maj+A/B/Suppr",
+                !siteKeys.Any(TabShortcutFromPage), string.Join(", ", siteKeys.Where(TabShortcutFromPage)));
+            C("touches prises même dans une page : F11, Ctrl+9, Ctrl+F4, Alt+D, F6", new[] { Keys.F11, Keys.Control | Keys.D9, Keys.Control | Keys.F4, Keys.Alt | Keys.D, Keys.F6 }.All(TabShortcutFromPage));
             SelectTab(tabs.IndexOf(ex)); await Task.Delay(300);
             n = tabs.Count;
             await PcPageKey(ex.View, Keys.Control | Keys.K); await Task.Delay(300);
             C("Ctrl+K tapé dans la page : rien ne bouge côté LiteBrowser", tabs.Count == n && Cur == ex);
+            // la page doit vraiment recevoir les raccourcis des sites (Discord : Ctrl+Maj+M coupe le micro ; Docs : Ctrl+H remplace)
+            await ex.View.CoreWebView2.ExecuteScriptAsync("window.__k=[];addEventListener('keydown',e=>__k.push((e.ctrlKey?'C':'')+(e.shiftKey?'S':'')+e.code),true)");
+            ex.View.Focus();
+            n = tabs.Count;
+            string got = "";
+            foreach (var (sk2, code) in new[] { (Keys.Control | Keys.H, "CKeyH"), (Keys.Control | Keys.Shift | Keys.M, "CSKeyM"), (Keys.Control | Keys.Shift | Keys.D, "CSKeyD"), (Keys.Control | Keys.Shift | Keys.L, "CSKeyL") })
+                for (int tr = 0; tr < 3 && !got.Contains(code); tr++) // touche simulée : le moteur la rate parfois, on la retape
+                {
+                    ex.View.Focus(); await Task.Delay(200);
+                    await PcPageKey(ex.View, sk2); await Task.Delay(200);
+                    got = await ex.View.CoreWebView2.ExecuteScriptAsync("(window.__k||[]).join(' ')");
+                }
+            C("dans une page : Ctrl+H, Ctrl+Maj+M, Ctrl+Maj+D, Ctrl+Maj+L arrivent au site", got.Contains("CKeyH") && got.Contains("CSKeyM") && got.Contains("CSKeyD") && got.Contains("CSKeyL"), "page : " + got);
+            C("… et LiteBrowser n'ouvre ni l'historique, ni le multistream, ni rien d'autre", tabs.Count == n && Cur == ex, $"{n} → {tabs.Count} onglets, affiché « {Cur.Title} »");
             Save();
 
             // ---------- 2. Ctrl+Pg.suiv / Ctrl+Maj+Pg.suiv ----------
@@ -484,6 +513,15 @@ partial class BrowserForm
             C("aucun onglet voisin chargé pour rien pendant la fermeture", sleeping.Count > 0 && sleeping.All(t => t.Lazy), $"{sleeping.Count} onglets au repos fermés, {sleeping.Count(t => !t.Lazy)} réveillés en route");
             C("plus rien à fermer : éléments grisés", OtherTabsToClose(keep).Count == 0 && TabsToRight(keep).Count == 0);
             await Shot("3_autres");
+            // onglet choisi épinglé, onglet affiché = un autre épinglé plus à droite : il n'est pas fermé, il reste affiché
+            var pin2 = Lazy("https://example.com/?pin2=1", "Épinglé 2"); pin2.Pinned = true;
+            tabs.Insert(1, pin2); strip.Invalidate();
+            SelectTab(1); await Task.Delay(300);
+            CloseTabsToRight(pin); await Settle();
+            C("« Fermer les onglets à droite » d'un épinglé : l'épinglé affiché à droite reste affiché", Cur == pin2 && tabs.Contains(pin2) && !tabs.Contains(keep),
+                $"affiché « {Cur.Title} » · {string.Join(" | ", tabs.Select(t => t.Title))}");
+            CloseTab(tabs.IndexOf(pin2)); await Settle();
+            closedTabs.Remove("https://example.com/?pin2=1");
 
             // ---------- 5. Ctrl+Maj+T à sa place ----------
             var a = Lazy("https://example.com/?place=a", "Place A"); var b = Lazy("https://example.com/?place=b", "Place B"); var c = Lazy("https://example.com/?place=c", "Place C");
@@ -546,6 +584,9 @@ partial class BrowserForm
             StripShot(name + "_4_remis");
 
             // ---------- 11. fenêtre détachée : Ctrl+T, Ctrl+W ----------
+            // une vieille fermeture de la même adresse, épinglée tout à gauche : elle ne doit pas servir pour celle-ci
+            string e1Url = "https://example.com/?drop=1";
+            closedTabs.Add(e1Url); RememberClosedPlace(e1Url, 0, true);
             DetachTab(tabs.IndexOf(e1), new Point(-3800, -3800)); await Task.Delay(2500);
             var w3 = detached.FirstOrDefault(z => z.Tab == e1);
             if (w3 != null)
@@ -562,6 +603,12 @@ partial class BrowserForm
                 if (tabs.Count == n + 1) { CloseTab(sel); await Settle(); }
                 await PcPageKey(e1.View, Keys.Control | Keys.W); await Task.Delay(900);
                 C("fenêtre détachée (page) : Ctrl+W la ferme (onglet rouvrable)", w3.IsDisposed && !detached.Contains(w3) && closedTabs.LastOrDefault()?.Contains("drop=1") == true, closedTabs.LastOrDefault() ?? "");
+                n = tabs.Count;
+                ReopenClosed(); await Task.Delay(500); await Settle();
+                var back1 = Cur;
+                C("Ctrl+Maj+T après fermeture de sa fenêtre : revient en onglet normal, à la fin (pas épinglé à gauche comme une vieille fermeture)",
+                    tabs.Count == n + 1 && Url(back1).Contains("drop=1") && !back1.Pinned && tabs.IndexOf(back1) == tabs.Count - 1, $"place {tabs.IndexOf(back1) + 1}/{tabs.Count}, épinglé {back1.Pinned}");
+                CloseTab(tabs.IndexOf(back1)); await Settle();
             }
             else C("onglet sorti pour le test du clavier", false);
 
@@ -583,6 +630,17 @@ partial class BrowserForm
             var home = WindowPlace.Fit(back, areas, Screen.PrimaryScreen.WorkingArea, mini);
             C("fenêtre enregistrée hors de tout écran : rouverte sur un écran", areas.Any(s => s.Contains(home)), $"{back} → {home}");
             C("fichier abîmé : ignoré", !WindowPlace.TryParse("12;abc;;", out _, out _) && !WindowPlace.TryParse("", out _, out _));
+            // au démarrage (RestoreWindowPlacement) : sur une fenêtre jamais affichée, donc jamais sur ton écran
+            using (var f0 = new Form())
+            {
+                bool ok0 = ApplyWindowPlacement(f0, WindowPlace.Format(new Rectangle(2100, 100, 1500, 900), false), new[] { p1, p2 }, p1);
+                C("démarrage : fenêtre normale remise à sa place, sur le 2e écran", ok0 && f0.Bounds == new Rectangle(2100, 100, 1500, 900) && f0.WindowState == FormWindowState.Normal && f0.StartPosition == FormStartPosition.Manual && !f0.Visible, $"{f0.Bounds} {f0.WindowState}");
+                ok0 = ApplyWindowPlacement(f0, WindowPlace.Format(new Rectangle(2100, 100, 1500, 900), true), new[] { p1 }, p1);
+                C("démarrage : fenêtre agrandie, 2e écran débranché : rouverte agrandie sur l'écran principal", ok0 && p1.Contains(f0.Bounds) && f0.WindowState == FormWindowState.Maximized && !f0.Visible, $"{f0.Bounds} {f0.WindowState}");
+                var keepB = f0.Bounds;
+                C("démarrage : fichier abîmé, la fenêtre n'est pas touchée", !ApplyWindowPlacement(f0, "12;abc;;", new[] { p1 }, p1) && f0.Bounds == keepB);
+                C("démarrage : la fenêtre de test n'a jamais été créée à l'écran", !f0.IsHandleCreated);
+            }
 
             // ---------- 9. fenêtre réduite rouverte comme avant ----------
             C("avant : « prevState » disait « agrandie » pour une fenêtre normale (elle se serait rouverte agrandie)", prevState == FormWindowState.Maximized && WindowState == FormWindowState.Normal, $"prevState {prevState}, fenêtre {WindowState}");
@@ -603,12 +661,18 @@ partial class BrowserForm
             }
 
             // ---------- 12. F11 : comment en sortir ----------
-            SelectTab(tabs.IndexOf(ex)); await Task.Delay(300);
+            // vrai chemin : F11 tapé dans la page → plein écran (bords retirés, taille de l'écran) → notification 300 ms après
+            await NewTab("https://example.com/?f11=1"); await Task.Delay(2500);
+            var f11 = Cur;
+            toolToast?.Hide();
             lastToolMessage = null;
-            ShowFullscreenHint(); await Task.Delay(400);
+            var beforeFull = Bounds;
+            await PcPageKey(f11.View, Keys.F11); await Task.Delay(900);
             var area = content.RectangleToScreen(content.ClientRectangle);
-            C("plein écran F11 : « Appuie sur F11 pour en sortir » s'affiche, dans la fenêtre", lastToolMessage == "Plein écran" && toolToast is { Visible: true } && area.Contains(toolToast.Bounds),
-                toolToast == null ? "pas de notification" : toolToast.Bounds.ToString());
+            C("F11 tapé dans la page : plein écran (barres cachées, taille de l'écran, hors de ton écran)", fullscreen && !toolbar.Visible && !strip.Visible && FormBorderStyle == FormBorderStyle.None && Size == Screen.PrimaryScreen.Bounds.Size && Right < 0,
+                $"plein écran {fullscreen}, {Bounds}");
+            C("plein écran F11 : « Appuie sur F11 pour en sortir » s'affiche après le changement de taille, dans la fenêtre", lastToolMessage == "Plein écran" && toolToast is { Visible: true } && area.Contains(toolToast.Bounds),
+                toolToast == null ? "pas de notification" : $"{toolToast.Visible} {toolToast.Bounds} dans {area}");
             await Shot("5_f11");
             try
             {
@@ -624,6 +688,18 @@ partial class BrowserForm
                 }
             }
             catch { }
+            await PcPageKey(f11.View, Keys.F11); await Task.Delay(600);
+            C("F11 à nouveau : plein écran quitté, fenêtre remise comme avant, notification partie", !fullscreen && toolbar.Visible && strip.Visible && FormBorderStyle == FormBorderStyle.Sizable && Bounds == beforeFull && toolToast is not { Visible: true },
+                $"plein écran {fullscreen}, {Bounds} (avant {beforeFull})");
+            // jamais sur Nur Live / le multistream : toute la fenêtre est aux lecteurs Twitch
+            await NewTab(MultiUrl); await Task.Delay(2500);
+            var multi = Cur;
+            C("onglet multistream ouvert (lecteurs Twitch)", KeepsPlaying(multi.View.CoreWebView2), Url(multi));
+            toolToast?.Hide();
+            SetFullscreen(true); await Task.Delay(900);
+            C("F11 sur le multistream : aucune notification par-dessus les lecteurs", fullscreen && toolToast is not { Visible: true }, toolToast == null ? "pas de notification" : $"visible {toolToast.Visible}");
+            SetFullscreen(false); await Task.Delay(400);
+            CloseTab(tabs.IndexOf(multi)); CloseTab(tabs.IndexOf(f11)); await Settle();
             C("la fenêtre de test n'a jamais été agrandie ni mise en plein écran sur ton écran", WindowState == FormWindowState.Normal && !fullscreen && Location.X < -3000);
         }
         catch (Exception e) { C("test interrompu", false, e.ToString()); }
