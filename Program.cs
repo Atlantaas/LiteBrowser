@@ -2151,7 +2151,7 @@ partial class BrowserForm : Form
     CoreWebView2Profile profile;
     bool extStarted, extBusy;
     ExtensionPopup extPopup;
-    bool updateReady, updateBusy;
+    bool updateReady, updateBusy, updateLoud;
     readonly System.Windows.Forms.Timer spin = new() { Interval = 40 };
     readonly Font iconFont, iconSmall;
     readonly string dataDir, favPath, histPath, settingsPath, homeDir;
@@ -2458,14 +2458,14 @@ partial class BrowserForm : Form
             return;
         }
         if (SmokeReport != null || AppPaths.Dev) return;
-        if (updateBusy) return;
-        updateBusy = true;
+        if (updateBusy) { updateLoud |= !silent; return; } // clic pendant la recherche automatique : sa réponse sera montrée
+        updateBusy = true; updateLoud = !silent;
         try
         {
             var found = await Updater.CheckAsync();
             if (found == null)
             {
-                if (!silent)
+                if (updateLoud)
                     MessageBox.Show(this, $"Tu as déjà la dernière version (v{Updater.Current}).", "Mises à jour",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
@@ -2479,11 +2479,11 @@ partial class BrowserForm : Form
         }
         catch (Exception ex)
         {
-            if (!silent)
+            if (updateLoud)
                 MessageBox.Show(this, "Impossible de vérifier les mises à jour.\n\n" + ex.Message, "Mises à jour",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-        finally { updateBusy = false; }
+        finally { updateBusy = updateLoud = false; }
     }
 
     IconButton Btn(string glyph, string tipText, Action a)
@@ -3355,7 +3355,7 @@ partial class BrowserForm : Form
     {
         var url = SettingsUrl + (section != null ? "#" + section : "");
         int i = tabs.FindIndex(x => IsSettings(x.View.CoreWebView2?.Source));
-        if (i >= 0) { SelectTab(i); tabs[i].View.CoreWebView2?.Navigate(url); }
+        if (i >= 0) { SelectTab(i); SettingsGo(tabs[i].View.CoreWebView2, url); }
         else _ = NewTab(url);
     }
 
@@ -3528,7 +3528,7 @@ partial class BrowserForm : Form
             case "resetDownloadDir":
                 downloadDir = null;
                 SaveSettings();
-                Notify("Téléchargements", "Le dossier par défaut de Windows sera utilisé au prochain démarrage.");
+                foreach (var p in Profiles()) try { p.DefaultDownloadFolderPath = WindowsDownloads(); } catch { } // tout de suite, sans redémarrer
                 break;
             case "openDownloads":
                 try { Process.Start("explorer.exe", "\"" + (downloadDir ?? MainCore()?.Profile.DefaultDownloadFolderPath ?? "") + "\""); } catch { }
@@ -6112,6 +6112,7 @@ partial class BrowserForm : Form
                     continue;
                 }
                 if (parts[1] == "pc-pages") { await PagesTest(parts[0]); continue; } // Features/PetitsSoucis_pages.cs
+                if (parts[1] == "pc-integrees") { await IntegreesTest(parts[0]); continue; }
                 if (parts[1] == "youtube")
                 {
                     var yr = new List<string>();

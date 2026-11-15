@@ -49,7 +49,7 @@ input::placeholder{color:var(--sub)}
 select{border:0;background:var(--card2);color:var(--text);border-radius:10px;padding:9px 12px;font-family:inherit;font-size:13px;cursor:pointer;outline:0}
 select option{background:var(--card);color:var(--text)}
 
-/* ---- Propositions de la recherche (comme la barre d'adresse) ---- */
+/* ---- Propositions de la recherche (comme la barre d’adresse) ---- */
 #f{position:relative}
 .osug{position:absolute;left:-1px;right:-1px;top:calc(100% + 6px);background:var(--card);border:1px solid var(--line);border-radius:14px;padding:6px;z-index:30;box-shadow:0 14px 36px rgba(0,0,0,.45)}
 .osug[hidden]{display:none}
@@ -143,7 +143,8 @@ select option{background:var(--card);color:var(--text)}
 .cs{color:var(--sub);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cs .lv{color:var(--live);font-weight:700}
 .ca{display:flex;gap:2px;flex:none;opacity:0;transition:opacity .12s}
-.ch:hover .ca{opacity:1}
+.ch:hover .ca,.ch:focus-within .ca{opacity:1}
+.ch:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .ca button{border:0;background:none;color:var(--sub);cursor:pointer;font-size:14px;padding:3px 5px;border-radius:6px}
 .ca button:hover{background:var(--card);color:var(--text)}
 .ca button.on{color:var(--text)}
@@ -243,7 +244,7 @@ kbd{font-family:inherit;background:var(--card);border:1px solid var(--line);bord
       <div class="settings" id="settings">
         <div class="row"><label><input type="checkbox" id="snotify"> Alerte Windows avant chaque match</label>
           <select id="sreminder" title="Combien de temps avant ?">
-            <option value="0">au coup d'envoi</option><option value="5">5 min avant</option><option value="15">15 min avant</option>
+            <option value="0">au coup d’envoi</option><option value="5">5 min avant</option><option value="15">15 min avant</option>
             <option value="30">30 min avant</option><option value="60">1 h avant</option></select></div>
         <div class="row" id="sgames"></div>
       </div>
@@ -294,7 +295,7 @@ function dayLabel(d) {
   const t = new Date(); t.setHours(0,0,0,0);
   const x = new Date(d); x.setHours(0,0,0,0);
   const diff = Math.round((x - t) / 86400000);
-  if (diff === 0) return "aujourd'hui";
+  if (diff === 0) return "aujourd’hui";
   if (diff === 1) return 'demain';
   return d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
 }
@@ -308,6 +309,34 @@ function until(ms) {
   return 'dans ' + d + ' jour' + (d > 1 ? 's' : '');
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Met à jour un bloc sans le réécrire : seuls les textes et attributs qui changent sont touchés (compte à rebours,
+// spectateurs…), les éléments restent les mêmes. Le focus clavier et le survol ne sautent plus à chaque minute.
+// Les lignes portant data-key (match, chaîne) suivent leur contenu même si l'ordre change.
+function setHtml(el, html) {
+  if (el.__html === html) return;
+  el.__html = html;
+  const t = document.createElement('template'); t.innerHTML = html;
+  const act = document.activeElement;
+  morphKids(el, t.content);
+  if (act && act !== document.activeElement && act.isConnected && el.contains(act)) act.focus({ preventScroll: true });
+}
+function morphKids(a, b) {
+  const keyed = new Map(), used = new Set(), news = Array.from(b.childNodes);
+  for (const n of a.childNodes) if (n.nodeType === 1 && n.dataset.key) keyed.set(n.dataset.key, n);
+  news.forEach((nb, i) => {
+    const cur = a.childNodes[i] || null, key = nb.nodeType === 1 ? nb.dataset.key : '';
+    let m = key ? keyed.get(key) : cur;
+    if (m && (used.has(m) || m.nodeType !== nb.nodeType || m.nodeName !== nb.nodeName || (!key && m.nodeType === 1 && m.dataset.key))) m = null;
+    if (!m) { a.insertBefore(nb, cur); used.add(nb); return; }
+    used.add(m);
+    if (m !== cur) a.insertBefore(m, cur);
+    if (m.nodeType !== 1) { if (m.nodeValue !== nb.nodeValue) m.nodeValue = nb.nodeValue; return; }
+    for (const at of Array.from(m.attributes)) if (!nb.hasAttribute(at.name)) m.removeAttribute(at.name);
+    for (const at of Array.from(nb.attributes)) if (m.getAttribute(at.name) !== at.value) m.setAttribute(at.name, at.value);
+    morphKids(m, nb);
+  });
+  while (a.childNodes.length > news.length) a.lastChild.remove();
+}
 
 // ---------- Horloge ----------
 function tick() {
@@ -385,33 +414,33 @@ function renderMatches() {
   $('mstatus').textContent = m8.loading ? 'Mise à jour…' : (m8.updated ? 'Mis à jour à ' + hm(new Date(m8.updated)) + (m8.source === 'Nur Live' ? ' (Nur Live)' : '') : '');
   // réglages
   $('snotify').checked = !!m8.notify;
-  $('sreminder').value = String(m8.reminder ?? 15);
-  $('sgames').innerHTML = (m8.games || []).map(g => `<button class="gchip ${g.on ? 'on' : ''}" data-game="${esc(g.id)}">${esc(g.label)}</button>`).join('');
+  if (document.activeElement !== $('sreminder')) $('sreminder').value = String(m8.reminder ?? 15);
+  setHtml($('sgames'), (m8.games || []).map(g => `<button class="gchip ${g.on ? 'on' : ''}" data-game="${esc(g.id)}">${esc(g.label)}</button>`).join(''));
   // tournois annoncés
   const tours = m8.tournaments || [];
-  $('tours').innerHTML = tours.length ? 'À venir : ' + tours.map(t => `<a href="${esc(t.url)}">${esc(t.name)}</a> <span>(${esc(t.game)}, ${esc(t.when)})</span>`).join(' · ') : '';
+  setHtml($('tours'), tours.length ? 'À venir : ' + tours.map(t => `<a href="${esc(t.url)}">${esc(t.name)}</a> <span>(${esc(t.game)}, ${esc(t.when)})</span>`).join(' · ') : '');
   if (!list.length) {
-    box.innerHTML = m8.loading && !m8.updated
+    setHtml(box, m8.loading && !m8.updated
       ? '<div class="skel"></div><div class="skel"></div><div class="skel"></div>'
-      : '<div class="empty">Aucun match de Gentle Mates programmé pour le moment.<br>Les nouveaux matchs apparaîtront ici, avec une alerte avant le coup d\'envoi.</div>';
+      : '<div class="empty">Aucun match de Gentle Mates programmé pour le moment.<br>Les nouveaux matchs apparaîtront ici, avec une alerte avant le coup d’envoi.</div>');
     return;
   }
   const now = Date.now();
-  box.innerHTML = list.slice(0, 8).map(x => {
+  setHtml(box, list.slice(0, 8).map(x => {
     const d = new Date(x.ts * 1000);
     const live = !x.timeUnknown && (x.status === 'live' || d.getTime() <= now);
-    return `<a class="match" href="${esc(x.url || '#')}" title="Voir sur Liquipedia">
+    return `<a class="match" data-key="${esc(x.id)}" href="${esc(x.url || '#')}" title="Voir sur Liquipedia">
       <div class="m-when"><div class="d">${esc(dayLabel(d))}</div><div class="t">${x.timeUnknown ? '<span class="tbd">horaire à venir</span>' : hm(d)}</div></div>
       <div class="m-vs"><span class="team gm">M8</span><span class="v">VS</span><span class="team opp" title="${esc(x.opp)}">${esc(x.oppShort || x.opp)}</span></div>
-      <div class="cd">${live ? '<span class="live">EN DIRECT</span>' : x.timeUnknown ? 'alerte dès que l\'heure est connue' : until(d - now)}
+      <div class="cd">${live ? '<span class="live">EN DIRECT</span>' : x.timeUnknown ? 'alerte dès que l’heure est connue' : until(d - now)}
         <div class="m-act">
-          ${x.timeUnknown ? '' : `<button class="btn icon ${x.muted ? 'off' : ''}" data-mute="${esc(x.id)}" title="${x.muted ? 'Réactiver l\'alerte de ce match' : 'Couper l\'alerte de ce match'}">${x.muted ? '🔕' : '🔔'}</button>`}
+          ${x.timeUnknown ? '' : `<button class="btn icon ${x.muted ? 'off' : ''}" data-mute="${esc(x.id)}" title="${x.muted ? 'Réactiver l’alerte de ce match' : 'Couper l’alerte de ce match'}">${x.muted ? '🔕' : '🔔'}</button>`}
           <button class="btn main" data-watch="${esc(x.id)}" title="Ouvre la co-diffusion M8 en live, sinon la diffusion officielle">Regarder</button>
         </div></div>
       <div class="m-meta"><span class="game g-${esc(x.game)}" title="${esc(x.gameLabel)}">${esc(x.gameShort)}</span>
         <span class="tn">${esc(x.tournament || x.gameLabel)}${x.stage ? ' · ' + esc(x.stage) : ''}${x.score ? ' · ' + esc(x.score) : ''}</span></div>
     </a>`;
-  }).join('');
+  }).join(''));
 }
 $('matches').addEventListener('click', e => {
   const w = e.target.closest('[data-watch]'), m = e.target.closest('[data-mute]');
@@ -419,6 +448,13 @@ $('matches').addEventListener('click', e => {
   else if (m) { e.preventDefault(); post({ type: 'muteMatch', id: m.dataset.mute }); }
 });
 $('mset').addEventListener('click', () => $('settings').classList.toggle('open'));
+// le panneau ⚙ se referme avec Échap ou un clic à côté, comme un menu
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('settings').classList.contains('open')) { $('settings').classList.remove('open'); $('mset').focus(); }
+});
+document.addEventListener('mousedown', e => {
+  if ($('settings').classList.contains('open') && !e.target.closest('#settings, #mset')) $('settings').classList.remove('open');
+});
 $('snotify').addEventListener('change', () => post({ type: 'm8Settings', notify: $('snotify').checked }));
 $('sreminder').addEventListener('change', () => post({ type: 'm8Settings', reminder: +$('sreminder').value }));
 $('sgames').addEventListener('click', e => { const g = e.target.closest('[data-game]'); if (g) post({ type: 'm8Settings', toggleGame: g.dataset.game }); });
@@ -434,12 +470,12 @@ function renderLives() {
   $('lvfilter').classList.toggle('main', liveOnly);
   $('lvall').disabled = !nLive;
   $('lvall').classList.toggle('off', !nLive);
-  $('chs').innerHTML = list.length ? list.map(c => {
+  setHtml($('chs'), list.length ? list.map(c => {
     const initial = esc(String(c.name || c.key).charAt(0).toUpperCase());
     const status = c.live === true
       ? `<span class="lv">● ${c.viewers ? c.viewers.toLocaleString('fr-FR') : 'EN LIVE'}</span>${c.game ? ' · ' + esc(c.game) : ''}`
       : c.live === false ? 'Hors ligne' : (c.platform === 'youtube' ? 'YouTube' : 'Statut inconnu');
-    return `<div class="ch ${c.live === true ? 'live' : c.live === false ? 'off' : ''}" data-id="${esc(c.id)}" title="${esc(c.title || '')}">
+    return `<div class="ch ${c.live === true ? 'live' : c.live === false ? 'off' : ''}" data-key="${esc(c.id)}" data-id="${esc(c.id)}" title="${esc(c.title || '')}" tabindex="0" role="button" aria-label="Regarder ${esc(c.name || c.label)}">
       <div class="av">${c.avatar ? `<img src="${esc(c.avatar)}" alt="" onerror="this.parentNode.textContent='${initial}'">` : initial}</div>
       <div class="ci"><div class="cn">${esc(c.name || c.label)}${c.fav ? ' ★' : ''}</div><div class="cs">${status}</div>
         ${c.live === true && c.title ? `<div class="cs">${esc(c.title)}</div>` : ''}</div>
@@ -448,8 +484,12 @@ function renderLives() {
         <button class="${c.notify ? 'on' : ''}" data-act="toggleNotify" title="${c.notify ? 'Ne plus prévenir' : 'Me prévenir quand il lance son live'}">${c.notify ? '🔔' : '🔕'}</button>
         <button data-act="removeChannel" title="Retirer">✕</button>
       </div></div>`;
-  }).join('') : `<div class="empty">${liveOnly ? 'Personne n\'est en live parmi tes chaînes.' : 'Ajoute tes chaînes (nom Twitch, ou lien Twitch / Kick / YouTube).'}</div>`;
+  }).join('') : `<div class="empty">${liveOnly ? 'Personne n’est en live parmi tes chaînes.' : 'Ajoute tes chaînes (nom Twitch, ou lien Twitch / Kick / YouTube).'}</div>`);
 }
+// Entrée ou Espace sur une chaîne (au clavier) : comme un clic
+$('chs').addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('ch')) { e.preventDefault(); e.target.click(); }
+});
 $('chs').addEventListener('click', e => {
   const card = e.target.closest('.ch'); if (!card) return;
   const act = e.target.closest('[data-act]');
@@ -482,6 +522,7 @@ function pickSugg(key) {
 }
 $('lvin').addEventListener('input', () => {
   clearTimeout(suggTimer);
+  $('lverr').textContent = ''; // l'erreur précédente ne reste pas affichée pendant qu'on retape
   const q = $('lvin').value.trim();
   if (q.length < 2 || /[\s,;:/.]/.test(q)) { hideSugg(); return; }
   suggTimer = setTimeout(() => post({ type: 'searchChannels', q }), 280);
@@ -518,7 +559,7 @@ function renderPrayers() {
   const p = state.prayers, box = $('prayers');
   if (!p || !p.times || !p.times.length) {
     $('city').textContent = p && p.city ? p.city : 'Choisir ma ville';
-    box.innerHTML = '<div class="empty">' + (p && p.error ? esc(p.error) : 'Recherche de ta position…') + '</div>';
+    setHtml(box, '<div class="empty">' + (p && p.error ? esc(p.error) : 'Recherche de ta position…') + '</div>');
     return;
   }
   $('city').textContent = (p.city || 'Ma ville') + ' ▾';
@@ -528,23 +569,23 @@ function renderPrayers() {
   let next = five.find(t => t.d > now);
   let nextAt = next ? next.d : null;
   if (!next) { next = five[0]; nextAt = new Date(next.d.getTime() + 86400000); }
-  // progression depuis la prière précédente (Isha d'hier si on est avant Fajr)
+  // progression depuis la prière précédente (Isha d’hier si on est avant Fajr)
   const prev = [...five].reverse().find(t => t.d <= now);
   const prevAt = prev ? prev.d : new Date(five[five.length - 1].d.getTime() - 86400000);
   const pct = Math.max(2, Math.min(100, Math.round((now - prevAt) / (nextAt - prevAt) * 100)));
   const soon = nextAt - now < 15 * 60000;
-  const remind = [p.notify ? 'Notification à l\'heure' : '', p.reminder ? 'rappel ' + p.reminder + ' min avant' : ''].filter(Boolean).join(' · ') || 'Alertes coupées';
+  const remind = [p.notify ? 'Notification à l’heure' : '', p.reminder ? 'rappel ' + p.reminder + ' min avant' : ''].filter(Boolean).join(' · ') || 'Alertes coupées';
   const tomorrow = nextAt.getDate() !== now.getDate();
-  box.innerHTML = `
+  setHtml(box, `
     <div class="next ${soon ? 'soon' : ''}"><div class="l">Prochaine prière${tomorrow ? ' · demain' : ''}</div>
       <div class="n"><span class="name">${esc(next.name)}</span><span class="time">${hm(nextAt)}</span></div>
       <div class="in"><b>${until(nextAt - now)}</b><span>${prev ? 'depuis ' + esc(prev.name) : ''}</span></div>
       <div class="bar"><i style="width:${pct}%"></i></div></div>
     ${times.map(t => `<div class="prow ${t.key === 'Sunrise' ? 'minor' : ''} ${t.key === next.key && !tomorrow ? 'is-next' : (t.d < now ? 'past' : '')}">
         <span>${esc(t.name)}</span><span class="tm">${esc(t.time)}</span></div>`).join('')}
-    ${p.jumua ? `<div class="prow minor"><span>Jumu'a (vendredi)</span><span class="tm">${esc(p.jumua)}</span></div>` : ''}
+    ${p.jumua ? `<div class="prow minor"><span>Jumu’a (vendredi)</span><span class="tm">${esc(p.jumua)}</span></div>` : ''}
     <div class="pfoot"><div class="credit">${esc(p.methodName || '')}</div>
-      <button class="link" data-open="prieres" title="Notifications et rappels des prières">${esc(remind)}</button></div>`;
+      <button class="link" data-open="prieres" title="Notifications et rappels des prières">${esc(remind)}</button></div>`);
 }
 
 // ---------- Raccourcis ----------
@@ -589,7 +630,9 @@ function render(d) {
   if (first) $('q').focus();
 }
 
-tick(); setInterval(tick, 15000);
+// horloge recalée sur chaque changement de minute (avant : jusqu'à 15 s de retard), et à jour dès qu'on revient sur l'onglet
+(function minute() { tick(); setTimeout(minute, 60000 - Date.now() % 60000 + 30); })();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 if (window.chrome && chrome.webview) {
   chrome.webview.addEventListener('message', e => render(e.data));
   post({ type: 'ready' });
