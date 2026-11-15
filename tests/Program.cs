@@ -630,6 +630,9 @@ static class Program
         Check("fermeture Échap et clic extérieur", js.Contains("Escape") && js.Contains("onDocPointerDown") && js.Contains("mobilic-prefill-backdrop"));
         Check("Enregistrer et pré-remplir", js.Contains("Enregistrer et pré-remplir"));
         Check("le panneau ne recouvre pas Pré-remplir", js.Contains("right: 148px"));
+        Check("clic d'un jour d'historique enregistré", js.Contains("onHistoryDayClick") && js.Contains("addEventListener(\"click\", onHistoryDayClick, true)"));
+        Check("toast Date enregistrée", js.Contains("Date enregistrée :"));
+        Check("limites Mobilic J-30", js.Contains("isMobilicDateAllowed") && js.Contains("J-30"));
     }
     static string FindNode()
     {

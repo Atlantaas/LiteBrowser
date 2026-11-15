@@ -742,6 +742,61 @@
     };
   }
 
+
+  var SHORT_MONTHS_FR = ["jan", "fev", "mar", "avr", "mai", "juin", "juil", "aou", "sep", "oct", "nov", "dec"];
+  var DAY_TILE_RE = /^(\d{1,2})\s+(jan|fev|mar|avr|mai|juin|juil|aou|sep|oct|nov|dec)\s+(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)$/;
+
+  function foldText(s) {
+    return String(s || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function parseHistoryDayTile(text) {
+    var m = foldText(text).match(DAY_TILE_RE);
+    if (!m) return null;
+    var day = +m[1];
+    var month = SHORT_MONTHS_FR.indexOf(m[2]);
+    if (day < 1 || day > 31 || month < 0) return null;
+    return { day: day, month: month, weekday: m[3] };
+  }
+
+  function inferHistoryYear(month, now) {
+    now = now || new Date();
+    var year = now.getFullYear();
+    if (month > now.getMonth()) return year - 1;
+    return year;
+  }
+
+  function historyDateFromParts(parts, now) {
+    if (!parts) return null;
+    now = now || new Date();
+    var year = inferHistoryYear(parts.month, now);
+    var d = new Date(year, parts.month, parts.day);
+    if (d.getFullYear() !== year || d.getMonth() !== parts.month || d.getDate() !== parts.day) return null;
+    return d;
+  }
+
+  function startOfLocalDay(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function isMobilicDateAllowed(date, now) {
+    now = now || new Date();
+    if (!date || isNaN(date.getTime())) return false;
+    var today = startOfLocalDay(now);
+    var min = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30);
+    var d = startOfLocalDay(date);
+    return d >= min && d <= today;
+  }
+
+  function isoLocalDate(date) {
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+  }
+
   var api = {
     DEFAULTS: DEFAULTS,
     fill: fill,
@@ -751,6 +806,11 @@
     resolveDate: resolveDate,
     waitForForm: waitForForm,
     formLooksPresent: formLooksPresent,
+    parseHistoryDayTile: parseHistoryDayTile,
+    inferHistoryYear: inferHistoryYear,
+    historyDateFromParts: historyDateFromParts,
+    isMobilicDateAllowed: isMobilicDateAllowed,
+    isoLocalDate: isoLocalDate,
   };
 
   root.MobilicPrefill = api;
@@ -994,6 +1054,74 @@
     document.addEventListener("pointerdown", onDocPointerDown, true);
   }
 
+
+  function showInfoToast(message, kind) {
+    var old = document.getElementById(TOAST_ID);
+    if (old) old.remove();
+    var el = document.createElement("div");
+    el.id = TOAST_ID;
+    el.setAttribute("role", "status");
+    el.className = "mobilic-prefill-toast" + (kind === "warn" ? " is-partial" : " is-ok");
+    el.textContent = message;
+    document.documentElement.appendChild(el);
+    setTimeout(function () { el.classList.add("is-out"); setTimeout(function () { el.remove(); }, 400); }, 8000);
+  }
+
+  function isOurUiEvent(el) {
+    if (!el || !el.closest) return false;
+    return !!(
+      el.closest("#" + PANEL_ID) ||
+      el.closest("#" + BTN_ID) ||
+      el.closest("#" + GEAR_ID) ||
+      el.closest("#" + TOAST_ID) ||
+      el.closest("#" + BACKDROP_ID)
+    );
+  }
+
+  function isJourTabSelected() {
+    var selected = document.querySelector('[role="tab"][aria-selected="true"]');
+    if (!selected) return true;
+    return /^\s*jour\s*$/i.test((selected.textContent || "").replace(/\s+/g, " ").trim());
+  }
+
+  function closestHistoryDayTile(start) {
+    var el = start && start.nodeType === 3 ? start.parentElement : start;
+    var hops = 0;
+    while (el && el !== document && el !== document.documentElement && hops < 20) {
+      if (isOurUiEvent(el)) return null;
+      var text = el.innerText || el.textContent || "";
+      if (window.MobilicPrefill.parseHistoryDayTile(text)) return el;
+      el = el.parentElement;
+      hops++;
+    }
+    return null;
+  }
+
+  function onHistoryDayClick(e) {
+    if (!e || isOurUiEvent(e.target)) return;
+    if (!isJourTabSelected()) return;
+    var tile = closestHistoryDayTile(e.target);
+    if (!tile) return;
+    var parts = window.MobilicPrefill.parseHistoryDayTile(tile.innerText || tile.textContent || "");
+    if (!parts) return;
+    var date = window.MobilicPrefill.historyDateFromParts(parts, new Date());
+    if (!date) return;
+    var fmt = window.MobilicPrefill.formatFr(date);
+    if (!window.MobilicPrefill.isMobilicDateAllowed(date, new Date())) {
+      showInfoToast("Date " + fmt + " hors limites Mobilic (J-30 à aujourd'hui). Non enregistrée.", "warn");
+      return;
+    }
+    var iso = window.MobilicPrefill.isoLocalDate(date);
+    var isToday = iso === todayISO();
+    var s = loadSettings();
+    s.useToday = isToday;
+    s.missionDate = isToday ? "" : iso;
+    saveSettings(s);
+    var dateEl = document.getElementById("mp-date");
+    if (dateEl) dateEl.value = iso;
+    showInfoToast("Date enregistrée : " + fmt);
+  }
+
   function ensureUi() {
     injectCss();
     var root = document.body || document.documentElement;
@@ -1035,6 +1163,7 @@
 
   function boot() {
     ensureUi();
+    document.addEventListener("click", onHistoryDayClick, true);
     var obs = new MutationObserver(function () {
       if (!document.getElementById(BTN_ID) || !document.getElementById(STYLE_ID)) ensureUi();
     });
