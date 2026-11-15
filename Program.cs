@@ -816,6 +816,8 @@ class BrowserTab
     /// Page bloquée en cours de réparation ; heure de début de la navigation en cours (chien de garde).
     public bool Healing;
     public DateTime NavStartedAt;
+    /// Fenêtre à part quand l'onglet a été sorti de la barre (null = dans la fenêtre principale).
+    public DetachedWindow Window;
     /// Barre de chargement sous la barre d'adresse (0 à 1), qui s'efface en fondu une fois la page prête.
     public float Progress, ProgressTarget, ProgressAlpha;
     /// Adresse de la première navigation, réessayée une fois si elle est coupée net.
@@ -835,6 +837,12 @@ class TabStrip : Control
     public event Action NewTabRequested, PrivateTabRequested;
     /// Onglet survolé (-1 = aucun) : la fenêtre affiche une carte d'aperçu après un court instant.
     public event Action<int> HoverTab;
+    /// Onglet glissé à une autre place ; onglet tiré hors de la barre (point écran où le lâcher).
+    public event Action<int, int> TabMove;
+    public event Action<int, Point> TabTearOff;
+    int dragIndex = -1;
+    Point dragStart;
+    bool dragging;
     public Rectangle TabBounds(int i) => TabRect(i);
 
     readonly Font icons;
@@ -1031,6 +1039,31 @@ class TabStrip : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (dragIndex >= 0 && (MouseButtons & MouseButtons.Left) != 0 && dragIndex < Tabs.Count)
+        {
+            if (!dragging && Math.Abs(e.X - dragStart.X) + Math.Abs(e.Y - dragStart.Y) > LogicalToDeviceUnits(6)) dragging = true;
+            if (!dragging) return;
+            // tiré hors de la barre (vers le haut ou vers la page) : l'onglet part dans sa propre fenêtre
+            if (e.Y < -LogicalToDeviceUnits(28) || e.Y > Height + LogicalToDeviceUnits(36))
+            {
+                int k = dragIndex;
+                dragIndex = -1; dragging = false;
+                Capture = false;
+                Cursor = Cursors.Default;
+                TabTearOff?.Invoke(k, PointToScreen(e.Location));
+                return;
+            }
+            Cursor = Cursors.SizeWE;
+            // glissé de côté : il prend la place de l'onglet survolé (les épinglés restent entre eux)
+            int over = -1;
+            for (int i = 0; i < Tabs.Count; i++) { var tr = TabRect(i); if (e.X >= tr.Left && e.X < tr.Right) { over = i; break; } }
+            if (over >= 0 && over != dragIndex && Tabs[over].Pinned == Tabs[dragIndex].Pinned)
+            {
+                TabMove?.Invoke(dragIndex, over);
+                dragIndex = over;
+            }
+            return;
+        }
         int h = Hit(e.Location);
         bool hc = h >= 0 && !Tabs[h].Pinned && CloseRect(TabRect(h)).Contains(e.Location);
         bool hp = PlusRect().Contains(e.Location);
@@ -1071,10 +1104,18 @@ class TabStrip : Control
         if (PlusRect().Contains(e.Location)) { NewTabRequested?.Invoke(); return; }
         if (h < 0) return;
         var r = TabRect(h);
+        dragIndex = h; dragStart = e.Location; dragging = false;
         if (Tabs[h].Pinned) TabSelect?.Invoke(h);
         else if (CloseRect(r).Contains(e.Location)) TabClose?.Invoke(h);
         else if (HasAudio(Tabs[h]) && AudioRect(h, r).Contains(e.Location)) TabMute?.Invoke(h);
         else TabSelect?.Invoke(h);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (dragging) Cursor = Cursors.Default;
+        dragIndex = -1; dragging = false;
     }
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)
@@ -1506,6 +1547,129 @@ sealed class LensOverlay : Form
     protected override void OnFormClosed(FormClosedEventArgs e) { base.OnFormClosed(e); shot.Dispose(); }
 }
 
+/// Un onglet sorti de la barre : sa propre fenêtre (autre écran…), avec précédent / suivant / actualiser,
+/// sa barre d'adresse et « Remettre dans LiteBrowser ». Les liens qu'il ouvre arrivent dans la fenêtre principale.
+sealed class DetachedWindow : Form
+{
+    public readonly BrowserTab Tab;
+    public event Action<DetachedWindow> Reattach;
+    readonly Panel bar = new() { Dock = DockStyle.Top };
+    readonly TextBox address = new() { BorderStyle = BorderStyle.None };
+    readonly IconButton back, fwd, reload;
+    readonly PillButton attach;
+    readonly Theme theme;
+    readonly Func<string, string> resolve;
+    bool fullscreen, editing;
+    FormWindowState prevState;
+    public bool Reattaching;
+
+    public DetachedWindow(BrowserTab tab, Theme theme, Font iconFont, Font textFont, Func<string, string> resolve, Icon icon)
+    {
+        Tab = tab; this.theme = theme; this.resolve = resolve;
+        Text = tab.Title + " – LiteBrowser";
+        if (icon != null) Icon = icon;
+        BackColor = theme.Bar;
+        StartPosition = FormStartPosition.Manual;
+        KeyPreview = true;
+        back = new IconButton(Glyphs.Back, iconFont) { Theme = theme };
+        fwd = new IconButton(Glyphs.Forward, iconFont) { Theme = theme };
+        reload = new IconButton(Glyphs.Refresh, iconFont) { Theme = theme };
+        attach = new PillButton("Remettre dans LiteBrowser", new Font(textFont.FontFamily, 9f)) { Subtle = true, Theme = theme };
+        address.Font = textFont; address.BackColor = theme.Field; address.ForeColor = theme.Text;
+        bar.BackColor = theme.Bar;
+        bar.Height = LogicalToDeviceUnits(44);
+        bar.Controls.AddRange(new Control[] { back, fwd, reload, address, attach });
+        bar.Resize += (_, _) => LayoutBar();
+        bar.Paint += (_, e) => { using var pen = new Pen(theme.FieldBorder); e.Graphics.DrawLine(pen, 0, bar.Height - 1, bar.Width, bar.Height - 1); };
+        back.Click += (_, _) => Core?.GoBack();
+        fwd.Click += (_, _) => Core?.GoForward();
+        reload.Click += (_, _) => Core?.Reload();
+        attach.Click += (_, _) => Reattach?.Invoke(this);
+        address.Enter += (_, _) => { editing = true; address.Text = Core?.Source ?? ""; BeginInvoke(new Action(address.SelectAll)); };
+        address.Leave += (_, _) => { editing = false; Refresh2(); };
+        address.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; var u = resolve(address.Text); if (u != null) Core?.Navigate(u); editing = false; Tab.View.Focus(); }
+            else if (e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; editing = false; Refresh2(); Tab.View.Focus(); }
+        };
+        Controls.Add(tab.View);
+        Controls.Add(bar);
+        tab.View.Dock = DockStyle.Fill;
+        tab.View.Visible = true;
+        var core = Core;
+        if (core != null)
+        {
+            core.SourceChanged += OnChanged;
+            core.HistoryChanged += OnChanged;
+            core.DocumentTitleChanged += OnChanged;
+        }
+        LayoutBar();
+        Refresh2();
+    }
+
+    CoreWebView2 Core => Tab.View.CoreWebView2;
+    int Sc(int v) => LogicalToDeviceUnits(v);
+    void OnChanged(object _, object __) { if (!IsDisposed) BeginInvoke(new Action(Refresh2)); }
+
+    void LayoutBar()
+    {
+        int h = bar.Height, b = Sc(34), y = (h - b) / 2;
+        back.SetBounds(Sc(6), y, b, b);
+        fwd.SetBounds(back.Right + Sc(2), y, b, b);
+        reload.SetBounds(fwd.Right + Sc(2), y, b, b);
+        int aw = TextRenderer.MeasureText(attach.Text, attach.Font).Width + Sc(28);
+        attach.SetBounds(bar.Width - aw - Sc(8), y, aw, b);
+        int ah = address.PreferredHeight;
+        address.SetBounds(reload.Right + Sc(12), (h - ah) / 2, Math.Max(40, attach.Left - reload.Right - Sc(24)), ah);
+    }
+
+    public void Refresh2()
+    {
+        var c = Core;
+        Text = Tab.Title + " – LiteBrowser";
+        back.Enabled = c?.CanGoBack == true;
+        fwd.Enabled = c?.CanGoForward == true;
+        if (!editing) address.Text = Omni.Display(c?.Source ?? "");
+    }
+
+    /// Vidéo en plein écran : elle prend tout l'écran de CETTE fenêtre, pas celui de la fenêtre principale.
+    public void SetFullscreen(bool on)
+    {
+        if (on == fullscreen) return;
+        fullscreen = on;
+        bar.Visible = !on;
+        if (on) { prevState = WindowState; FormBorderStyle = FormBorderStyle.None; WindowState = FormWindowState.Normal; WindowState = FormWindowState.Maximized; }
+        else { FormBorderStyle = FormBorderStyle.Sizable; WindowState = prevState; }
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys k)
+    {
+        switch (k)
+        {
+            case Keys.Control | Keys.W: Close(); return true;
+            case Keys.F5: Core?.Reload(); return true;
+            case Keys.Alt | Keys.Left: Core?.GoBack(); return true;
+            case Keys.Alt | Keys.Right: Core?.GoForward(); return true;
+            case Keys.Control | Keys.L: case Keys.F6: address.Focus(); address.SelectAll(); return true;
+            case Keys.Escape when fullscreen: Core?.ExecuteScriptAsync("document.exitFullscreen && document.exitFullscreen()"); return true;
+        }
+        return base.ProcessCmdKey(ref msg, k);
+    }
+
+    /// Rend le lecteur de la page (pour le remettre dans la fenêtre principale).
+    public void Release()
+    {
+        var core = Core;
+        if (core != null)
+        {
+            core.SourceChanged -= OnChanged;
+            core.HistoryChanged -= OnChanged;
+            core.DocumentTitleChanged -= OnChanged;
+        }
+        Controls.Remove(Tab.View);
+    }
+}
+
 /// Carte d'aperçu d'un onglet : titre complet, site, état (veille, mémoire libérée, son…). Ne prend jamais le focus.
 sealed class TabCard : Form
 {
@@ -1740,6 +1904,7 @@ class BrowserForm : Form
     const string UnforceDarkJs = "var s=document.getElementById('lb-dark');if(s)s.remove();";
 
     readonly List<BrowserTab> tabs = new();
+    readonly List<DetachedWindow> detached = new();
     readonly List<(string Title, string Url)> favorites = new();
     readonly List<(string Title, string Url)> history = new();
     readonly List<string> closedTabs = new();
@@ -1866,6 +2031,8 @@ class BrowserForm : Form
         strip.TabMute += i => ToggleMute(i);
         strip.TabMenu += (i, pt) => ShowTabMenu(i, pt);
         strip.HoverTab += TabHover;
+        strip.TabMove += MoveTab;
+        strip.TabTearOff += (i, pt) => DetachTab(i, pt);
         tabCardTimer.Tick += (_, _) => { tabCardTimer.Stop(); if (tabCardFor >= 0) ShowTabCard(tabCardFor); };
 
         favBar = new FavBar(iconSmall) { Dock = DockStyle.Top, Height = S(32), Font = new Font("Segoe UI", 9f) };
@@ -1988,6 +2155,7 @@ class BrowserForm : Form
             if (closingDone) return;
             SaveSession();
             SaveSettings();
+            foreach (var w in detached.ToList()) { w.Reattaching = true; try { w.Close(); } catch { } }
             if (!clearOnExit || SmokeReport != null) return;
             // « Tout effacer en quittant » : cookies, cache et historique, avant la vraie fermeture
             e.Cancel = true;
@@ -2187,12 +2355,36 @@ class BrowserForm : Form
 
     // ---------- Session : rouvrir les onglets de la dernière fois ----------
 
+    System.Windows.Forms.Timer sessionTimer;
+
+    /// La session est enregistrée 1,5 s après chaque changement (onglet ouvert, fermé, page changée…) :
+    /// avant, elle ne l'était qu'à la fermeture, et un arrêt brutal ou la fermeture du dernier onglet faisait revenir
+    /// les onglets déjà fermés.
+    void SaveSessionSoon()
+    {
+        if (SmokeReport != null || ShotsDir != null || closingDone) return;
+        if (sessionTimer == null)
+        {
+            sessionTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            sessionTimer.Tick += (_, _) => { sessionTimer.Stop(); SaveSession(); };
+        }
+        sessionTimer.Stop();
+        sessionTimer.Start();
+    }
+
     void SaveSession()
     {
-        if (SmokeReport != null || ShotsDir != null || tabs.Count == 0) return;
+        if (SmokeReport != null || ShotsDir != null) return;
+        sessionTimer?.Stop();
+        if (tabs.Count == 0 && detached.Count == 0)
+        {
+            // dernier onglet fermé : la prochaine fois, LiteBrowser s'ouvre sur l'accueil, pas sur les anciens onglets
+            try { File.Delete(sessionPath); } catch { }
+            return;
+        }
         try
         {
-            var keep = tabs.Where(t => !t.Private).ToList();
+            var keep = tabs.Concat(detached.Select(w => w.Tab)).Where(t => !t.Private).ToList();
             var list = keep.Select(t =>
             {
                 var src = t.View.CoreWebView2?.Source ?? t.PendingUrl ?? "";
@@ -2203,7 +2395,7 @@ class BrowserForm : Form
                 var url = !Web(src) ? "" : IsNurLivePage(src) ? NurLive.Url : IsLocalPage(src) ? "" : src;
                 return new SessionTab(url, t.Title, t.Pinned);
             });
-            int s = Cur != null && !Cur.Private ? keep.IndexOf(Cur) : 0;
+            int s = Cur != null && !Cur.Private ? Math.Max(0, keep.IndexOf(Cur)) : 0;
             File.WriteAllText(sessionPath, Session.Serialize(list, Math.Max(0, s)));
         }
         catch { }
@@ -2437,6 +2629,7 @@ class BrowserForm : Form
             }
             else if (e.IsSuccess) t.RetryUrl = null;
             if (e.IsSuccess && (core.Source.StartsWith("http://") || core.Source.StartsWith("https://"))) t.LastUrl = core.Source;
+            SaveSessionSoon();
             t.Loading = false;
             t.ProgressTarget = 1;
             strip.Invalidate();
@@ -2516,6 +2709,7 @@ class BrowserForm : Form
         core.IsMutedChanged += (_, _) => { t.Muted = core.IsMuted; strip.Invalidate(); };
         core.ContainsFullScreenElementChanged += (_, _) =>
         {
+            if (t.Window != null) { t.Window.SetFullscreen(core.ContainsFullScreenElement); return; }
             pageFullscreen = core.ContainsFullScreenElement;
             SetFullscreen(core.ContainsFullScreenElement);
         };
@@ -2728,6 +2922,7 @@ class BrowserForm : Form
         if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
         StopSuspend(t);
         StopDiscard(t);
+        SaveSessionSoon();
         strip.AnimateClose(i);
         tabs.RemoveAt(i);
         content.Controls.Remove(t.View);
@@ -2814,6 +3009,7 @@ class BrowserForm : Form
         int pinned = tabs.TakeWhile(x => x.Pinned).Count();
         tabs.Insert(pinned, t); // fin du groupe épinglé (ou juste après lui en le détachant)
         SelectTab(tabs.IndexOf(current));
+        SaveSessionSoon();
     }
 
     /// Premier onglet normal démarré (cookies, extensions, réglages du profil) : jamais un onglet privé.
@@ -3287,6 +3483,9 @@ class BrowserForm : Form
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(MI("Actualiser", () => t.View.CoreWebView2?.Reload(), "F5"));
         m.Items.Add(MI("Dupliquer", () => { if (src != null) _ = NewTab(IsLocalPage(src) ? null : src, priv: t.Private); }));
+        var tear = MI("Ouvrir dans une nouvelle fenêtre", () => DetachTab(tabs.IndexOf(t)));
+        tear.Enabled = tabs.Count > 1;
+        m.Items.Add(tear);
         var free = MI("Libérer la mémoire de cet onglet", () => DiscardTab(t, force: true));
         free.Enabled = t != Cur && !t.Lazy && !t.Private && t.View.CoreWebView2 != null;
         m.Items.Add(free);
@@ -3368,6 +3567,78 @@ class BrowserForm : Form
         }
         toolbar.Invalidate(new Rectangle(0, toolbar.Height - S(4), toolbar.Width, S(4)));
         return t.ProgressAlpha > 0;
+    }
+
+    // ================== Onglets glissés / sortis dans leur propre fenêtre ==================
+
+    void MoveTab(int from, int to)
+    {
+        if (from < 0 || to < 0 || from >= tabs.Count || to >= tabs.Count || from == to) return;
+        var current = Cur;
+        var t = tabs[from];
+        tabs.RemoveAt(from);
+        tabs.Insert(to, t);
+        sel = tabs.IndexOf(current);
+        strip.Selected = sel;
+        strip.Invalidate();
+        SaveSessionSoon();
+    }
+
+    /// Sort un onglet dans sa propre fenêtre, là où tu l'as lâché (y compris sur un autre écran).
+    void DetachTab(int i, Point? screenPoint = null)
+    {
+        if (i < 0 || i >= tabs.Count) return;
+        var t = tabs[i];
+        if (tabs.Count == 1) { Notify("LiteBrowser", "C'est le seul onglet de la fenêtre : ouvre-en un autre avant de le sortir."); return; }
+        if (t.Lazy && env != null) _ = StartTab(t, t.PendingUrl); // onglet pas encore chargé : on le charge dans sa fenêtre
+        HideOmni(); TabHover(-1);
+        StopSuspend(t); StopDiscard(t);
+        var core = t.View.CoreWebView2;
+        if (core != null) { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal; if (core.IsSuspended) core.Resume(); }
+        tabs.RemoveAt(i);
+        if (i < sel || sel >= tabs.Count) sel = Math.Max(0, sel - (i <= sel ? 1 : 0));
+        content.Controls.Remove(t.View);
+        var w = new DetachedWindow(t, theme, iconFont, new Font("Segoe UI", 10.5f), ResolveTyped, Icon);
+        t.Window = w;
+        detached.Add(w);
+        var pt = screenPoint ?? Cursor.Position;
+        var scr = Screen.FromPoint(pt).WorkingArea;
+        var size = new Size(Math.Min(Width * 4 / 5, scr.Width - 40), Math.Min(Height * 4 / 5, scr.Height - 40));
+        w.Bounds = new Rectangle(Math.Clamp(pt.X - size.Width / 2, scr.Left, scr.Right - size.Width), Math.Clamp(pt.Y - S(20), scr.Top, scr.Bottom - size.Height), size.Width, size.Height);
+        w.Reattach += ReattachWindow;
+        w.FormClosed += (_, _) =>
+        {
+            detached.Remove(w);
+            if (w.Reattaching || IsDisposed) return;
+            // fenêtre fermée = onglet fermé (rouvrable avec Ctrl+Maj+T)
+            var src = t.View.CoreWebView2?.Source;
+            if (!t.Private && !string.IsNullOrEmpty(src) && !IsLocalPage(src)) closedTabs.Add(src);
+            try { t.View.Dispose(); } catch { }
+            SaveSessionSoon();
+        };
+        if (Offscreen) { w.ShowInTaskbar = false; w.Location = new Point(-4000, -4000); }
+        w.Show();
+        if (!Offscreen) w.Activate();
+        SelectTab(Math.Clamp(sel, 0, tabs.Count - 1));
+        SaveSessionSoon();
+    }
+
+    /// « Remettre dans LiteBrowser » : l'onglet revient dans la barre, juste après l'onglet affiché.
+    void ReattachWindow(DetachedWindow w)
+    {
+        var t = w.Tab;
+        w.Reattaching = true;
+        w.Release();
+        t.Window = null;
+        t.View.Visible = false;
+        content.Controls.Add(t.View);
+        int at = Math.Min(tabs.Count, sel + 1);
+        tabs.Insert(at, t);
+        w.Close();
+        SelectTab(at);
+        if (WindowState == FormWindowState.Minimized) WindowState = prevState;
+        if (!Offscreen) Activate();
+        SaveSessionSoon();
     }
 
     // ================== Lens : copier le texte à l'écran ==================
@@ -5553,6 +5824,40 @@ class BrowserForm : Form
                 if (parts[1] == "rebond") { await RebondTest(parts[0]); continue; }
                 if (parts[1] == "perf") { await PerfTest(parts[0]); continue; }
                 if (parts[1] == "streams") { await StreamsTest(parts[0]); continue; }
+                if (parts[1] == "fenetres")
+                {
+                    var fr = new List<string>();
+                    void C(string what, bool ok, string d = "") => fr.Add((ok ? "OK    " : "ÉCHEC ") + what + (d.Length > 0 ? " · " + d : ""));
+                    await NewTab("https://example.com/"); await Task.Delay(3000);
+                    await NewTab("https://fr.wikipedia.org/wiki/Gentle_Mates"); await Task.Delay(4000);
+                    var wiki = Cur;
+                    int before = tabs.Count, wi = tabs.IndexOf(wiki);
+                    MoveTab(wi, 0);
+                    C("onglet glissé en première place", tabs[0] == wiki && Cur == wiki, string.Join(" | ", tabs.Select(x => x.Title)));
+                    DetachTab(tabs.IndexOf(wiki), new Point(-3800, -3800));
+                    await Task.Delay(2500);
+                    var w = detached.FirstOrDefault();
+                    C("onglet sorti dans sa propre fenêtre", w != null && !tabs.Contains(wiki) && tabs.Count == before - 1 && w.Visible, $"{tabs.Count} onglets dans la barre, fenêtre « {w?.Text} »");
+                    var probe = wiki.View.CoreWebView2.ExecuteScriptAsync("document.title");
+                    C("la page continue de vivre dans sa fenêtre", await Task.WhenAny(probe, Task.Delay(3000)) == probe && probe.Result.Contains("Gentle"), probe.IsCompleted ? probe.Result : "pas de réponse");
+                    if (w != null)
+                    {
+                        using (var bmp = new Bitmap(w.Width, w.Height)) { w.DrawToBitmap(bmp, new Rectangle(Point.Empty, w.Size)); bmp.Save(Path.Combine(ShotsDir, parts[0] + "_fenetre.png")); }
+                        wiki.View.CoreWebView2.Navigate("https://example.org/"); await Task.Delay(2500);
+                        w.Refresh2();
+                        C("navigation dans la fenêtre détachée", wiki.View.CoreWebView2.Source.Contains("example.org"), wiki.View.CoreWebView2.Source);
+                        ReattachWindow(w);
+                        await Task.Delay(1500);
+                        C("« Remettre dans LiteBrowser » : l'onglet revient et s'affiche", tabs.Contains(wiki) && Cur == wiki && detached.Count == 0 && !wiki.View.IsDisposed, $"{tabs.Count} onglets");
+                        var p3 = wiki.View.CoreWebView2.ExecuteScriptAsync("location.host");
+                        C("la page remise répond toujours", await Task.WhenAny(p3, Task.Delay(3000)) == p3, p3.IsCompleted ? p3.Result : "");
+                        DetachTab(tabs.IndexOf(wiki)); await Task.Delay(1500);
+                        var w2 = detached.FirstOrDefault(); w2?.Close(); await Task.Delay(800);
+                        C("fermer la fenêtre détachée ferme l'onglet (rouvrable)", detached.Count == 0 && !tabs.Contains(wiki) && closedTabs.LastOrDefault()?.Contains("example.org") == true, closedTabs.LastOrDefault() ?? "");
+                    }
+                    File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), fr);
+                    continue;
+                }
                 if (parts[1] == "bloque")
                 {
                     var br = new List<string>();
