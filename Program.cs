@@ -485,9 +485,11 @@ static class G
 class IconButton : Control
 {
     string glyph;
-    bool hover, down;
+    bool hover, down, open;
     public Theme Theme = Theme.Light;
     public bool Highlight, Dim;
+    /// Son menu est ouvert : le bouton reste allumé (comme Chrome).
+    public bool Open { get => open; set { if (open != value) { open = value; Invalidate(); } } }
     string badge;
 
     public string Glyph { get => glyph; set { if (glyph != value) { glyph = value; Invalidate(); } } }
@@ -516,9 +518,9 @@ class IconButton : Control
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(BackColor);
-        if (Enabled && (hover || down))
+        if (Enabled && (hover || down || open))
         {
-            using var b = new SolidBrush(down ? G.Mix(Theme.Hover, Theme.Text, .08f) : Theme.Hover);
+            using var b = new SolidBrush(down || open ? G.Mix(Theme.Hover, Theme.Text, .08f) : Theme.Hover);
             g.FillEllipse(b, 1, 1, Width - 3, Height - 3);
         }
         var col = !Enabled || Dim ? G.Mix(BackColor, Theme.Sub, .45f) : Highlight ? Theme.Accent : Theme.Text;
@@ -814,7 +816,13 @@ static class Prompt
 {
     public static string Show(IWin32Window owner, string title, string text, Theme t, string okText = "Ajouter", string value = "")
     {
-        using var f = new Form
+        using var f = Create(title, text, t, okText, value);
+        return f.ShowDialog(owner) == DialogResult.OK ? f.Controls.OfType<TextBox>().First().Text : null;
+    }
+
+    public static Form Create(string title, string text, Theme t, string okText = "Ajouter", string value = "")
+    {
+        var f = new Form
         {
             Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
             StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false, BackColor = t.Bar, ForeColor = t.Text,
@@ -827,8 +835,9 @@ static class Prompt
         f.Controls.AddRange(new Control[] { lbl, box, ok, cancel });
         f.AcceptButton = ok;
         f.CancelButton = cancel;
+        f.Layout += (_, _) => PetitsSoucis.FitPrompt(f, lbl, box, ok, cancel); // explication sur plusieurs lignes : rien de coupé
         Fade.In(f);
-        return f.ShowDialog(owner) == DialogResult.OK ? box.Text : null;
+        return f;
     }
 }
 
@@ -2998,6 +3007,7 @@ partial class BrowserForm : Form
         strip.Invalidate();
         UpdateUi();
         ToolsTabChanged();
+        MenusTabChanged(); // Features/PetitsSoucis_menus.cs : propositions et Lens de l'ancien onglet refermés
         if (pageFullscreen && Core?.ContainsFullScreenElement != true) { pageFullscreen = false; SetFullscreen(false); }
         if (Cur.IsHome) addr.Box.Focus(); else Cur.View.Focus();
     }
@@ -3277,8 +3287,9 @@ partial class BrowserForm : Form
     {
         var t = Cur;
         var host = SiteList.Host(Core?.Source);
-        if (t == null || host == null) return;
+        if (t == null || host == null || MenuReclick(addr.Shield)) return;
         var m = NewMenu(out var r, out var font);
+        m.Tag = addr.Shield;
         m.Items.Add(new ToolStripMenuItem(!adblock ? "Bloqueur de pubs coupé partout"
             : t.AdsAllowed ? $"Bloqueur coupé sur {host}"
             : $"{t.Blocked} pub{(t.Blocked > 1 ? "s" : "")} ou traqueur{(t.Blocked > 1 ? "s" : "")} bloqué{(t.Blocked > 1 ? "s" : "")} sur cette page") { Enabled = false });
@@ -3627,6 +3638,7 @@ partial class BrowserForm : Form
         font = new Font("Segoe UI", 9.5f);
         var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true };
         Fade.In(m);
+        MenuHooks(m); // Features/PetitsSoucis_menus.cs : clavier au menu, bouton allumé
         lastMenu = m;
         return m;
     }
@@ -3666,7 +3678,7 @@ partial class BrowserForm : Form
 
     void ShowFavOverflow(int first, Point pt)
     {
-        if (first < 0) return;
+        if (first < 0 || MenuReclick(favBar)) return;
         var m = NewMenu(out _, out _);
         m.ImageScalingSize = new Size(S(16), S(16));
         for (int i = first; i < favorites.Count; i++)
@@ -3930,6 +3942,7 @@ partial class BrowserForm : Form
         lens.Picked += r => _ = LensRead();
         lens.FormClosed += (_, _) => { lens = null; if (!IsDisposed && !Offscreen) Cur?.View.Focus(); };
         lens.Quiet = Offscreen;
+        LensWatch(lens); // fenêtre déplacée, redimensionnée ou réduite : Lens se referme
         lens.Show(this);
         if (!Offscreen) lens.Activate();
     }
@@ -3992,6 +4005,7 @@ partial class BrowserForm : Form
     void TabHover(int i)
     {
         tabCardTimer.Stop();
+        if (i >= 0 && FloatingBusy) i = -1; // jamais par-dessus un menu, la recherche d'onglets ou Lens
         if (i < 0 || i >= tabs.Count) { tabCard?.Hide(); tabCardFor = -1; return; }
         if (tabCard is { Visible: true }) { ShowTabCard(i); return; } // déjà ouverte : elle suit la souris d'un onglet à l'autre
         tabCardFor = i;
@@ -4015,7 +4029,7 @@ partial class BrowserForm : Form
         tabCard.Set(t.Title, place, state, theme);
         var r = strip.TabBounds(i);
         var pt = strip.PointToScreen(new Point(r.Left, r.Bottom + S(4)));
-        var wa = Screen.FromControl(this).WorkingArea;
+        var wa = TabCardArea(pt); // l'écran de l'onglet, pas celui de la fenêtre (à cheval sur deux écrans)
         if (!Offscreen) pt.X = Math.Clamp(pt.X, wa.Left + S(4), Math.Max(wa.Left + S(4), wa.Right - tabCard.Width - S(4))); // test hors écran : jamais sur ton écran
         tabCard.Location = pt;
         if (!tabCard.Visible) { tabCard.Opacity = 0; tabCard.Show(this); Fade.Start(tabCard, 120); }
@@ -6119,6 +6133,7 @@ partial class BrowserForm : Form
                     File.WriteAllLines(Path.Combine(ShotsDir, parts[0] + ".txt"), fr);
                     continue;
                 }
+                if (parts[1] == "pc-menus") { await PcMenusTest(parts[0]); continue; }
                 if (parts[1] == "youtube")
                 {
                     var yr = new List<string>();
@@ -6636,6 +6651,7 @@ partial class BrowserForm : Form
 
     void ShowPrayerMenu(Point? at)
     {
+        if (at == null && MenuReclick(prayerChip.Visible ? prayerChip : menuBtn)) return;
         var m = NewMenu(out var r, out var font);
 
         if (prayerDay != null)
@@ -6853,11 +6869,13 @@ partial class BrowserForm : Form
 
     void ShowExtensionsMenu()
     {
+        if (MenuReclick(extBtn)) return;
         lastMenu?.Dispose();
         var r = new MenuRenderer(theme, iconSmall);
         var font = new Font("Segoe UI", 9.5f);
-        var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true, ImageScalingSize = new Size(S(20), S(20)) };
+        var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true, ImageScalingSize = new Size(S(20), S(20)), Tag = extBtn };
         Fade.In(m);
+        MenuHooks(m);
         lastMenu = m;
 
         if (extBusy) m.Items.Add(new ToolStripMenuItem("Installation des extensions en cours…") { Enabled = false });
@@ -7080,12 +7098,13 @@ partial class BrowserForm : Form
 
     void ShowMenu()
     {
-        if ((DateTime.Now - Fade.LastOutsideClose).TotalMilliseconds < 250 && menuBtn.RectangleToScreen(menuBtn.ClientRectangle).Contains(Cursor.Position)) return;
+        if (MenuReclick(menuBtn)) return;
         lastMenu?.Dispose();
         var r = new MenuRenderer(theme, iconSmall);
         var font = new Font("Segoe UI", 9.5f);
-        var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true };
+        var m = new ContextMenuStrip { Renderer = r, Font = font, ShowItemToolTips = true, Tag = menuBtn };
         Fade.In(m);
+        MenuHooks(m);
         lastMenu = m;
 
         m.Items.Add(MI("Nouvel onglet", () => _ = NewTab(), "Ctrl+T"));
@@ -7127,7 +7146,7 @@ partial class BrowserForm : Form
             th.DropDownItems.Add(MI(label, () => SetTheme(id), null, themeName == id));
         m.Items.Add(th);
         m.Items.Add(MI("Afficher la barre de favoris", ToggleFavBar, "Ctrl+Maj+B", showFavBar));
-        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({blockedCount} bloquées)", () => SetAdblock(!adblock), null, adblock));
+        m.Items.Add(MI($"Bloquer les pubs, y compris YouTube  ({PetitsSoucis.Blocked(blockedCount)})", () => SetAdblock(!adblock), null, adblock));
         m.Items.Add(MI("Plein écran", () => SetFullscreen(!fullscreen), "F11"));
         m.Items.Add(ZoomMenuRow());
         m.Items.Add(new ToolStripSeparator());
