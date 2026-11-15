@@ -38,7 +38,8 @@ partial class BrowserForm
             case Keys.F3: if (findBar?.Visible == true) FindStep(1); else ShowFind(); return true;
             case Keys.Shift | Keys.F3: if (findBar?.Visible == true) FindStep(-1); else ShowFind(); return true;
             case Keys.Control | Keys.P: PrintPage(); return true;
-            case Keys.Control | Keys.Shift | Keys.C: _ = CapturePage(false); return true;
+            // Ctrl+Maj+X et pas Ctrl+Maj+C : Ctrl+Maj+C reste l’inspecteur d’éléments des outils de développement
+            case Keys.Control | Keys.Shift | Keys.X: _ = CapturePage(false); return true;
             case Keys.Control | Keys.Shift | Keys.S: _ = CapturePage(true); return true;
             case Keys.Alt | Keys.P: _ = PictureInPicture(); return true;
         }
@@ -54,7 +55,7 @@ partial class BrowserForm
         {
             MI("Rechercher dans la page…", ShowFind, "Ctrl+F"),
             null,
-            MI("Capturer la zone visible", () => _ = CapturePage(false), "Ctrl+Maj+C"),
+            MI("Capturer la zone visible", () => _ = CapturePage(false), "Ctrl+Maj+X"),
             MI("Capturer la page entière", () => _ = CapturePage(true), "Ctrl+Maj+S"),
             MI("Imprimer…", PrintPage, "Ctrl+P"),
             MI("Vidéo en image dans l’image", () => _ = PictureInPicture(), "Alt+P"),
@@ -94,20 +95,51 @@ partial class BrowserForm
             Resize += (_, _) => toolToast.Hide();
             Move += (_, _) => toolToast.Hide();
         }
-        toolToast.Set(theme, title, text, thumb, button, onButton);
         Rectangle place;
         if (lives)
         {
-            var tb = toolbar.RectangleToScreen(toolbar.ClientRectangle);
-            place = new Rectangle(tb.Right - toolToast.Width - S(56), tb.Bottom - toolToast.Height - S(3), toolToast.Width, toolToast.Height);
+            // Version compacte, dans la hauteur de la barre d’outils, sur la droite de la barre d’adresse :
+            // à gauche de la pastille de prière / mise à jour et du bouton des extensions, jamais sur la page.
+            var slot = CompactToastSlot();
+            if (slot.IsEmpty)
+            {
+                thumb?.Dispose();
+                toolToast.Hide();
+                return;
+            }
+            Image small = null;
+            if (thumb != null)
+            {
+                int th = slot.Height - S(10);
+                small = ToolToast.Thumbnail(thumb, th * 16 / 9, th);
+                thumb.Dispose();
+            }
+            toolToast.SetCompact(theme, title, text, small, button, onButton, slot.Size);
+            place = slot;
         }
         else
         {
+            toolToast.Set(theme, title, text, thumb, button, onButton);
             var area = content.RectangleToScreen(content.ClientRectangle);
             place = new Rectangle(area.Right - toolToast.Width - S(16), area.Top + S(12), toolToast.Width, toolToast.Height);
         }
         toolToast.Bounds = place;
         toolToast.Popup(this);
+    }
+
+    /// Place de la notification compacte (écran) : dans la barre d’outils, entre la barre d’adresse (on en laisse le début visible)
+    /// et la première pastille ou le bouton des extensions. Vide s’il n’y a pas assez de place.
+    Rectangle CompactToastSlot()
+    {
+        int right = extBtn.Left;
+        foreach (var p in new Control[] { prayerChip, updatePill })
+            if (p.Visible && p.Left < right) right = p.Left;
+        right -= S(6);
+        int left = Math.Max(addr.Left + S(140), right - S(420));
+        if (right - left < S(240)) return Rectangle.Empty;
+        int h = toolbar.Height - S(8);
+        var r = new Rectangle(left, (toolbar.Height - h) / 2, right - left, h);
+        return toolbar.RectangleToScreen(r);
     }
 
     // ---------- Capture d’écran ----------
@@ -577,8 +609,14 @@ const s=document.createElement('canvas').captureStream(5);document.getElementByI
                 Check("nom du fichier « (page entière) »", Path.GetFileName(full).Contains("(page entière)"), Path.GetFileName(full));
                 try { File.Copy(full, Path.Combine(ShotsDir, name + "_page_entiere.png"), true); } catch { }
             }
-            var again = await CapturePage(false);
-            Check("nouvelle capture : nouveau fichier, l’ancienne est gardée", again != null && again != vis && File.Exists(vis) && File.Exists(again), Path.GetFileName(again ?? ""));
+            // raccourci : Ctrl+Maj+X capture ; Ctrl+Maj+C reste à l’inspecteur d’éléments du moteur (non pris)
+            Check("Ctrl+Maj+C n’est pas pris (inspecteur d’éléments des outils de développement)", !ToolsKey(Keys.Control | Keys.Shift | Keys.C));
+            lastShotPath = null;
+            var xmsg = new Message();
+            bool xh = ProcessCmdKey(ref xmsg, Keys.Control | Keys.Shift | Keys.X);
+            for (int i = 0; i < 40 && lastShotPath == null; i++) await Task.Delay(100);
+            var again = lastShotPath;
+            Check("Ctrl+Maj+X (ProcessCmdKey) : nouvelle capture, nouveau fichier, l’ancienne est gardée", xh && again != null && again != vis && File.Exists(vis) && File.Exists(again), Path.GetFileName(again ?? ""));
 
             // --- Image dans l’image (sans ouvrir la vraie fenêtre : elle s’afficherait sur l’écran) ---
             var pip = await PictureInPicture(dry: true);
@@ -649,9 +687,23 @@ const s=document.createElement('canvas').captureStream(5);document.getElementByI
             Check("multistream ouvert (lecteurs Twitch protégés)", KeepsPlaying(Core), Core?.Source ?? "");
             var cap = await CapturePage(false);
             var pageScreen = content.RectangleToScreen(content.ClientRectangle);
-            Check("multistream, fenêtre normale : notification sur la barre du haut, hors de la page",
-                cap != null && toolToast?.Visible == true && !toolToast.Bounds.IntersectsWith(pageScreen), $"notification {toolToast?.Bounds}, page {pageScreen}");
+            var tbScreen = toolbar.RectangleToScreen(toolbar.ClientRectangle);
+            Rectangle Scr(Control c) => c.Visible ? c.RectangleToScreen(c.ClientRectangle) : Rectangle.Empty;
+            Check("multistream, fenêtre normale : notification compacte affichée", cap != null && toolToast?.Visible == true && toolToast.Compact,
+                $"« {toolToast?.Title} » · {toolToast?.Body} · {toolToast?.Bounds}");
+            Check("multistream : la notification tient dans la barre d’outils (ni page, ni onglets, ni barre de titre)",
+                toolToast != null && tbScreen.Contains(toolToast.Bounds) && !toolToast.Bounds.IntersectsWith(pageScreen),
+                $"notification {toolToast?.Bounds}, barre d’outils {tbScreen}, page {pageScreen}");
+            Check("multistream : la notification ne cache ni la pastille de prière, ni la mise à jour, ni les extensions, ni le menu",
+                toolToast != null && new[] { prayerChip, updatePill, (Control)extBtn, menuBtn }.All(c => !toolToast.Bounds.IntersectsWith(Scr(c))),
+                $"notification {toolToast?.Bounds}, prière {(prayerChip.Visible ? Scr(prayerChip) + " « " + prayerChip.Text + " »" : "masquée")}, extensions {Scr(extBtn)}");
+            Check("multistream : le début de la barre d’adresse reste visible", toolToast != null && toolToast.Left >= Scr(addr).Left + S(140), $"adresse {Scr(addr)}");
             await ToolsShot(name + "_multi_notification");
+            var pipMulti = await PictureInPicture(dry: true);
+            Check("multistream : message sans vignette, compact lui aussi, dans la barre d’outils",
+                lastToolMessage != null && (toolToast?.Visible != true || (toolToast.Compact && tbScreen.Contains(toolToast.Bounds) && !toolToast.Bounds.IntersectsWith(Scr(prayerChip)))),
+                $"{pipMulti} · « {toolToast?.Title} » · {toolToast?.Bounds}");
+            await ToolsShot(name + "_multi_message");
             // plein écran (F11) simulé sans agrandir la fenêtre sur l’écran : barres masquées comme dans SetFullscreen
             bool oldFs = fullscreen;
             fullscreen = true;
@@ -680,7 +732,7 @@ const s=document.createElement('canvas').captureStream(5);document.getElementByI
             await Task.Delay(2500);
             string keys = "";
             for (int i = 0; i < 20 && !keys.Contains("Capturer"); i++) { await Task.Delay(500); try { keys = await Core.ExecuteScriptAsync("(document.getElementById('keys')||{}).textContent||''"); } catch { } }
-            Check("réglages > raccourcis : les nouveaux outils sont listés", keys.Contains("Capturer la zone visible") && keys.Contains("Ctrl+Maj+C") && keys.Contains("Imprimer") && keys.Contains("Alt+P"),
+            Check("réglages > raccourcis : les nouveaux outils sont listés", keys.Contains("Capturer la zone visible") && keys.Contains("Ctrl+Maj+X") && keys.Contains("Imprimer") && keys.Contains("Alt+P"),
                 keys.Length > 300 ? keys[..300] : keys);
             await ToolsShot(name + "_raccourcis");
             CloseTab(tabs.IndexOf(Cur));
@@ -908,9 +960,71 @@ sealed class ToolToast : Form
         int h = Math.Max(thumb != null ? thumb.Height + pad * 2 : 0, pad + h1 + Sc(2) + h2 + (bh > 0 ? Sc(8) + bh : 0) + pad);
         Size = new Size(w, h);
         if (btn != null) button.Bounds = new Rectangle(tx, h - pad - bh, button.PreferredWidth, bh);
+        compact = false;
         using (var path = G.Round(new RectangleF(0, 0, w, h), Sc(12))) Region = new Region(path);
         BackColor = t.Bar;
         Invalidate();
+    }
+
+    bool compact;
+    public bool Compact => compact;
+
+    /// Version d’une seule rangée, à la taille donnée (barre d’outils de Nur Live / du multistream) :
+    /// petite vignette ou liseré rose, titre + texte sur une ligne chacun, bouton à droite.
+    public void SetCompact(Theme t, string title, string text, Image th, string btn, Action act, Size size)
+    {
+        theme = t;
+        Title = title ?? ""; Body = text ?? "";
+        thumb?.Dispose();
+        thumb = th;
+        onButton = act;
+        compact = true;
+        ButtonText = btn;
+        button.Visible = btn != null;
+        Size = size;
+        if (btn != null)
+        {
+            button.Text = btn;
+            button.Theme = t;
+            button.BackColor = t.Field;
+            int bh = Math.Min(Sc(26), size.Height - Sc(8));
+            int bw = button.PreferredWidth;
+            button.Bounds = new Rectangle(size.Width - Sc(6) - bw, (size.Height - bh) / 2, bw, bh);
+        }
+        using (var path = G.Round(new RectangleF(0, 0, size.Width, size.Height), Sc(9))) Region = new Region(path);
+        BackColor = t.Field;
+        Invalidate();
+    }
+
+    void PaintCompact(Graphics g)
+    {
+        g.Clear(theme.Field);
+        using (var path = G.Round(new RectangleF(.5f, .5f, Width - 1.5f, Height - 1.5f), Sc(9)))
+        using (var pen = new Pen(theme.Accent)) g.DrawPath(pen, path);
+        int x;
+        if (thumb != null)
+        {
+            var r = new Rectangle(Sc(5), (Height - thumb.Height) / 2, thumb.Width, thumb.Height);
+            using var clip = G.Round(r, Sc(4));
+            g.SetClip(clip);
+            g.DrawImage(thumb, r);
+            g.ResetClip();
+            using var pen = new Pen(theme.FieldBorder);
+            g.DrawPath(pen, clip);
+            x = r.Right + Sc(8);
+        }
+        else
+        {
+            using var b = new SolidBrush(theme.Accent);
+            using var bar = G.Round(new RectangleF(Sc(8), Sc(7), Sc(3), Height - Sc(14)), Sc(1));
+            g.FillPath(b, bar);
+            x = Sc(18);
+        }
+        int right = button.Visible ? button.Left - Sc(8) : Width - Sc(10);
+        int h1 = titleFont.Height, h2 = textFont.Height, y = Math.Max(0, (Height - h1 - h2) / 2);
+        const TextFormatFlags One = TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis;
+        TextRenderer.DrawText(g, Title, titleFont, new Rectangle(x, y, right - x, h1), theme.Text, One);
+        TextRenderer.DrawText(g, Body, textFont, new Rectangle(x, y + h1, right - x, h2), theme.Sub, One);
     }
 
     public void Popup(IWin32Window owner)
@@ -931,6 +1045,7 @@ sealed class ToolToast : Form
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        if (compact) { PaintCompact(g); return; }
         g.Clear(theme.Bar);
         using (var path = G.Round(new RectangleF(.5f, .5f, Width - 1.5f, Height - 1.5f), Sc(12)))
         using (var pen = new Pen(theme.FieldBorder)) g.DrawPath(pen, path);
