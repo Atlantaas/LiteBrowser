@@ -625,6 +625,11 @@ static class Program
         Check("motif 1", js.Contains("reason: \"1\""));
         Check("aucun clic automatique sur Continuer", !js.Contains("Continuer") || js.Contains("clique toi-même sur Continuer"));
         Check("valeurs mémorisées en localStorage", js.Contains("localStorage"));
+        Check("bouton Fermer (x) dans Réglages", js.Contains("id='mp-x'") && js.Contains("aria-label='Fermer'"));
+        Check("Enregistrer ferme le panneau", js.Contains("id='mp-save'") && js.Contains("Enregistrer") && js.Contains("closePanel"));
+        Check("fermeture Échap et clic extérieur", js.Contains("Escape") && js.Contains("onDocPointerDown") && js.Contains("mobilic-prefill-backdrop"));
+        Check("Enregistrer et pré-remplir", js.Contains("Enregistrer et pré-remplir"));
+        Check("le panneau ne recouvre pas Pré-remplir", js.Contains("right: 148px"));
     }
     static string FindNode()
     {

@@ -10,8 +10,77 @@
   if (window.top !== window) return;
   try { Object.defineProperty(window, "__lbMobilicPrefill", { value: true, enumerable: false }); } catch (e) { window.__lbMobilicPrefill = true; }
 
-  var CSS_TEXT = "\n.mobilic-prefill-fab, .mobilic-prefill-gear {\n  position: fixed; z-index: 2147483646;\n  font: 600 14px/1.2 system-ui, \"Segoe UI\", sans-serif;\n  color: #fff; background: #0f285a; border: 0; cursor: pointer;\n  box-shadow: 0 6px 20px rgba(15, 40, 90, 0.35);\n}\n.mobilic-prefill-fab {\n  right: 16px; top: 50%; transform: translateY(-50%);\n  border-radius: 999px; padding: 12px 16px;\n}\n.mobilic-prefill-gear {\n  right: 16px; top: calc(50% + 36px); transform: translateY(-50%);\n  border-radius: 999px; padding: 8px 12px; font-size: 12px; background: #173a82;\n}\n.mobilic-prefill-fab:hover, .mobilic-prefill-gear:hover { background: #1b4aaa; }\n.mobilic-prefill-fab.is-busy, .mobilic-prefill-fab:disabled { opacity: 0.75; cursor: wait; }\n.mobilic-prefill-toast {\n  position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;\n  max-width: min(420px, calc(100vw - 32px)); padding: 12px 14px; border-radius: 10px;\n  font: 14px/1.4 system-ui, \"Segoe UI\", sans-serif; color: #122;\n  background: #f4faf4; border: 1px solid #8bc48b; box-shadow: 0 8px 24px rgba(0,0,0,.18);\n}\n.mobilic-prefill-toast.is-partial { background: #fff8e8; border-color: #e0b04a; }\n.mobilic-prefill-toast.is-out { opacity: 0; transition: opacity .35s ease; }\n.mobilic-prefill-panel {\n  position: fixed; right: 16px; top: 50%; transform: translateY(-20%);\n  z-index: 2147483647; width: min(340px, calc(100vw - 32px));\n  background: #f6f7fb; color: #122; border-radius: 12px; overflow: hidden;\n  font: 14px/1.4 system-ui, \"Segoe UI\", sans-serif;\n  box-shadow: 0 12px 32px rgba(0,0,0,.28); border: 1px solid #c9ceda;\n}\n.mobilic-prefill-panel header { background: #0f285a; color: #fff; padding: 10px 12px; }\n.mobilic-prefill-panel header h2 { margin: 0 0 2px; font-size: 14px; }\n.mobilic-prefill-panel header p { margin: 0; font-size: 11px; opacity: .9; }\n.mobilic-prefill-panel .body { padding: 10px 12px 12px; }\n.mobilic-prefill-panel label { display: block; font-weight: 600; font-size: 12px; margin: 8px 0 3px; }\n.mobilic-prefill-panel input, .mobilic-prefill-panel textarea {\n  width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #c9ceda;\n  border-radius: 6px; font: inherit; background: #fff;\n}\n.mobilic-prefill-panel textarea { min-height: 54px; resize: vertical; }\n.mobilic-prefill-panel .row { display: flex; gap: 8px; align-items: end; }\n.mobilic-prefill-panel .row > div { flex: 1; }\n.mobilic-prefill-panel .hint { font-size: 11px; color: #556; margin: 2px 0 0; }\n.mobilic-prefill-panel .actions { display: flex; gap: 8px; margin-top: 12px; }\n.mobilic-prefill-panel button { flex: 1; border: 0; border-radius: 8px; padding: 8px 10px; font: 600 13px system-ui; cursor: pointer; }\n.mobilic-prefill-panel button.primary { background: #0f285a; color: #fff; }\n.mobilic-prefill-panel button.ghost { background: #e6e9f2; color: #122; }\n.mobilic-prefill-panel .status { font-size: 12px; margin-top: 6px; color: #1a5; min-height: 1.2em; }\n";
-
+  var CSS_TEXT = [
+    ".mobilic-prefill-fab, .mobilic-prefill-gear {",
+    "  position: fixed; z-index: 2147483646;",
+    "  font: 600 14px/1.2 system-ui, \"Segoe UI\", sans-serif;",
+    "  color: #fff; background: #0f285a; border: 0; cursor: pointer;",
+    "  box-shadow: 0 6px 20px rgba(15, 40, 90, 0.35);",
+    "  pointer-events: auto;",
+    "}",
+    ".mobilic-prefill-fab {",
+    "  right: 16px; top: 50%; transform: translateY(-50%);",
+    "  border-radius: 999px; padding: 12px 16px;",
+    "}",
+    ".mobilic-prefill-gear {",
+    "  right: 16px; top: calc(50% + 36px); transform: translateY(-50%);",
+    "  border-radius: 999px; padding: 8px 12px; font-size: 12px; background: #173a82;",
+    "}",
+    ".mobilic-prefill-fab:hover, .mobilic-prefill-gear:hover { background: #1b4aaa; }",
+    ".mobilic-prefill-fab.is-busy, .mobilic-prefill-fab:disabled { opacity: 0.75; cursor: wait; }",
+    ".mobilic-prefill-toast {",
+    "  position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;",
+    "  max-width: min(420px, calc(100vw - 32px)); padding: 12px 14px; border-radius: 10px;",
+    "  font: 14px/1.4 system-ui, \"Segoe UI\", sans-serif; color: #122;",
+    "  background: #f4faf4; border: 1px solid #8bc48b; box-shadow: 0 8px 24px rgba(0,0,0,.18);",
+    "  pointer-events: none;",
+    "}",
+    ".mobilic-prefill-toast.is-partial { background: #fff8e8; border-color: #e0b04a; }",
+    ".mobilic-prefill-toast.is-out { opacity: 0; transition: opacity .35s ease; }",
+    ".mobilic-prefill-backdrop {",
+    "  position: fixed; inset: 0; z-index: 2147483645;",
+    "  background: transparent; pointer-events: auto;",
+    "}",
+    ".mobilic-prefill-panel {",
+    "  position: fixed; right: 148px; top: 24px; bottom: 24px;",
+    "  z-index: 2147483647; width: min(340px, calc(100vw - 180px));",
+    "  display: flex; flex-direction: column;",
+    "  background: #f6f7fb; color: #122; border-radius: 12px;",
+    "  font: 14px/1.4 system-ui, \"Segoe UI\", sans-serif;",
+    "  box-shadow: 0 12px 32px rgba(0,0,0,.28); border: 1px solid #c9ceda;",
+    "  pointer-events: auto; overflow: visible;",
+    "}",
+    ".mobilic-prefill-panel header {",
+    "  background: #0f285a; color: #fff; padding: 10px 12px; flex: 0 0 auto;",
+    "}",
+    ".mobilic-prefill-panel header .title-row {",
+    "  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;",
+    "}",
+    ".mobilic-prefill-panel header h2 { margin: 0 0 2px; font-size: 14px; }",
+    ".mobilic-prefill-panel header p { margin: 4px 0 0; font-size: 11px; opacity: .9; }",
+    ".mobilic-prefill-panel .icon-close {",
+    "  flex: 0 0 auto; width: 28px; height: 28px; padding: 0; margin: 0;",
+    "  border: 0; border-radius: 8px; background: rgba(255,255,255,.15);",
+    "  color: #fff; font: 700 20px/1 system-ui, \"Segoe UI\", sans-serif; cursor: pointer;",
+    "}",
+    ".mobilic-prefill-panel .icon-close:hover { background: rgba(255,255,255,.28); }",
+    ".mobilic-prefill-panel .body { padding: 10px 12px 12px; overflow: auto; flex: 1 1 auto; min-height: 0; }",
+    ".mobilic-prefill-panel label { display: block; font-weight: 600; font-size: 12px; margin: 8px 0 3px; }",
+    ".mobilic-prefill-panel input, .mobilic-prefill-panel textarea {",
+    "  width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #c9ceda;",
+    "  border-radius: 6px; font: inherit; background: #fff;",
+    "}",
+    ".mobilic-prefill-panel textarea { min-height: 54px; resize: vertical; }",
+    ".mobilic-prefill-panel .row { display: flex; gap: 8px; align-items: end; }",
+    ".mobilic-prefill-panel .row > div { flex: 1; }",
+    ".mobilic-prefill-panel .hint { font-size: 11px; color: #556; margin: 2px 0 0; }",
+    ".mobilic-prefill-panel .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }",
+    ".mobilic-prefill-panel button { border: 0; border-radius: 8px; padding: 8px 10px; font: 600 13px system-ui; cursor: pointer; }",
+    ".mobilic-prefill-panel .actions button { flex: 1 1 140px; }",
+    ".mobilic-prefill-panel button.primary { background: #0f285a; color: #fff; }",
+    ".mobilic-prefill-panel button.ghost { background: #e6e9f2; color: #122; }",
+    ".mobilic-prefill-panel .status { font-size: 12px; margin-top: 6px; color: #1a5; min-height: 1.2em; }",
+  ].join("\n");
 
 /**
  * Logique de pré-remplissage du formulaire « mission passée » Mobilic.
@@ -693,8 +762,10 @@
   var BTN_ID = "mobilic-prefill-fab";
   var GEAR_ID = "mobilic-prefill-gear";
   var PANEL_ID = "mobilic-prefill-panel";
+  var BACKDROP_ID = "mobilic-prefill-backdrop";
   var TOAST_ID = "mobilic-prefill-toast";
   var STYLE_ID = "mobilic-prefill-style";
+  var dateGuardUntil = 0;
 
   function injectCss() {
     if (document.getElementById(STYLE_ID)) return;
@@ -706,6 +777,12 @@
 
   function todayISO() {
     var d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  function daysAgoISO(n) {
+    var d = new Date();
+    d.setDate(d.getDate() - n);
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
 
@@ -758,55 +835,163 @@
     }
   }
 
+  function markDateGuard() {
+    dateGuardUntil = Date.now() + 600;
+  }
+
+  function isDateInput(el) {
+    return !!(el && el.id === "mp-date");
+  }
+
+  function saveFromPanel() {
+    var panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+    var dateEl = panel.querySelector("#mp-date");
+    var date = dateEl ? dateEl.value : "";
+    var isToday = !date || date === todayISO();
+    saveSettings({
+      missionName: (panel.querySelector("#mp-name") || {}).value ? panel.querySelector("#mp-name").value.trim() : "",
+      useToday: isToday,
+      missionDate: isToday ? "" : date,
+      startLocation: (panel.querySelector("#mp-start") || {}).value ? panel.querySelector("#mp-start").value.trim() : "",
+      endLocation: (panel.querySelector("#mp-end") || {}).value ? panel.querySelector("#mp-end").value.trim() : "",
+      vehicle: (panel.querySelector("#mp-veh") || {}).value ? panel.querySelector("#mp-veh").value.trim() : "",
+      reason: panel.querySelector("#mp-reason") ? panel.querySelector("#mp-reason").value : ""
+    });
+  }
+
   function closePanel() {
     var p = document.getElementById(PANEL_ID);
     if (p) p.remove();
+    var b = document.getElementById(BACKDROP_ID);
+    if (b) b.remove();
+    document.removeEventListener("keydown", onDocKeydown, true);
+    document.removeEventListener("pointerdown", onDocPointerDown, true);
+  }
+
+  function onDocKeydown(e) {
+    if (!e || e.key !== "Escape") return;
+    if (!document.getElementById(PANEL_ID)) return;
+    if (isDateInput(document.activeElement)) {
+      markDateGuard();
+      document.activeElement.blur();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    saveFromPanel();
+    closePanel();
+  }
+
+  function onDocPointerDown(e) {
+    if (!document.getElementById(PANEL_ID)) return;
+    var t = e && e.target;
+    if (t && t.closest) {
+      if (t.closest("#" + PANEL_ID) || t.closest("#" + BTN_ID) || t.closest("#" + GEAR_ID) || t.closest("#" + TOAST_ID)) {
+        return;
+      }
+    }
+    // Le sélecteur de date natif peut envoyer des clics « hors panneau » tant
+    // que le champ est focus : on ne ferme pas dans ce cas, pour ne pas
+    // interrompre le choix de la date. Une fois le champ relâché, un clic
+    // extérieur (fond compris) ferme bien le panneau.
+    if (isDateInput(document.activeElement) || isDateInput(t)) {
+      markDateGuard();
+      return;
+    }
+    saveFromPanel();
+    closePanel();
   }
 
   function openPanel() {
-    closePanel();
+    if (document.getElementById(PANEL_ID)) return;
     var s = loadSettings();
+    var backdrop = document.createElement("div");
+    backdrop.id = BACKDROP_ID;
+    backdrop.className = "mobilic-prefill-backdrop";
+    backdrop.setAttribute("data-mobilic-prefill", "backdrop");
+    document.documentElement.appendChild(backdrop);
+
     var panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.className = "mobilic-prefill-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Réglages Mobilic");
     panel.innerHTML =
-      "<header><h2>Réglages Mobilic</h2><p>Enregistrés dans ce navigateur. Rien n'est envoyé à Mobilic.</p></header>" +
+      "<header><div class='title-row'><h2>Réglages Mobilic</h2>" +
+      "<button type='button' class='icon-close' id='mp-x' aria-label='Fermer' title='Fermer'>×</button></div>" +
+      "<p>Enregistrés dans ce navigateur. Rien n'est envoyé à Mobilic.</p></header>" +
       "<div class='body'>" +
-      "<label for='mp-name'>Nom de la mission</label><input id='mp-name' type='text'>" +
+      "<label for='mp-name'>Nom de la mission</label><input id='mp-name' type='text' autocomplete='off'>" +
       "<label for='mp-date'>Jour de la mission</label><div class='row'><div><input id='mp-date' type='date'></div>" +
       "<button type='button' class='ghost' id='mp-today'>Aujourd'hui</button></div>" +
       "<p class='hint'>Par défaut : aujourd'hui. Mobilic n'accepte que les 30 derniers jours.</p>" +
-      "<label for='mp-start'>Lieu de prise de service</label><input id='mp-start' type='text'>" +
+      "<label for='mp-start'>Lieu de prise de service</label><input id='mp-start' type='text' autocomplete='off'>" +
       "<p class='hint'>Doit correspondre à une adresse enregistrée. L'outil clique l'option, il ne tape pas l'adresse.</p>" +
-      "<label for='mp-end'>Lieu de fin de service</label><input id='mp-end' type='text'>" +
-      "<label for='mp-veh'>Nom ou immatriculation du véhicule</label><input id='mp-veh' type='text'>" +
+      "<label for='mp-end'>Lieu de fin de service</label><input id='mp-end' type='text' autocomplete='off'>" +
+      "<label for='mp-veh'>Nom ou immatriculation du véhicule</label><input id='mp-veh' type='text' autocomplete='off'>" +
       "<label for='mp-reason'>Raison de l'ajout d'une mission passée</label><textarea id='mp-reason' maxlength='48'></textarea>" +
-      "<div class='actions'><button type='button' class='primary' id='mp-save'>Enregistrer</button>" +
-      "<button type='button' class='ghost' id='mp-cancel'>Fermer</button></div>" +
+      "<div class='actions'>" +
+      "<button type='button' class='primary' id='mp-save-fill'>Enregistrer et pré-remplir</button>" +
+      "<button type='button' class='primary' id='mp-save'>Enregistrer</button>" +
+      "<button type='button' class='ghost' id='mp-cancel'>Fermer</button>" +
+      "</div>" +
       "<div class='status' id='mp-status'></div></div>";
     document.documentElement.appendChild(panel);
+
     panel.querySelector("#mp-name").value = s.missionName || "";
     panel.querySelector("#mp-start").value = s.startLocation || "";
     panel.querySelector("#mp-end").value = s.endLocation || "";
     panel.querySelector("#mp-veh").value = s.vehicle || "";
     panel.querySelector("#mp-reason").value = s.reason == null ? "" : s.reason;
-    panel.querySelector("#mp-date").value = (s.useToday !== false && !s.missionDate) ? todayISO() : (s.missionDate || todayISO());
-    panel.querySelector("#mp-today").addEventListener("click", function () { panel.querySelector("#mp-date").value = todayISO(); });
-    panel.querySelector("#mp-cancel").addEventListener("click", closePanel);
-    panel.querySelector("#mp-save").addEventListener("click", function () {
-      var date = panel.querySelector("#mp-date").value;
-      var isToday = !date || date === todayISO();
-      saveSettings({
-        missionName: panel.querySelector("#mp-name").value.trim(),
-        useToday: isToday,
-        missionDate: isToday ? "" : date,
-        startLocation: panel.querySelector("#mp-start").value.trim(),
-        endLocation: panel.querySelector("#mp-end").value.trim(),
-        vehicle: panel.querySelector("#mp-veh").value.trim(),
-        reason: panel.querySelector("#mp-reason").value
-      });
-      panel.querySelector("#mp-status").textContent = "Enregistré.";
+    var dateEl = panel.querySelector("#mp-date");
+    dateEl.value = (s.useToday !== false && !s.missionDate) ? todayISO() : (s.missionDate || todayISO());
+    dateEl.min = daysAgoISO(30);
+    dateEl.max = todayISO();
+    dateEl.addEventListener("pointerdown", function (e) { e.stopPropagation(); markDateGuard(); });
+    dateEl.addEventListener("click", function (e) { e.stopPropagation(); markDateGuard(); });
+    dateEl.addEventListener("focus", function () { markDateGuard(); });
+    dateEl.addEventListener("input", function () { markDateGuard(); });
+    dateEl.addEventListener("change", function () {
+      markDateGuard();
+      saveFromPanel();
+      // Relâche le focus pour que le sélecteur natif ne bloque pas le panneau.
+      setTimeout(function () { if (document.activeElement === dateEl) dateEl.blur(); }, 0);
     });
+    // Les événements du champ date ne doivent jamais rouvrir le panneau.
+    dateEl.addEventListener("blur", function () { markDateGuard(); });
+
+    panel.querySelector("#mp-today").addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      dateEl.value = todayISO();
+      saveFromPanel();
+    });
+    function closeAndSave(e) {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      saveFromPanel();
+      closePanel();
+    }
+    panel.querySelector("#mp-x").addEventListener("click", closeAndSave);
+    panel.querySelector("#mp-cancel").addEventListener("click", closeAndSave);
+    panel.querySelector("#mp-save").addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      saveFromPanel();
+      closePanel();
+    });
+    panel.querySelector("#mp-save-fill").addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      saveFromPanel();
+      closePanel();
+      runFill();
+    });
+
+    document.addEventListener("keydown", onDocKeydown, true);
+    document.addEventListener("pointerdown", onDocPointerDown, true);
   }
 
   function ensureUi() {
@@ -820,7 +1005,15 @@
       btn.className = "mobilic-prefill-fab";
       btn.textContent = "Pré-remplir";
       btn.title = "Pré-remplir le formulaire mission passée (n'envoie rien)";
-      btn.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); runFill(); });
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (document.getElementById(PANEL_ID)) {
+          saveFromPanel();
+          closePanel();
+        }
+        runFill();
+      });
       root.appendChild(btn);
     }
     if (!document.getElementById(GEAR_ID)) {
@@ -830,7 +1023,12 @@
       gear.className = "mobilic-prefill-gear";
       gear.textContent = "Réglages";
       gear.title = "Modifier les valeurs pré-remplies";
-      gear.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); openPanel(); });
+      gear.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (document.getElementById(PANEL_ID)) closePanel();
+        else openPanel();
+      });
       root.appendChild(gear);
     }
   }
