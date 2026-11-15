@@ -240,6 +240,9 @@ partial class BrowserForm
     void SplitViewFocused(object s, EventArgs e)
     {
         if (!SplitOn) return;
+        // Le focus arrive du moteur en différé : un focus en retard (Focus() d'avant, page qui reprend le focus)
+        // ne doit jamais annuler le nouvel onglet qui se prépare dessous. Seul un vrai clic l'annule.
+        if (revealing != null && Control.MouseButtons == MouseButtons.None) return;
         var t = splitLeft.View == s ? splitLeft : splitRight.View == s ? splitRight : null;
         SplitActivate(t);
     }
@@ -333,6 +336,12 @@ partial class BrowserForm
         Rectangle CloseRect { get { var g = Gap; int s = g.Width; return new Rectangle(g.X, g.Y + Sc(6), s, s); } }
 
         public void SetHover(bool gap, bool close) { hoverGap = gap; hoverClose = close; Invalidate(); } // test hors écran
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) tip.Dispose();
+            base.Dispose(disposing);
+        }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -473,6 +482,17 @@ partial class BrowserForm
             return !a.IntersectsWith(b) && a.Right < b.Left && c.Contains(a) && c.Contains(b) && a.Width > 100 && b.Width > 100 &&
                    a.Height > c.Height - 10 && b.Height > c.Height - 10;
         }
+        // Nouvel onglet ouvert en vue partagée : c'est lui l'onglet choisi, juste après l'ouverture
+        async Task<BrowserTab> OpenInSplit(string url, string what)
+        {
+            var before = tabs.ToList();
+            await NewTab(url);
+            var opened = tabs.Except(before).FirstOrDefault();
+            C(what + " : choisi juste après l'ouverture", opened != null && Cur == opened, Desc(Cur));
+            await Task.Delay(300);
+            C(what + " : toujours choisi 300 ms après (focus en retard ignoré)", opened != null && Cur == opened, Desc(Cur));
+            return opened ?? Cur;
+        }
         try
         {
             await NewTab("https://example.com/"); await Task.Delay(3500);
@@ -552,8 +572,11 @@ partial class BrowserForm
             }
 
             // 6. Un autre onglet choisi : il remplace la moitié active
-            await NewTab("https://example.net/"); await Task.Delay(4000);
-            var third = Cur;
+            // focus en retard de la moitié active (comme wiki.View.Focus() plus haut) pendant l'ouverture : il ne doit rien annuler
+            wiki.View.Focus();
+            var third = await OpenInSplit("https://example.net/", "nouvel onglet");
+            await Task.Delay(4000);
+            C("nouvel onglet : toujours l'onglet choisi 4 s après", Cur == third && third.View.Visible, Desc(Cur));
             C("nouvel onglet : il remplace la moitié active", SplitShows(third) && SplitShows(ex) && !SplitShows(wiki) && SideBySide(), Desc(splitLeft) + " | " + Desc(splitRight));
             C("l'onglet remplacé redevient un onglet normal", wiki.View.Dock == DockStyle.Fill && !wiki.View.Visible, Desc(wiki));
             SelectTab(tabs.IndexOf(wiki)); await Task.Delay(1500);
@@ -569,8 +592,9 @@ partial class BrowserForm
             C("Ctrl+Maj+S la rouvre avec l'onglet vu juste avant", SplitOn && SplitShows(wiki) && SideBySide(), Desc(splitLeft) + " | " + Desc(splitRight));
 
             // 8. Multistream (KeepsPlaying) : jamais caché, ni à côté ni dessous
-            await NewTab(MultiUrl); await Task.Delay(3500);
-            var multi = Cur;
+            var multi = await OpenInSplit(MultiUrl, "multistream");
+            await Task.Delay(3500);
+            C("multistream : toujours l'onglet choisi 3,5 s après", Cur == multi, Desc(Cur));
             C("multistream ouvert dans la vue partagée", SplitShows(multi) && SideBySide() && multi.View.Visible, Desc(multi));
             await SplitShotAsync(name + "_7_multistream");
             SelectTab(tabs.IndexOf(third)); await Task.Delay(1500);
@@ -584,6 +608,10 @@ partial class BrowserForm
             SplitWith(wiki); await Task.Delay(1200);
             SelectTab(tabs.IndexOf(third), soft: true);
             bool wasRevealing = revealing == third;
+            // focus de page arrivé en retard, sans clic : l'apparition continue
+            SplitViewFocused(ex.View, EventArgs.Empty);
+            SplitViewFocused(wiki.View, EventArgs.Empty);
+            C("focus en retard d'une moitié (sans clic) : le nouvel onglet n'est pas annulé", wasRevealing && revealing == third && Cur == third, Desc(Cur));
             SplitActivate(ex); await Task.Delay(800);
             C("apparition douce interrompue par un clic dans une moitié : l'onglet repart caché", wasRevealing && revealing == null && !third.View.Visible &&
                 Cur == ex && SplitShows(ex) && SplitShows(wiki) && SideBySide(), Desc(third));
