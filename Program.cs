@@ -3869,25 +3869,63 @@ partial class BrowserForm : Form
             SaveSessionSoon();
         };
         if (Offscreen) { w.ShowInTaskbar = false; w.Location = new Point(-4000, -4000); }
+        bool follow = screenPoint != null && !Offscreen && (MouseButtons.HasFlag(MouseButtons.Left) || FollowTest);
         w.Opacity = 0;
+        if (follow) w.TopMost = true; // pendant le glisser : au-dessus de tout, jamais caché derrière une autre fenêtre
         w.Show();
         Fade.Start(w, 160);
-        if (!Offscreen) w.Activate();
-        SelectTab(Math.Clamp(sel, 0, tabs.Count - 1));
+        SelectTab(Math.Clamp(sel, 0, tabs.Count - 1)); // donne le clavier à la page de la fenêtre principale…
+        if (!Offscreen) BringDetachedFront(w);           // … donc la fenêtre sortie repasse devant ensuite
         SaveSessionSoon();
         // Tant que le bouton reste enfoncé, la fenêtre suit la souris (on la pose où on veut, même sur l'autre écran)
-        if (screenPoint != null && !Offscreen && MouseButtons.HasFlag(MouseButtons.Left) || screenPoint != null && !Offscreen && FollowTest) FollowMouse(w, new Point(S(140), S(18)));
-        // Fenêtre glissée par sa barre de titre et lâchée sur la barre d'onglets : l'onglet y revient
-        var sizeAtBegin = Size.Empty;
-        w.ResizeBegin += (_, _) => sizeAtBegin = w.Size;
-        // seulement après un déplacement : un redimensionnement fini au-dessus de la barre ne raccroche pas l'onglet
-        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && w.Size == sizeAtBegin && OverTabStrip(Cursor.Position)) ReattachAt(w, Cursor.Position); };
+        if (follow) FollowMouse(w, new Point(S(140), S(18)));
+        // Fenêtre glissée par sa barre de titre et lâchée sur la barre d'onglets : l'onglet y revient.
+        // Déplacement ou redimensionnement ? On regarde où la souris a pris la fenêtre (la taille change aussi
+        // en passant sur un écran à une autre échelle, donc on ne la compare pas).
+        bool moving = false;
+        w.ResizeBegin += (_, _) => moving = IsCaptionGrab(w, Cursor.Position);
+        w.ResizeEnd += (_, _) => { if (!w.IsDisposed && moving && OverTabStrip(Cursor.Position)) ReattachAt(w, Cursor.Position); moving = false; };
+    }
+
+    /// La souris a pris la fenêtre par sa barre de titre (pas par un bord ni un coin).
+    static bool IsCaptionGrab(Form w, Point screen)
+    {
+        var b = w.Bounds;
+        int edge = SystemInformation.FrameBorderSize.Width + SystemInformation.Border3DSize.Width + 4;
+        int caption = SystemInformation.CaptionHeight + SystemInformation.FrameBorderSize.Height + 8;
+        return screen.X > b.Left + edge && screen.X < b.Right - edge && screen.Y > b.Top + 3 && screen.Y < b.Top + caption + edge;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+
+    /// Met la fenêtre sortie devant toutes les autres, une fois que la fenêtre principale a fini de reprendre le clavier.
+    void BringDetachedFront(DetachedWindow w)
+    {
+        void Front()
+        {
+            if (w.IsDisposed || !w.Visible) return;
+            if (w.WindowState == FormWindowState.Minimized) w.WindowState = FormWindowState.Normal;
+            w.BringToFront();
+            SetForegroundWindow(w.Handle);
+            w.Activate();
+        }
+        BeginInvoke(new Action(Front));
+        var again = new System.Windows.Forms.Timer { Interval = 200 }; // la page de la fenêtre principale peut reprendre le focus un peu après
+        again.Tick += (_, _) => { again.Stop(); again.Dispose(); if (!w.IsDisposed && !w.TopMost) Front(); };
+        again.Start();
     }
 
     /// Tests : simule « bouton encore enfoncé » pour vérifier le suivi de la souris.
     static bool FollowTest => false;
 
-    bool OverTabStrip(Point screen) => Visible && WindowState != FormWindowState.Minimized && strip.RectangleToScreen(strip.ClientRectangle).Contains(screen);
+    /// Zone où lâcher une fenêtre pour y remettre l'onglet : la barre d'onglets, et un peu autour (le haut de la fenêtre au-dessus, quelques pixels dessous).
+    bool OverTabStrip(Point screen)
+    {
+        if (!Visible || WindowState == FormWindowState.Minimized) return false;
+        var r = strip.RectangleToScreen(strip.ClientRectangle);
+        int top = Math.Min(r.Top, Bounds.Top);
+        return Rectangle.FromLTRB(r.Left, top, r.Right, r.Bottom + S(12)).Contains(screen);
+    }
 
     /// La fenêtre détachée colle à la souris (prise par le haut, comme un onglet) jusqu'à ce que le bouton soit relâché.
     void FollowMouse(DetachedWindow w, Point grab)
@@ -3900,12 +3938,13 @@ partial class BrowserForm : Form
             w.Location = new Point(c.X - grab.X, c.Y - grab.Y);
             if ((MouseButtons & MouseButtons.Left) != 0) return;
             timer.Stop(); timer.Dispose();
+            w.TopMost = false;
             if (OverTabStrip(c)) ReattachAt(w, c); // relâchée sur la barre d'onglets : l'onglet y retourne, là où tu l'as lâché
             else
             {
                 var wa = Screen.FromPoint(c).WorkingArea; // jamais hors de l'écran
                 w.Location = new Point(Math.Clamp(w.Left, wa.Left - w.Width + S(120), wa.Right - S(120)), Math.Clamp(w.Top, wa.Top, wa.Bottom - S(60)));
-                w.Activate();
+                BringDetachedFront(w); // posée : devant tout, avec le clavier
             }
         };
         timer.Start();
