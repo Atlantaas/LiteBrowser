@@ -1857,7 +1857,7 @@ sealed class OmniPopup : Form
     }
 }
 
-class BrowserForm : Form
+partial class BrowserForm : Form
 {
     const string HomeHost = "litebrowser.home";
     const string HomeUrl = "https://litebrowser.home/index.html";
