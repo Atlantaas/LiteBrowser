@@ -105,6 +105,51 @@ partial class BrowserForm
         core.PermissionRequested += (_, e) => OnPermissionRequested(t, core, e);
         view.Disposed += (_, _) => zoomNavTo.Remove(view);
         ApplySiteZoom(t, view);
+        if (!t.Private && !profilePermsImported)
+        {
+            profilePermsImported = true; // une fois par lancement, au premier onglet normal
+            _ = ImportProfilePerms(core.Profile);
+        }
+    }
+
+    bool profilePermsImported;
+
+    /// Choix déjà gardés par le moteur (ancienne boîte grise, avant sites.json) : le moteur les applique sans
+    /// PermissionRequested, donc ils sont repris dans sites.json pour être listés dans les Réglages et pouvoir être retirés.
+    async Task<int> ImportProfilePerms(CoreWebView2Profile profile)
+    {
+        if (profile == null) return 0;
+        IReadOnlyList<CoreWebView2PermissionSetting> list;
+        try { list = await profile.GetNonDefaultPermissionSettingsAsync(); } catch { return 0; }
+        int added = 0;
+        foreach (var s in list)
+        {
+            string kind, origin;
+            CoreWebView2PermissionState state;
+            try { kind = PermKindName(s.PermissionKind); origin = s.PermissionOrigin; state = s.PermissionState; } catch { continue; }
+            if (kind == null || state == CoreWebView2PermissionState.Default || !PermCardWanted(origin, origin)) continue;
+            if (sitePrefs.PermFor(origin, kind) != null) continue; // sites.json a le dernier mot
+            if (sitePrefs.SetPerm(origin, kind, state == CoreWebView2PermissionState.Allow)) added++;
+        }
+        if (added > 0) SaveSitePrefs();
+        return added;
+    }
+
+    /// Retire aussi le choix du profil du moteur (toutes les origines du site : http, https, ports), qui redemandera.
+    async Task ResetProfilePerm(CoreWebView2Profile profile, string host, string kind)
+    {
+        if (profile == null || host == null || kind == null) return;
+        IReadOnlyList<CoreWebView2PermissionSetting> list;
+        try { list = await profile.GetNonDefaultPermissionSettingsAsync(); } catch { return; }
+        foreach (var s in list)
+        {
+            try
+            {
+                if (PermKindName(s.PermissionKind) != kind || !string.Equals(SiteList.Host(s.PermissionOrigin), host, StringComparison.OrdinalIgnoreCase)) continue;
+                await profile.SetPermissionStateAsync(s.PermissionKind, s.PermissionOrigin, CoreWebView2PermissionState.Default);
+            }
+            catch { }
+        }
     }
 
     // ================== Zoom retenu par site ==================
@@ -229,11 +274,15 @@ partial class BrowserForm
     {
         var kind = PermKindName(e.PermissionKind);
         if (kind == null || !PermCardWanted(core.Source, e.Uri)) return; // comportement habituel
-        try { e.SavesInProfile = false; } catch { } // c'est LiteBrowser qui retient (et qui oublie depuis les Réglages)
+        // Un choix retenu est écrit AUSSI dans le profil du moteur : sans ça, la page relit « default »/« prompt »
+        // après un rechargement (Notification.permission, permissions.query) et les notifications push ne marchent pas.
+        // sites.json reste la liste affichée dans les Réglages ; retirer un choix remet le profil à Default.
+        try { e.SavesInProfile = false; } catch { }
         var saved = sitePrefs.PermFor(e.Uri, kind);
         if (saved != null)
         {
             e.State = saved.Value ? CoreWebView2PermissionState.Allow : CoreWebView2PermissionState.Deny;
+            try { e.SavesInProfile = !t.Private; } catch { } // le profil l'avait perdu : on le lui redonne
             permAutoApplied++;
             return;
         }
@@ -245,6 +294,7 @@ partial class BrowserForm
     {
         if (!permQueue.Remove(a)) return;
         try { a.Args.State = allow ? CoreWebView2PermissionState.Allow : CoreWebView2PermissionState.Deny; } catch { }
+        try { a.Args.SavesInProfile = remember && !a.Tab.Private; } catch { } // retenu = gardé par le moteur aussi
         try { a.Deferral.Complete(); } catch { }
         if (permShown == a) permShown = null;
         if (remember && !a.Tab.Private)
@@ -310,7 +360,9 @@ partial class BrowserForm
         switch (Str("op"))
         {
             case "permRemove":
-                if (sitePrefs.RemovePerm(Str("host"), Str("kind"))) SaveSitePrefs();
+                var (ph, pk) = (Str("host"), Str("kind"));
+                if (sitePrefs.RemovePerm(ph, pk)) SaveSitePrefs();
+                _ = ResetProfilePerm(MainCore()?.Profile ?? core.Profile, ph, pk);
                 return;
             case "zoomRemove":
                 var host = Str("host");
@@ -351,6 +403,19 @@ partial class BrowserForm
 
     // ================== Test hors écran (LITEBROWSER_SHOTS_PAGES=sites=sites) ==================
 
+    /// État gardé par le profil du moteur pour un site (Default si rien).
+    static async Task<CoreWebView2PermissionState> ProfileState(CoreWebView2Profile profile, string host, CoreWebView2PermissionKind k)
+    {
+        if (profile == null) return CoreWebView2PermissionState.Default;
+        try
+        {
+            foreach (var s in await profile.GetNonDefaultPermissionSettingsAsync())
+                if (s.PermissionKind == k && string.Equals(SiteList.Host(s.PermissionOrigin), host, StringComparison.OrdinalIgnoreCase)) return s.PermissionState;
+        }
+        catch { }
+        return CoreWebView2PermissionState.Default;
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr l);
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
@@ -383,6 +448,16 @@ partial class BrowserForm
         async Task<string> Js(CoreWebView2 c, string s) { var p = c.ExecuteScriptAsync(s); return await Task.WhenAny(p, Task.Delay(4000)) == p ? p.Result : "(pas de réponse)"; }
         async Task<bool> Until(Func<bool> f, int ms = 6000) { for (int i = 0; i < ms / 100; i++) { if (f()) return true; await Task.Delay(100); } return f(); }
         async Task<string> JsUntil(CoreWebView2 c, string s, int ms = 6000) { string v = "null"; for (int i = 0; i < ms / 200; i++) { v = await Js(c, s); if (v != "null" && v != "\"\"" && v != "(pas de réponse)") return v; await Task.Delay(200); } return v; }
+        // ce que la page lit elle-même (ExecuteScriptAsync n'attend pas les promesses : résultat posé dans window.__q)
+        async Task<string> PermQuery(CoreWebView2 c, string perm, bool notif = false)
+        {
+            await Js(c, "window.__q=null;navigator.permissions.query({name:'" + perm + "'}).then(s=>window.__q=" + (notif ? "Notification.permission+'/'+" : "") + "s.state,e=>window.__q='erreur '+e)");
+            return await JsUntil(c, "window.__q", 4000);
+        }
+        async Task UntilDefault(string host, CoreWebView2PermissionKind k)
+        {
+            for (int i = 0; i < 30; i++) { if (await ProfileState(Cur?.View.CoreWebView2?.Profile ?? MainCore()?.Profile, host, k) == CoreWebView2PermissionState.Default) return; await Task.Delay(100); }
+        }
         async Task CardShot(string file)
         {
             var path = Path.Combine(ShotsDir, file + ".png");
@@ -503,7 +578,14 @@ partial class BrowserForm
             int auto0 = permAutoApplied;
             await Js(c, "window.__n=null;Notification.requestPermission().then(x=>window.__n=x)");
             nres = await JsUntil(c, "window.__n");
-            C("2e demande : appliquée directement, sans carte", nres.Contains("granted") && permAutoApplied == auto0 + 1 && permCard is not { Visible: true }, $"{nres}, auto={permAutoApplied - auto0}");
+            C("2e demande : appliquée directement, sans carte", nres.Contains("granted") && permAutoApplied <= auto0 + 1 && permCard is not { Visible: true }, $"{nres}, auto={permAutoApplied - auto0}");
+            // rechargement : la page doit lire « granted » d'elle-même (Notification.permission, permissions.query), sans redemander
+            await NavigateAndWait(c, "https://example.com/?r=1", 15000);
+            await Task.Delay(400);
+            auto0 = permAutoApplied;
+            var np = await PermQuery(c, "notifications", true);
+            C("après rechargement : Notification.permission = granted (gardé par le moteur)", np.Contains("granted/granted") && permCard is not { Visible: true }, np);
+            C("profil du moteur : notifications autorisées pour example.com", await ProfileState(c.Profile, "example.com", CoreWebView2PermissionKind.Notifications) == CoreWebView2PermissionState.Allow);
 
             // position : bloquée et retenue (on n'autorise pas, pour ne pas réveiller la localisation de Windows)
             await Js(c, "window.__g=null;navigator.geolocation.getCurrentPosition(p=>window.__g='ok',e=>window.__g='err'+e.code,{timeout:4000})");
@@ -517,7 +599,11 @@ partial class BrowserForm
             auto0 = permAutoApplied;
             await Js(c, "window.__g=null;navigator.geolocation.getCurrentPosition(p=>window.__g='ok',e=>window.__g='err'+e.code,{timeout:4000})");
             gres = await JsUntil(c, "window.__g");
-            C("2e demande de position : refusée directement", gres.Contains("err1") && permAutoApplied == auto0 + 1 && permCard is not { Visible: true }, gres);
+            C("2e demande de position : refusée directement", gres.Contains("err1") && permAutoApplied <= auto0 + 1 && permCard is not { Visible: true }, $"{gres}, auto={permAutoApplied - auto0}");
+            await NavigateAndWait(c, "https://example.com/?r=2", 15000);
+            await Task.Delay(400);
+            var gp = await PermQuery(c, "geolocation");
+            C("après rechargement : position lue « denied » (gardé par le moteur)", gp.Contains("denied"), gp);
 
             // caméra : bloquée sans retenir
             await Js(c, "window.__c=null;navigator.mediaDevices.getUserMedia({video:true}).then(s=>{s.getTracks().forEach(t=>t.stop());window.__c='ok'},e=>window.__c=e.name)");
@@ -553,11 +639,16 @@ partial class BrowserForm
 
             // ---------- 3. Réglages : « Autorisations des sites » ----------
             sitePrefs.SetZoom("https://fr.wikipedia.org/", 1.1); SaveSitePrefs();
+            // choix laissé dans le profil par l'ancienne boîte grise (avant sites.json) : repris pour être listé
+            try { await c.Profile.SetPermissionStateAsync(CoreWebView2PermissionKind.Notifications, "https://example.net", CoreWebView2PermissionState.Allow); } catch (Exception pe) { r.Add("NOTE  SetPermissionStateAsync : " + pe.Message); }
+            int imported = await ImportProfilePerms(c.Profile);
+            C("ancien choix du profil (boîte grise) repris dans sites.json", imported == 1 && sitePrefs.PermFor("https://example.net/", "notifications") == true, $"{imported} repris");
+            C("reprise : rien d'autre (pages intégrées, choix déjà notés)", await ImportProfilePerms(c.Profile) == 0);
             OpenSettings("sites");
             await Until(() => Core != null && IsSettings(Core.Source), 10000);
             var sc = Core;
             var rows = await JsUntil(sc, "document.querySelectorAll('#sitePerms .pchip').length || null", 8000);
-            C("Réglages : choix retenus listés", rows == "2", rows + " choix · " + await Js(sc, "document.getElementById('sitePerms').innerText.replace(/\\s+/g,' ')"));
+            C("Réglages : choix retenus listés (ancien choix compris)", rows == "3", rows + " choix · " + await Js(sc, "document.getElementById('sitePerms').innerText.replace(/\\s+/g,' ')"));
             var zr = await Js(sc, "document.querySelectorAll('#siteZooms .it').length");
             C("Réglages : zooms retenus listés", zr == "2", zr + " · " + await Js(sc, "document.getElementById('siteZooms').innerText.replace(/\\s+/g,' ')"));
             await Js(sc, "document.getElementById('sites').scrollIntoView()");
@@ -566,8 +657,18 @@ partial class BrowserForm
             await Js(sc, "document.querySelector('#sitePerms [data-kind=\"geolocation\"]').click()");
             await Until(() => sitePrefs.PermFor("https://example.com/", "geolocation") == null, 3000);
             C("Réglages : retirer un choix", sitePrefs.PermFor("https://example.com/", "geolocation") == null && sitePrefs.PermFor("https://example.com/", "notifications") == true);
-            var left = await JsUntil(sc, "document.querySelectorAll('#sitePerms .pchip').length===1 || null", 3000);
+            var left = await JsUntil(sc, "document.querySelectorAll('#sitePerms .pchip').length===2 || null", 3000);
             C("la liste se met à jour", left == "true", left);
+            await UntilDefault("example.com", CoreWebView2PermissionKind.Geolocation);
+            C("choix retiré : le profil du moteur l'oublie aussi", await ProfileState(c.Profile, "example.com", CoreWebView2PermissionKind.Geolocation) == CoreWebView2PermissionState.Default
+                && await ProfileState(c.Profile, "example.com", CoreWebView2PermissionKind.Notifications) == CoreWebView2PermissionState.Allow);
+            var gq = await PermQuery(c, "geolocation");
+            C("la page redemandera la position (« prompt »)", gq.Contains("prompt"), gq);
+            await Js(sc, "document.querySelector('#sitePerms [data-host=\"example.net\"][data-kind=\"notifications\"]')?.click()");
+            await Until(() => sitePrefs.PermFor("https://example.net/", "notifications") == null, 3000);
+            await UntilDefault("example.net", CoreWebView2PermissionKind.Notifications);
+            C("ancien choix retiré depuis les Réglages (sites.json et profil)", sitePrefs.PermFor("https://example.net/", "notifications") == null
+                && await ProfileState(c.Profile, "example.net", CoreWebView2PermissionKind.Notifications) == CoreWebView2PermissionState.Default);
             await Js(sc, "document.querySelector('#siteZooms [data-zoom=\"example.com\"]').click()");
             await Until(() => !sitePrefs.Zoom.ContainsKey("example.com"), 3000);
             await Task.Delay(400);
